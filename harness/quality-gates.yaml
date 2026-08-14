@@ -1,0 +1,27 @@
+# Mechanical quality gates for this repository.
+#
+# When explicitly requested, harness/scripts/quality-check.py runs every gate
+# below and fails when any gate fails. It records the result under the
+# git-ignored .harness/test-results/quality-runs/ directory. Generated rules do
+# not run these gates automatically during task execution or acceptance.
+#
+# Declare the repository's build/lint/typecheck commands here. Gates must be
+# non-interactive, deterministic, and return a meaningful exit code.
+#
+# An explicitly empty list is a versioned, reviewable decision and requires a
+# concrete non-placeholder empty_reason. A missing file or reason fails closed.
+schema_version: 1
+gates: []
+empty_reason: The repository currently contains only the Harness scaffold and has no product build, lint, typecheck, or format command to register yet.
+# Example (Rust):
+# gates:
+#   - id: build
+#     run: ["cargo", "build", "--workspace"]
+#   - id: clippy
+#     run: ["cargo", "clippy", "--workspace", "--", "-D", "warnings"]
+# Example (Python):
+# gates:
+#   - id: lint
+#     run: ["uv", "run", "--active", "ruff", "check", "."]
+#   - id: typecheck
+#     run: ["uv", "run", "--active", "mypy", "."]

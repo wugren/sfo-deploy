@@ -1,0 +1,10 @@
+schema_version: 1
+rules:
+  - id: task-docs-chinese
+    file: harness/custom-rules/task-docs-chinese.md
+    activation: always
+    tiers: [trivial, standard, high-risk]
+    stages: [general, proposal, design, implementation, testing, acceptance]
+    modes: [manual, auto-pipeline]
+    triggers: []
+    path_patterns: []

@@ -1,0 +1,60 @@
+schema_version: 1
+task_manifest: task.yaml
+
+change_ids: ["CHG-multipass-bootstrap", "CHG-eleph-http-deploy", "CHG-example-guidance"]
+source_bindings:
+  proposal: proposal.md
+  design_source:
+
+risks:
+  contract:
+    applies: true
+    evidence:
+      - proposal.md 定义无 JAR 参数的独立引导命令、引导后手工编辑生成 App YAML 的边界，以及 deploy 生命周期调用约定
+      - pipeline/plan.md 的导出接口和配置契约绑定命令消费者及兼容性
+    required_checks:
+      - examples/eleph-server-multipass/tests/test_config_contract.py 加载生成后的 cluster、machines、environment 和手工填写后的 app YAML，验证公开 load_cluster/build_plan 契约及三个 change_id 的配置绑定
+      - examples/eleph-server-multipass/tests/test_cli_contract.py 验证项目命令只通过 create_cli、ProjectBindings 和 ParamikoTransport 公开接口绑定固定配置根、敏感输入与严格 known_hosts，并验证未编辑的 App 制品占位值在创建 SSH transport 前失败关闭
+  data:
+    applies: true
+    evidence:
+      - proposal.md 要求 MySQL 环境脚本创建数据库、账号并导入版本化 schema 快照
+      - pipeline/plan.md 定义数据库初始化幂等性和失败恢复
+    required_checks:
+      - examples/eleph-server-multipass/tests/test_environment_scripts.py 验证 MySQL 初始化标记仅在完整成功后写入，重复 configure 保留已有数据，导入失败返回非零
+      - 真实 Multipass 验收验证 jxdy 数据库、jx_server 账号和 schema 由 deploy 的 MySQL configure 步骤创建，不由 bootstrap 或 multipass exec 创建
+  security:
+    applies: true
+    evidence:
+      - proposal.md 涉及 SSH 身份、known_hosts、数据库/Redis/令牌密钥和特权环境脚本
+      - pipeline/plan.md 限制敏感输入投递、日志暴露和提权命令边界
+    required_checks:
+      - examples/eleph-server-multipass/tests/test_bootstrap.py 验证专用私钥权限、生成配置内相对私钥路径、精确 VM host key 采集和已有身份/VM 的失败关闭行为，并断言脚本无 JarUrl/JarSha256 参数或制品替换逻辑且直接 App YAML 被原样复制
+      - examples/eleph-server-multipass/tests/test_secrets.py 验证敏感值仅通过 config_secrets 投递，缺失、空值和控制字符被拒绝，命令结果与异常文本不泄露具体值
+      - 真实 Multipass 验收使用生成的 known_hosts 和 ParamikoTransport 严格连接，且 bootstrap 后不得通过 multipass exec/transfer/mount 完成部署动作
+  runtime:
+    applies: true
+    evidence:
+      - proposal.md 要求 JRE/MySQL/Redis 依赖顺序、systemd 生命周期、健康检查和宿主机 HTTP 可访问
+      - pipeline/plan.md 定义依赖、幂等、超时、失败传播、恢复和清理
+    required_checks:
+      - examples/eleph-server-multipass/tests/test_plan.py 断言 deploy --app jx-server --with-dependencies 依次规划 JRE/MySQL/Redis/jx-runtime 的 check/install/configure 及 App configure/deploy，依赖失败阻断后续步骤
+      - examples/eleph-server-multipass/tests/test_lifecycle_scripts.py 模拟验证脚本幂等、非零失败、原子替换、systemd start/stop/restart 和有界 HTTP 健康检查
+      - 真实 Multipass 验收记录 VM 内 Java/MySQL/Redis/systemd 状态及宿主机访问 VM_IP:8080 的成功结果；缺少 Multipass 或有效 JAR 时不得标为通过
+  build:
+    applies: true
+    evidence:
+      - 独立示例新增自己的 pyproject.toml，并通过本地项目依赖引用 deployment-framework
+      - 示例以直接版本化且带明显无效占位值的 app.yaml 建立手工 HTTP 制品配置、部署目录和替换边界
+    required_checks:
+      - examples/eleph-server-multipass/tests/test_project_install.py 验证独立 pyproject 本地依赖可解析安装，且从非仓库根工作目录导入并调用公开接口
+      - examples/eleph-server-multipass/tests/test_artifact_contract.py 验证直接 app.yaml 不存在模板替换标记，默认 EDIT_ME 占位值在 SSH 前失败；用户手工设置内置 http/https provider、有效 URL 和严格 SHA-256 后可通过本地 validate/plan，其他无效组合仍在 SSH 或 App deploy 前失败
+      - testplan.yaml 注册上述独立项目测试和真实 Multipass 条件验收
+  ui:
+    applies: false
+    evidence: 示例只提供命令行、配置和后端 HTTP 可达性，不修改图形界面、导航、可访问性或本地化流程
+    required_checks: []
+  harness:
+    applies: false
+    evidence: 示例不修改 Harness 规则、检查器或流程语义，仅使用现有高风险任务流程登记测试
+    required_checks: []

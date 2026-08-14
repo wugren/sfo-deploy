@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "stages": {
+    "proposal": {
+      "inputs": {
+        "docs/versions/v0.1/modules/deployment-framework/002-eleph-server-multipass-example/proposal.md": "a90db028da1b6d9faf196d98a123df78c40b4ad6f87ad18161a12384a58c5db1"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "9c589f167b5a1fabdfaa2e540bf36ae1ccc1148a2c48ddea05e584048fd70f5e"
+    }
+  },
+  "task_manifest": "task.yaml"
+}

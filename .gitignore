@@ -1,0 +1,5 @@
+# Harness and Python bootstrap runtime
+.harness/
+.venv/
+__pycache__/
+*.pyc

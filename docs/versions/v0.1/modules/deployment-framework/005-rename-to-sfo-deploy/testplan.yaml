@@ -1,0 +1,81 @@
+schema_version: 1
+task_manifest: task.yaml
+risk_profile: risk-profile.yaml
+api_impact:
+  public_api: breaking
+  crate_root_export_change: true
+  build_surface_change: true
+  documentation_examples_affected: true
+evidence_inputs: ["pyproject.toml", "uv.lock", "README.md", "src", "tests", "examples", "harness/scripts/test-run.py", "harness/scripts/testing-coverage-check.py", "harness/scripts/pipeline-plan-check.py"]
+contract_checks:
+  mode: enabled
+  steps:
+    - id: sfo-external-positive
+      kind: external-positive
+      assertion: new-path-compiles
+      name: 构建 wheel 并从仓库外仅通过制品导入 sfo_deploy 和核对 sfo-deploy CLI 元数据
+      change_ids: ["CHG-rename-sfo-deploy"]
+      run: [".venv/Scripts/python.exe", "tests/contract/verify_rename_contract.py", "external-positive"]
+    - id: removed-entry-negative
+      kind: external-negative
+      assertion: old-path-rejected-for-removed-symbol
+      name: 验证旧发行包、导入包、CLI 和 Harness 任务路由均被明确拒绝
+      change_ids: ["CHG-rename-sfo-deploy"]
+      run: [".venv/Scripts/python.exe", "tests/contract/verify_rename_contract.py", "external-negative"]
+    - id: removed-symbol-scan
+      kind: removed-symbol-scan
+      assertion: no-unallowlisted-old-symbol-references
+      name: 使用规范消费者闭包检查器扫描生产、消费者、测试、文档、构建和 Harness 输入
+      change_ids: ["CHG-rename-sfo-deploy"]
+      run: ["uv", "run", "--active", "python", "./harness/scripts/consumer-closure-check.py", "--version", "v0.1", "--module", "deployment-framework", "--task-name", "005-rename-to-sfo-deploy"]
+    - id: repository-consumer-closure
+      kind: repository-compile-closure
+      assertion: repository-consumers-compile
+      name: 编译生产与示例 Python 文件、收集根和示例测试并核对构建锁定与任务路由
+      change_ids: ["CHG-rename-sfo-deploy"]
+      run: [".venv/Scripts/python.exe", "tests/contract/verify_rename_contract.py", "repository-compile-closure"]
+    - id: renamed-documentation-examples
+      kind: documentation-examples
+      assertion: documentation-examples-compile
+      name: 编译 README Python 示例并验证根和示例文档只展示新公开身份
+      change_ids: ["CHG-rename-sfo-deploy"]
+      run: [".venv/Scripts/python.exe", "tests/contract/verify_rename_contract.py", "documentation-examples"]
+defaults:
+  workdir: .
+  timeout_sec: 600
+  env: {}
+levels:
+  unit:
+    mode: enabled
+    summary: 在最低层验证发行元数据、CLI、远端运行时文件和 HTTP 身份常量
+    test_targets: ["tests/unit/test_rename_identity.py"]
+    preconditions: {tools: [], env: [], services: [], notes: ["HTTP 身份用例只启动回环测试服务"]}
+    steps:
+      - id: sfo-identity-unit
+        name: 运行新公开身份和运行时标识单元测试
+        change_ids: ["CHG-rename-sfo-deploy"]
+        run: [".venv/Scripts/python.exe", "-m", "pytest", "-q", "tests/unit/test_rename_identity.py"]
+  dv:
+    mode: enabled
+    summary: 验证模块执行生命周期上传一次 sfo_deploy.py、在用户脚本前可用并保留失败清理语义
+    test_targets: ["tests/dv/test_execution.py"]
+    preconditions: {tools: [], env: [], services: [], notes: ["使用 fake SSH session，不连接真实主机"]}
+    steps:
+      - id: sfo-runtime-dv
+        name: 运行远端运行时上传主流程和预检/清理失败流程 DV 测试
+        change_ids: ["CHG-rename-sfo-deploy"]
+        run: [".venv/Scripts/python.exe", "-m", "pytest", "-q", "tests/dv/test_execution.py::test_remote_runtime_is_uploaded_once_per_session_before_user_scripts_and_cleaned", "tests/dv/test_execution.py::test_preflight_and_cleanup_failures_have_stable_exit_semantics"]
+  integration:
+    mode: enabled
+    summary: 验证真实远端 shim、项目 CLI、独立示例消费者和新 Harness 任务路由的跨模块成功/失败语义
+    test_targets: ["tests/contract/test_public_contract.py::test_console_module_help_is_callable", "tests/integration/test_remote_runtime.py", "tests/integration/test_project_cli.py", "tests/integration/test_rename_routing.py", "examples/eleph-server-multipass/tests/test_project_install.py"]
+    preconditions: {tools: ["uv"], env: [], services: [], notes: ["只使用本地临时目录和离线依赖解析，不连接 Multipass/SSH"]}
+    steps:
+      - id: sfo-root-consumer-integration
+        name: 真实执行 python -m sfo_deploy --help，并运行远端 shim、CLI 和 Harness 路由集成测试
+        change_ids: ["CHG-rename-sfo-deploy"]
+        run: [".venv/Scripts/python.exe", "-m", "pytest", "-q", "tests/contract/test_public_contract.py::test_console_module_help_is_callable", "tests/integration/test_remote_runtime.py", "tests/integration/test_project_cli.py", "tests/integration/test_rename_routing.py"]
+      - id: sfo-example-consumer-integration
+        name: 在独立 pytest 收集边界运行示例项目依赖、导入与离线锁定测试
+        change_ids: ["CHG-rename-sfo-deploy"]
+        run: [".venv/Scripts/python.exe", "-m", "pytest", "-q", "examples/eleph-server-multipass/tests/test_project_install.py"]
