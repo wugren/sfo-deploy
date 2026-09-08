@@ -1,0 +1,53 @@
+schema_version: 1
+task_manifest: task.yaml
+
+change_ids: ["CHG-install-deno-latest-verified"]
+source_bindings:
+  proposal: proposal.md
+  design_source: design.md
+
+risks:
+  contract:
+    applies: true
+    evidence: [
+      "src/cli.ts",
+      "src/integration.ts",
+      "README.md",
+      "tests/contract/verify_install_deno_contract.ts",
+    ]
+    required_checks:
+      - "unit: --deno-version 仍接受 x.y.z/vx.y.z 并拒绝非法版本"
+      - "unit: CLI 帮助说明缺省最新稳定版且显式版本参数契约不变"
+      - "integration: README install-deno 说明与实际缺省/升级语义一致"
+  data:
+    applies: false
+    evidence: install-deno 不新增持久 schema，也不写 machines.yaml 或发布历史；只安装远端运行时。
+    required_checks: []
+  security:
+    applies: true
+    evidence: ["src/ssh_install.ts", "src/transport.ts", "GitHub Release URL", ".sha256sum"]
+    required_checks:
+      - "unit: 安装脚本先执行 sha256sum 校验，校验分支失败时不解压或覆盖"
+      - "unit: 发布包和校验文件都来自 denoland/deno 官方 GitHub Release URL"
+      - "unit: 显式 --deno-version 经过现有规范化，不进入未转义 shell 拼接"
+  runtime:
+    applies: true
+    evidence: ["src/ssh_install.ts", "src/integration.ts", "远端 Deno 安装目录"]
+    required_checks:
+      - "unit: 缺省 latest 请求在已装旧版本时调用安装并复验新版本"
+      - "unit: 缺省 latest 请求包含已最新则 present 的比较分支"
+      - "unit: 显式相同版本跳过，显式不同版本安装并复验"
+      - "dv: 默认集群安装/升级主流程、失败流程和会话关闭可运行"
+  build:
+    applies: true
+    evidence: ["src/cli.ts", "src/ssh_install.ts", "README.md"]
+    required_checks:
+      - "typecheck/lint/format 与任务级 unit/dv/integration 全部通过"
+  ui:
+    applies: false
+    evidence: 不涉及 UI、导航、无障碍或本地化界面工作流。
+    required_checks: []
+  harness:
+    applies: false
+    evidence: 不修改 Harness 规则、检查器或测试基础结构。
+    required_checks: []

@@ -1,0 +1,146 @@
+import { join } from "jsr:@std/path@1.1.6";
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+  BufferWriter,
+  withTempDir,
+} from "../_support/assert.ts";
+import { plan, writeCluster } from "../_support/fixtures.ts";
+import { createCli } from "../../src/cli.ts";
+import { CancelledError } from "../../src/errors.ts";
+import { run, RunOptions, ValidationResult } from "../../src/integration.ts";
+import type { Transport } from "../../src/transport.ts";
+import type { ExecutionPlan } from "../../src/types.ts";
+
+class QueueReader {
+  readonly values: Uint8Array[] = [];
+  index = 0;
+
+  constructor(values: readonly string[]) {
+    this.values = values.map((value) => new TextEncoder().encode(value));
+  }
+
+  isTerminal(): boolean {
+    return true;
+  }
+
+  read(data: Uint8Array): number | null {
+    if (this.index >= this.values.length) return null;
+    const chunk = this.values[this.index++];
+    data.set(chunk.subarray(0, data.length));
+    return chunk.length;
+  }
+}
+
+function deployCliStub(reader: QueueReader): {
+  cli: (args: readonly string[]) => Promise<number>;
+  stderr: BufferWriter;
+  confirmCalled: () => boolean;
+  confirmed: () => boolean | undefined;
+} {
+  const stderr = new BufferWriter();
+  let confirmCalled = false;
+  let confirmed: boolean | undefined;
+  const cli = createCli({
+    configRoot: "/fixture",
+    stdout: new BufferWriter(),
+    stderr,
+    stdin: reader,
+    runAction: async (options, dependencies) => {
+      if (options.action !== "deploy") throw new Error("unexpected action");
+      if (dependencies !== undefined && dependencies.confirmPlan !== undefined) {
+        confirmCalled = true;
+        confirmed = await dependencies.confirmPlan(plan());
+      }
+      return new ValidationResult({
+        cluster: options.cluster,
+        directory: new RunOptions(options).clusterDirectory,
+        machines: [],
+        environments: [],
+        apps: [],
+      });
+    },
+  });
+  return {
+    cli,
+    stderr,
+    confirmCalled: () => confirmCalled,
+    confirmed: () => confirmed,
+  };
+}
+
+Deno.test("unit/deploy confirm: deploy prompts and rejects unless user types yes", async () => {
+  const declined = deployCliStub(new QueueReader(["n\n"]));
+  assertEquals(await declined.cli(["deploy", "--cluster", "demo"]), 0);
+  assert(declined.confirmCalled());
+  assertEquals(declined.confirmed(), false);
+  assertStringIncludes(declined.stderr.text(), "部署将处理 2 个步骤");
+  assertStringIncludes(declined.stderr.text(), "确认执行部署");
+
+  const accepted = deployCliStub(new QueueReader(["yes\n"]));
+  assertEquals(await accepted.cli(["deploy", "--cluster", "demo"]), 0);
+  assertEquals(accepted.confirmed(), true);
+});
+
+Deno.test("unit/deploy confirm: --yes skips the deploy confirmation", async () => {
+  const stub = deployCliStub(new QueueReader([]));
+  assertEquals(await stub.cli(["deploy", "--cluster", "demo", "--yes"]), 0);
+  assert(!stub.confirmCalled());
+  assertEquals(stub.confirmed(), undefined);
+});
+
+Deno.test("unit/deploy confirm: deploy rejects environment and dependency filters", async () => {
+  const environment = deployCliStub(new QueueReader([]));
+  assertEquals(
+    await environment.cli(["deploy", "--cluster", "demo", "--environment", "jre"]),
+    2,
+  );
+  assertStringIncludes(
+    environment.stderr.text(),
+    "deploy/plan 只处理 App；环境请先使用 prepare",
+  );
+
+  const dependencies = deployCliStub(new QueueReader([]));
+  assertEquals(
+    await dependencies.cli(["deploy", "--cluster", "demo", "--with-dependencies"]),
+    2,
+  );
+  assertStringIncludes(dependencies.stderr.text(), "不能与 --environment/--with-dependencies");
+});
+
+Deno.test("unit/deploy confirm: unconfirmed deploy connects nowhere and leaves no release attempt", async () => {
+  await withTempDir(async (root) => {
+    const cluster = await writeCluster(root);
+    let connects = 0;
+    const transport: Transport = {
+      connect: () => {
+        connects += 1;
+        throw new Error("validation path must not connect");
+      },
+    };
+    const options = new RunOptions({
+      configRoot: root,
+      cluster: "demo",
+      action: "deploy",
+    });
+    await assertRejects(
+      () =>
+        run(options, {
+          confirmPlan: (plan: ExecutionPlan) => {
+            assertEquals(plan.requestedAction, "deploy");
+            return false;
+          },
+          transport,
+        }),
+      CancelledError,
+      "未确认部署",
+    );
+    assertEquals(connects, 0);
+    await assertRejects(
+      () => Deno.stat(join(cluster, ".sfo-deploy")),
+      Deno.errors.NotFound,
+    );
+  });
+});

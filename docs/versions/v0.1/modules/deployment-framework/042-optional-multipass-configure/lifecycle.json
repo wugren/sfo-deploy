@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "stages": {
+    "acceptance": {
+      "inputs": {
+        "docs/versions/v0.1/modules/deployment-framework/042-optional-multipass-configure/acceptance-report.md": "111a775735975d0af31da1dc8be06d90107f69f5b10f7d839f3443cc9c29b6fe"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "60369b7db5c20e65c5057146654216e8abb52159d55971147feb10838596a62e"
+    },
+    "design": {
+      "inputs": {
+        "docs/versions/v0.1/modules/deployment-framework/042-optional-multipass-configure/design.md": "705380b73f8d25077ee0d5c81bb0ab27691b36c30adeef4166f26472a2174ea0",
+        "docs/versions/v0.1/modules/deployment-framework/042-optional-multipass-configure/risk-profile.yaml": "e68e31c961ac929498bbdd8e9b6dac723fc6092f5d86e40817f0fdbc1cf1c001"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "60369b7db5c20e65c5057146654216e8abb52159d55971147feb10838596a62e"
+    },
+    "implementation": {
+      "inputs": {},
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "60369b7db5c20e65c5057146654216e8abb52159d55971147feb10838596a62e"
+    },
+    "proposal": {
+      "inputs": {
+        "docs/versions/v0.1/modules/deployment-framework/042-optional-multipass-configure/proposal.md": "bd00266510e40a056e32a0178ca6b0aa7024a90935ff788a580415a91c3d6c52"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "60369b7db5c20e65c5057146654216e8abb52159d55971147feb10838596a62e"
+    },
+    "testing": {
+      "inputs": {
+        "docs/versions/v0.1/modules/deployment-framework/042-optional-multipass-configure/testing.md": "42005ae668c3d688f05b4d09f8ee979950b67dbdc03eed2363ea5f6ee2c1e619",
+        "docs/versions/v0.1/modules/deployment-framework/042-optional-multipass-configure/testplan.yaml": "4d20337b1450393f90bc9c485064af15d2b08d83d9a048fa988749d46bba8c18"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "60369b7db5c20e65c5057146654216e8abb52159d55971147feb10838596a62e",
+      "test_run": ".harness/test-results/test-runs/20260904T070618Z-deployment-framework+042-optional-multipass-configure-all.json",
+      "test_run_sha256": "b7dcdccb6d8a73caa15e540355ea025ce2a2ff6742e6a245a2f8c6fe0fd580d1"
+    }
+  },
+  "task_manifest": "task.yaml"
+}

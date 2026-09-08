@@ -1,0 +1,47 @@
+schema_version: 1
+
+# 用户已确认最终层级。
+workflow_tier: high-risk
+
+version: v0.1
+packet_module: sfo-deploy
+task_name: 026-versioned-app-layout
+stage: acceptance
+mode: manual
+auto_pipeline_start_stage:
+
+proposal: proposal.md
+completion_report: completion-report.md
+change_record: docs/changes/026-versioned-app-layout.md
+design: design.md
+testing: testing.md
+testplan: testplan.yaml
+acceptance_report: acceptance-report.md
+pipeline_plan: pipeline/plan.md
+risk_profile: risk-profile.yaml
+lifecycle_state: lifecycle.json
+
+changed_paths_file: .harness/evidence/v0.1/stage-scope/026-versioned-app-layout.paths
+baseline_manifest: .harness/baselines/v0.1/026-versioned-app-layout-delivery/manifest.json
+
+changes:
+  - id: CHG-versioned-app-layout
+    target_module: sfo-deploy
+    scope_paths: ["src/config.ts", "src/types.ts", "src/planning.ts", "examples/eleph-server-multipass/cluster-template/apps/jx-server/scripts/configure.ts", "examples/eleph-server-multipass/cluster-template/apps/jx-server/scripts/deploy.ts", "examples/eleph-server-multipass/cluster-template/apps/jx-server/app.yaml", "examples/eleph-server-multipass/cluster-template/environments/jx-runtime/scripts/configure.ts", "examples/eleph-server-multipass/cluster-template/environments/jx-runtime/templates/jx-server.service", "examples/eleph-server-multipass/clusters/multipass/apps/jx-server/scripts/configure.ts", "examples/eleph-server-multipass/clusters/multipass/apps/jx-server/scripts/deploy.ts", "examples/eleph-server-multipass/clusters/multipass/apps/jx-server/app.yaml", "examples/eleph-server-multipass/clusters/multipass/environments/eleph-server/jx-runtime/scripts/configure.ts", "examples/eleph-server-multipass/clusters/multipass/environments/eleph-server/jx-runtime/templates/jx-server.service", "tests/unit/config_planning.test.ts", "tests/integration/deploy_version_skip.test.ts", "tests/integration/independent_remote_scripts.test.ts"]
+    changed_paths_file:
+  - id: CHG-remote-package-hash
+    target_module: sfo-deploy
+    scope_paths: ["src/execution.ts", "src/remote_context.ts", "examples/eleph-server-multipass/cluster-template/apps/jx-server/scripts/deploy.ts", "examples/eleph-server-multipass/cluster-template/apps/jx-server/app.yaml", "examples/eleph-server-multipass/clusters/multipass/apps/jx-server/scripts/deploy.ts", "examples/eleph-server-multipass/clusters/multipass/apps/jx-server/app.yaml", "tests/unit/downloads_secrets.test.ts", "tests/integration/independent_remote_scripts.test.ts"]
+    changed_paths_file:
+  - id: CHG-release-config
+    target_module: sfo-deploy
+    scope_paths: ["src/config.ts", "src/types.ts", "src/planning.ts", "examples/eleph-server-multipass/cluster-template/app_versions.yaml", "examples/eleph-server-multipass/cluster-template/apps/jx-server/app.yaml", "examples/eleph-server-multipass/clusters/multipass/app_versions.yaml", "examples/eleph-server-multipass/clusters/multipass/apps/jx-server/app.yaml", "README.md", "docs/guides/sfo-deploy-cluster-configuration.md", "examples/eleph-server-multipass/README.md", "docs/changes/026-versioned-app-layout.md", "tests/_support/fixtures.ts", "tests/unit/config_planning.test.ts", "tests/integration/fetch_package.test.ts", "tests/integration/deploy_version_skip.test.ts", "tests/integration/independent_remote_scripts.test.ts"]
+    changed_paths_file:
+  - id: CHG-repackage
+    target_module: sfo-deploy
+    scope_paths: ["src/execution.ts", "src/downloads.ts", "src/integration.ts", "src/remote_context.ts", "examples/eleph-server-multipass/cluster-template/apps/jx-server/scripts/configure.ts", "examples/eleph-server-multipass/cluster-template/apps/jx-server/scripts/deploy.ts", "examples/eleph-server-multipass/cluster-template/apps/jx-server/app.yaml", "examples/eleph-server-multipass/cluster-template/environments/jx-runtime/templates/jx-server.service", "examples/eleph-server-multipass/clusters/multipass/apps/jx-server/scripts/configure.ts", "examples/eleph-server-multipass/clusters/multipass/apps/jx-server/scripts/deploy.ts", "examples/eleph-server-multipass/clusters/multipass/apps/jx-server/app.yaml", "examples/eleph-server-multipass/clusters/multipass/environments/eleph-server/jx-runtime/templates/jx-server.service", "tests/integration/deploy_version_skip.test.ts", "tests/integration/fetch_package.test.ts", "tests/integration/independent_remote_scripts.test.ts", "tests/unit/downloads_secrets.test.ts"]
+    changed_paths_file:
+  - id: CHG-docs
+    target_module: sfo-deploy
+    scope_paths: ["README.md", "docs/guides/sfo-deploy-cluster-configuration.md", "examples/eleph-server-multipass/README.md", "docs/changes/026-versioned-app-layout.md"]
+    changed_paths_file:

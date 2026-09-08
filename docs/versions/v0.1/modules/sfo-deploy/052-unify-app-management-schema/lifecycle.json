@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "stages": {
+    "acceptance": {
+      "inputs": {
+        "docs/versions/v0.1/modules/sfo-deploy/052-unify-app-management-schema/acceptance-report.md": "321f97d60af21ac7d37477a066021790fb1b9e4903ef5c52dbc0f7a27d2ad1cf"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "51260118ebf9f47f7193eae894dbdfbe07ff300e4b0c2e63c324dbbdebaab4e5"
+    },
+    "design": {
+      "inputs": {
+        "docs/versions/v0.1/modules/sfo-deploy/052-unify-app-management-schema/design.md": "0d1e3e0efbb7fe105552678a4e190eedc7f2bb14acb1e24c8f9b7a08f829afaf",
+        "docs/versions/v0.1/modules/sfo-deploy/052-unify-app-management-schema/risk-profile.yaml": "331b60d0c73ef87568a256b948d7a4093510aef1c52378bc654f416818d04bcb"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "51260118ebf9f47f7193eae894dbdfbe07ff300e4b0c2e63c324dbbdebaab4e5"
+    },
+    "implementation": {
+      "inputs": {},
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "51260118ebf9f47f7193eae894dbdfbe07ff300e4b0c2e63c324dbbdebaab4e5"
+    },
+    "proposal": {
+      "inputs": {
+        "docs/versions/v0.1/modules/sfo-deploy/052-unify-app-management-schema/proposal.md": "fc6cf5296d4ee90ba6ef59abb10a5082fb95b9b6c006546969799c08cb723e0a"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "51260118ebf9f47f7193eae894dbdfbe07ff300e4b0c2e63c324dbbdebaab4e5"
+    },
+    "testing": {
+      "inputs": {
+        "docs/versions/v0.1/modules/sfo-deploy/052-unify-app-management-schema/testing.md": "ba949036a3f63138683620e8004e957e3ec3c9e0d3a90f7955533a9716c9d962",
+        "docs/versions/v0.1/modules/sfo-deploy/052-unify-app-management-schema/testplan.yaml": "4aa3728c12b9d0f3e0970847d3cad15059297e91886604915dfdd21726828f40"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "51260118ebf9f47f7193eae894dbdfbe07ff300e4b0c2e63c324dbbdebaab4e5",
+      "test_run": ".harness/test-results/test-runs/20260906T094537Z-sfo-deploy+052-unify-app-management-schema-all.json",
+      "test_run_sha256": "969a4833a387084563071ee750c54693f48cf1c75db106d0899990d16ad818ed"
+    }
+  },
+  "task_manifest": "task.yaml"
+}

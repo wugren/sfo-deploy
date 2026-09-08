@@ -1,0 +1,67 @@
+schema_version: 1
+task_manifest: task.yaml
+
+change_ids: [
+  "CHG-secret-placeholder-schema",
+  "CHG-placeholder-rendering-runtime",
+  "CHG-placeholder-plan-history-cli",
+  "CHG-placeholder-docs-tests",
+]
+source_bindings:
+  proposal: proposal.md
+  design_source: design.md
+
+risks:
+  contract:
+    applies: true
+    evidence:
+      - proposal.md P-001/P-002 将 value 秘密类型移动到 cluster.yaml.secrets，删除 management.configs[].updater 并新增 format，属公开配置契约破坏性变更
+      - proposal.md P-003 改变计划/历史/CLI 序列化面；README、配置指南与示例是契约消费者
+      - src/config.ts、src/types.ts、src/config_generation.ts、src/remote_runtime/config_updater.ts 是装载/渲染协议实现
+    required_checks:
+      - value 秘密 type 缺省字符串、显式 integer/number/boolean 正例生效；非法类型/值、file 带 type、未知 updater 均定向拒收
+      - management.configs[].updater 被拒收；format 支持 yaml/json/toml/ini 且替换后完整复解析
+      - README、配置指南、示例与契约测试不再指导 updater，且占位符语义一致
+  data:
+    applies: true
+    evidence:
+      - proposal.md P-003 改变计划/历史快照形状；旧发布快照可能包含 updater 绑定并用于回滚
+      - src/history.ts、src/cli.ts、tests/unit/history*.test.ts 是计划/发布快照编解码和兼容性消费者
+    required_checks:
+      - 新计划/快照 encode/decode 往返保持占位符配置和文件路径语义
+      - 旧 v4 快照 decode 或明确拒收策略有回归证据，回滚路径不因新形状失败
+  security:
+    applies: true
+    evidence:
+      - proposal.md P-002 引用即授权改变秘密可见集合；秘密仍不得进入部署包、argv、环境变量、日志或错误输出
+      - 未声明/未放置/类型不匹配必须失败关闭；kind: file 交给 App 的路径必须指向持久、受控且 run_as 可读的位置
+    required_checks:
+      - 未声明、未放置、类型不匹配、未知 updater、残留框架 marker 或无效候选均失败且不发布
+      - file 占位符只携带持久路径，秘密值不进入部署包/argv/env/stdout/stderr；跨消费者秘密隔离保持
+  runtime:
+    applies: true
+    evidence:
+      - proposal.md P-002 改变部署包、远端固定渲染器、执行和原子发布路径；文件内容轮换但路径不变时必须触发 on_change
+      - src/execution.ts、src/transport.ts、src/remote_deployment.ts 是 managed 部署运行面
+    required_checks:
+      - 四种格式渲染、候选校验、发布、锁/回滚与 systemd 合并动作回归通过
+      - 文件秘密内容变化能触发相关配置 on_change；渲染失败不触碰最终配置
+  ui:
+    applies: false
+    evidence: 本任务没有图形界面；CLI 仅同步计划/错误展示，行为由 contract 与相关测试覆盖。
+    required_checks: []
+  build:
+    applies: true
+    evidence:
+      - 远端 config_updater bundle 是部署产物；公开类型与配置契约变化需仓库编译闭包验证
+      - deno task check 与 bundle:remote-runtime 是当前构建/类型/文档闭包信号
+    required_checks:
+      - deno task check 通过；bundle:remote-runtime 后产物一致且无未提交差异
+  harness:
+    applies: true
+    evidence:
+      - proposal.md P-004 要求文档/示例/测试同步，testplan 必须映射四个 change_id 和风险检查
+      - harness/scripts/test-run.py 是统一测试入口，不修改 Harness 规则
+    required_checks:
+      - testplan.yaml 映射全部 change_id 与 required_checks，步骤可经 sfo-deploy/051-secret-placeholder-config all 到达
+      - 相关 unit/integration/dv/contract 测试与 deno task check 通过并生成机器制品

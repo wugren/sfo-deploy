@@ -1,0 +1,64 @@
+schema_version: 1
+task_manifest: task.yaml
+
+# `risk-profile-check.py --prepare --task <packet>/task.yaml` 写入任务/变更与设计源绑定；
+# 提案或设计变更后需复核本文件并重新 prepare。
+change_ids: ["CHG-install-deno-sync-config", "CHG-install-deno-sync-docs"]
+source_bindings:
+  proposal: proposal.md
+  design_source: design.md
+
+# 单任务矩阵。阶段文档引用本文件，不复制矩阵。
+# 提案拥有 applies/evidence；设计为适用项补 required_checks；测试实现这些检查。
+risks:
+  contract:
+    applies: true
+    evidence: [
+      "src/integration.ts",
+      "README.md",
+      "docs/guides/sfo-deploy-cluster-configuration.md",
+      "examples/eleph-server-multipass/README.md",
+      "tests/contract/verify_install_deno_contract.ts",
+    ]
+    required_checks: [
+      "unit: install-deno 不新增/不删除 CLI 参数、JSON 外层字段与退出码；同步失败复用既有 cleanup_errors",
+      "unit: syncMachineDenos 只处理成功机器的 deno 字段",
+      "integration: 三份文档说明 install-deno 会自动同步 machines.yaml",
+    ]
+  data:
+    applies: true
+    evidence: ["src/config.ts", "src/integration.ts", "machines.yaml"]
+    required_checks: [
+      "unit: 行级替换只改目标机器 deno 行并保留注释/字段顺序/其它机器",
+      "unit: 缺省插入 deno 字段与既有值替换两条路径",
+      "dv: 安装后重新 loadCluster 能读到新路径，失败机器不更新",
+      "unit: 原子写失败不留下半写文件或破坏原文件",
+    ]
+  security:
+    applies: true
+    evidence: ["src/config.ts", "src/integration.ts", "src/transport.ts"]
+    required_checks: [
+      "unit: 写回路径必须绝对 POSIX，拒绝 ..、反斜杠与控制字符",
+      "unit: 机器名与路径均来自已装载白名单，用户输入不进入 shell 或 YAML 构造",
+      "unit: 临时文件使用同目录原子 rename 且失败清理",
+    ]
+  runtime:
+    applies: true
+    evidence: ["src/integration.ts", "src/ssh_install.ts", "src/config.ts"]
+    required_checks: [
+      "unit: installed/present 均触发同步；failed 不触发",
+      "unit: 同步失败为对应成功 outcome 追加 cleanup_errors 且 exitCode 4",
+      "dv: 缺省安装流程结束后 machines.yaml 指向实际 deno_path 并可被后续预检使用",
+    ]
+  build:
+    applies: false
+    evidence: 不修改依赖、构建脚本、下载 provider 或制品打包；只影响集群配置写回与文档示例。
+    required_checks: []
+  ui:
+    applies: false
+    evidence: 不涉及 UI、导航、无障碍或本地化工作流。
+    required_checks: []
+  harness:
+    applies: false
+    evidence: 不修改 Harness 规则、检查器或测试基础结构的实现。
+    required_checks: []

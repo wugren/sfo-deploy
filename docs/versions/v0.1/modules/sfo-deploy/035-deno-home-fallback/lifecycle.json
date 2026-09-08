@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "stages": {
+    "acceptance": {
+      "inputs": {
+        "docs/versions/v0.1/modules/sfo-deploy/035-deno-home-fallback/acceptance-report.md": "e794b179998c27fe861fa6e8f81dfa95e9205ff25f020c07ad7fdc3a803630c4"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "126cd50a2db3303c569b4232ed87bb05061a988db5c8571bdbad3df6f2122786"
+    },
+    "design": {
+      "inputs": {
+        "docs/versions/v0.1/modules/sfo-deploy/035-deno-home-fallback/design.md": "f4eeb0505b97b2494ee98e863faf973993e82e8f952eb37d5c932043f697cc2c",
+        "docs/versions/v0.1/modules/sfo-deploy/035-deno-home-fallback/risk-profile.yaml": "b96e4a1c2e802d9f8e8463772cfebe0aac4620d5425ad6b5ce13814848065ccc"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "126cd50a2db3303c569b4232ed87bb05061a988db5c8571bdbad3df6f2122786"
+    },
+    "implementation": {
+      "inputs": {},
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "126cd50a2db3303c569b4232ed87bb05061a988db5c8571bdbad3df6f2122786"
+    },
+    "proposal": {
+      "inputs": {
+        "docs/versions/v0.1/modules/sfo-deploy/035-deno-home-fallback/proposal.md": "7abb9aa54164938faaacc6a189da1191b5ec104cf08ee0c3502a776d9297a97c"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "126cd50a2db3303c569b4232ed87bb05061a988db5c8571bdbad3df6f2122786"
+    },
+    "testing": {
+      "inputs": {
+        "docs/versions/v0.1/modules/sfo-deploy/035-deno-home-fallback/testing.md": "05e4bc7a454d0cbcee62a62c2322af60a7138488c82c3f8c24e11148d1452cfd",
+        "docs/versions/v0.1/modules/sfo-deploy/035-deno-home-fallback/testplan.yaml": "dd5baa26484110bf48ca3e0bf1db31ba87b95b565b30284cf1a4329b620734b0"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "126cd50a2db3303c569b4232ed87bb05061a988db5c8571bdbad3df6f2122786",
+      "test_run": ".harness/test-results/test-runs/20260903T064358Z-sfo-deploy+035-deno-home-fallback-all.json",
+      "test_run_sha256": "a83ab111936c83efa291350f8d435f81530ce3f18bf4046184f752333e5b9d43"
+    }
+  },
+  "task_manifest": "task.yaml"
+}

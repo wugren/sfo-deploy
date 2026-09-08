@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "stages": {
+    "acceptance": {
+      "inputs": {
+        "docs/versions/v0.1/modules/sfo-deploy/047-remove-v1-config-layouts/acceptance-report.md": "a8928975a70b2ff4f9c47ef9dca1ec625880470f5c198f341faa030fb192f1a0"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "a8bfebd52bf230276196f6b31f6412c2e02426f851b43913fd035ec36803882d"
+    },
+    "design": {
+      "inputs": {
+        "docs/versions/v0.1/modules/sfo-deploy/047-remove-v1-config-layouts/design.md": "ac7326708de970c67e910462a9b18a4242460fca1715dd1b81a6df5fb5e9795f",
+        "docs/versions/v0.1/modules/sfo-deploy/047-remove-v1-config-layouts/risk-profile.yaml": "633b799166c7e25bee59c8f15e41e9a9184921bfebc31e1109cbe61ea40e61ad"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "a8bfebd52bf230276196f6b31f6412c2e02426f851b43913fd035ec36803882d"
+    },
+    "implementation": {
+      "inputs": {},
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "a8bfebd52bf230276196f6b31f6412c2e02426f851b43913fd035ec36803882d"
+    },
+    "proposal": {
+      "inputs": {
+        "docs/versions/v0.1/modules/sfo-deploy/047-remove-v1-config-layouts/proposal.md": "3b075da4260443236baf4c43834b80d4679b6318467cff77faf2239a26f0cdc0"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "a8bfebd52bf230276196f6b31f6412c2e02426f851b43913fd035ec36803882d"
+    },
+    "testing": {
+      "inputs": {
+        "docs/versions/v0.1/modules/sfo-deploy/047-remove-v1-config-layouts/testing.md": "1d8cc669f2ca581b3a4fbabc7065a2d8541ee59770b3142de9fb72cccc6a3f89",
+        "docs/versions/v0.1/modules/sfo-deploy/047-remove-v1-config-layouts/testplan.yaml": "d67ca825194b4f59460667d75eec015bdd9c9ed303acd50dedbd7269a2498dc3"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "a8bfebd52bf230276196f6b31f6412c2e02426f851b43913fd035ec36803882d",
+      "test_run": ".harness/test-results/test-runs/20260905T070443Z-sfo-deploy+047-remove-v1-config-layouts-all.json",
+      "test_run_sha256": "3f8e9a1fd5aad3dd7b25c7b65927eb108635f1415cae4458c0f87c6b91dffe8f"
+    }
+  },
+  "task_manifest": "task.yaml"
+}

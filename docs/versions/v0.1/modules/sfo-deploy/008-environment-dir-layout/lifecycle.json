@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "stages": {
+    "acceptance": {
+      "inputs": {
+        "docs/versions/v0.1/modules/sfo-deploy/008-environment-dir-layout/acceptance-report.md": "ebefe1c47052daf2461bcad235ca1b24948c6b1124769b520dbc1655de62ce0c"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "e02d14aa4691be19d85337de8a5ecb3a4e58d81f240af20fb9bf7bbac4e92cfe"
+    },
+    "design": {
+      "inputs": {
+        "docs/versions/v0.1/modules/sfo-deploy/008-environment-dir-layout/design.md": "c5e3034734dc2009c49bf1d4be23e4688217fbd94f0254edbf9b6179fb57c712",
+        "docs/versions/v0.1/modules/sfo-deploy/008-environment-dir-layout/risk-profile.yaml": "3b807938ee2de8ee8450568551fa9867b1c7e574e6cc12e617a6aab46a1e229b"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "e02d14aa4691be19d85337de8a5ecb3a4e58d81f240af20fb9bf7bbac4e92cfe"
+    },
+    "implementation": {
+      "inputs": {},
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "e02d14aa4691be19d85337de8a5ecb3a4e58d81f240af20fb9bf7bbac4e92cfe"
+    },
+    "proposal": {
+      "inputs": {
+        "docs/versions/v0.1/modules/sfo-deploy/008-environment-dir-layout/proposal.md": "cb3f607eedeb7c80e3ac94a4d1d7080e90e8360c137091016134f353db0637bf"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "e02d14aa4691be19d85337de8a5ecb3a4e58d81f240af20fb9bf7bbac4e92cfe"
+    },
+    "testing": {
+      "inputs": {
+        "docs/versions/v0.1/modules/sfo-deploy/008-environment-dir-layout/testing.md": "2d9228972a06cc86f2dd15d0fcb8dd3672c136def7a7b8732836f9b06e06f644",
+        "docs/versions/v0.1/modules/sfo-deploy/008-environment-dir-layout/testplan.yaml": "2c6d8389a69d0a53de742c0ca8697b8c0c3d3f4b73bca88f4113227b08003676"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "e02d14aa4691be19d85337de8a5ecb3a4e58d81f240af20fb9bf7bbac4e92cfe",
+      "test_run": ".harness/test-results/test-runs/20260818T045622Z-sfo-deploy+008-environment-dir-layout-all.json",
+      "test_run_sha256": "2ef16aeeb130833322cb3dcb2e9899246b4034f5bdf2cd78daa8ecb120d7d033"
+    }
+  },
+  "task_manifest": "task.yaml"
+}

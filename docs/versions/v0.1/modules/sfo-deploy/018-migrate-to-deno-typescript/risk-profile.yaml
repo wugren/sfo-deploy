@@ -1,0 +1,66 @@
+schema_version: 1
+task_manifest: task.yaml
+
+change_ids: [
+  "CHG-deno-package-entry",
+  "CHG-typescript-control-plane",
+  "CHG-deno-consumer-migration",
+  "CHG-deno-verification",
+]
+source_bindings:
+  proposal: proposal.md
+  design_source: pipeline/plan.md
+
+risks:
+  contract:
+    applies: true
+    evidence:
+      - proposal.md 的 Scope 与 Proposal Items 要求迁移 Python 公共 API、sfo-deploy CLI、退出码、JSON、YAML 和远端脚本合同
+      - pipeline/plan.md 的 Exported Interfaces、API and Build Surface Impact 与 Consumer Migration Closure 固化破坏性接口及兼容路径
+    required_checks:
+      - TypeScript 公共导出、CLI 参数、退出码和 JSON 合同测试
+      - 仓库内 Python 消费者到 TypeScript API 的逐路径迁移闭包
+  data:
+    applies: true
+    evidence:
+      - proposal.md 的 Scope 与 Risks 要求保留发布历史、不可变快照、哈希、回退来源和旧版本读取
+      - pipeline/plan.md 的 State Ownership 与 Failure Flows 固化 v1/v2/v3 codec、原子发布和失败关闭边界
+    required_checks:
+      - 既有 v1、v2、v3 快照兼容解码和篡改拒绝测试
+      - 发布意图、终态、快照原子性与回退 lineage 测试
+  security:
+    applies: true
+    evidence:
+      - proposal.md 的 Risks 定义 SSH known_hosts、私钥、秘密脱敏、下载哈希、路径和 Deno 权限信任边界
+      - pipeline/plan.md 的 External Runtime Dependencies、State Ownership 与 Failure Flows 固化 OpenSSH、filehub 和最小权限处理
+    required_checks:
+      - OpenSSH 严格 host-key 参数、argv 注入与秘密脱敏测试
+      - 下载协议、路径逃逸、哈希、URL 凭据与 Deno 最小权限测试
+  runtime:
+    applies: true
+    evidence:
+      - proposal.md 的 In scope 要求把 Python 控制端完整迁移到 Deno 并保持部署执行语义
+      - pipeline/plan.md 的 State Ownership 与 Failure Flows 固化进程、临时目录、SSH、超时、取消、清理和隔离生命周期
+    required_checks:
+      - 成功、失败、取消、超时、目标内 fail-fast、跨目标隔离和资源清理测试
+      - 真实 Deno 安装入口和 OpenSSH 命令构造验证
+  build:
+    applies: true
+    evidence:
+      - proposal.md 的 P-001、P-003 与 Success Criteria 要求移除 Python 产品运行时并新增可安装的 Deno 包
+      - pipeline/plan.md 的 External Runtime Dependencies、API and Build Surface Impact 与 File-Level Implementation Sequence 固化依赖、锁文件、产物和迁移顺序
+    required_checks:
+      - deno check、锁文件一致性和固定版本依赖检查
+      - 隔离 DENO_INSTALL_ROOT 的安装、PATH 调用与卸载冒烟
+  ui:
+    applies: false
+    evidence: 本任务没有图形界面、导航或辅助功能表面；命令行交互按 contract 与 runtime 风险验证。
+    required_checks: []
+  harness:
+    applies: true
+    evidence:
+      - proposal.md 的 P-004 要求把产品测试迁移为 Deno 并保持任务级统一测试入口
+      - pipeline/plan.md 的 Stage Graph、Implementation Scope Bindings 与 File-Level Implementation Sequence 将测试入口和质量门调整限定为 T-1
+    required_checks:
+      - 任务级统一测试入口可达且只运行本任务测试计划
+      - 仓库级模块测试注册仍非空并覆盖新的 Deno 产品测试

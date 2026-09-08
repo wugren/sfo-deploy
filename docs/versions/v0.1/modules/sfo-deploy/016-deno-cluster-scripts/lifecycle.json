@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "stages": {
+    "proposal": {
+      "inputs": {
+        "docs/versions/v0.1/modules/sfo-deploy/016-deno-cluster-scripts/proposal.md": "58bfccb3a439ebc4aa9f5204afd4c1e664f0a57cbfefdc17359ec58418642c51"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "f222b05ed07f52d85619253a88a221c33f5cee11b9f8f7f2f6d6fac554218e7e"
+    }
+  },
+  "task_manifest": "task.yaml"
+}

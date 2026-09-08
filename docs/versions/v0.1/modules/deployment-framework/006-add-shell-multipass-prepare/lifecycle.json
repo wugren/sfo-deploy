@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "stages": {
+    "proposal": {
+      "inputs": {
+        "docs/versions/v0.1/modules/deployment-framework/006-add-shell-multipass-prepare/proposal.md": "c57db0fa621c4e285584e17943cb69a7f803c5ee6526ae31aa24d27d13560d13"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "a9835dd891722f5a34d87f7e932c3ee7b61104b91efeaf671d4ca556e020dc91"
+    }
+  },
+  "task_manifest": "task.yaml"
+}

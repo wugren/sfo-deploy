@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "stages": {
+    "acceptance": {
+      "inputs": {
+        "docs/versions/v0.1/modules/sfo-deploy/054-jx-server-systemd-start/acceptance-report.md": "4027f461c4a7805fc07e79e84cf7684a17bc4392787be3b3e1ce6c5c746bb2a5"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "d54723830e9b8eb1f6aba980847c1cb134267cbe51e8d251299f838b54fd48f6"
+    },
+    "design": {
+      "inputs": {
+        "docs/versions/v0.1/modules/sfo-deploy/054-jx-server-systemd-start/design.md": "c3e5c7f0408b8ed6cbe29aea4e5ea5090d136bc171a9ea88fb428e8be9719174",
+        "docs/versions/v0.1/modules/sfo-deploy/054-jx-server-systemd-start/risk-profile.yaml": "4b652a5d91acef683f171d471b1b5a4fd00ecf7119093df59f1a1846085fd130"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "d54723830e9b8eb1f6aba980847c1cb134267cbe51e8d251299f838b54fd48f6"
+    },
+    "implementation": {
+      "inputs": {},
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "d54723830e9b8eb1f6aba980847c1cb134267cbe51e8d251299f838b54fd48f6"
+    },
+    "proposal": {
+      "inputs": {
+        "docs/versions/v0.1/modules/sfo-deploy/054-jx-server-systemd-start/proposal.md": "f9e065bd38636428765611553c4a9825598a56cd252c2b8ed7931bd0ee7d8d36"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "d54723830e9b8eb1f6aba980847c1cb134267cbe51e8d251299f838b54fd48f6"
+    },
+    "testing": {
+      "inputs": {
+        "docs/versions/v0.1/modules/sfo-deploy/054-jx-server-systemd-start/testing.md": "9ce016fc6660d72daf44e6e2f01d2330d668b942d59794346c2c1f433ba4acd0",
+        "docs/versions/v0.1/modules/sfo-deploy/054-jx-server-systemd-start/testplan.yaml": "5078725988e61ab5bcf5394699c5ba46e58e69d30023d2e602bf73acd299a1fe"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "d54723830e9b8eb1f6aba980847c1cb134267cbe51e8d251299f838b54fd48f6",
+      "test_run": ".harness/test-results/test-runs/20260906T174548Z-sfo-deploy+054-jx-server-systemd-start-all.json",
+      "test_run_sha256": "3e4b72b0b015b0b434d0bd8d42708982e1fec710550161c443962591ced32e9e"
+    }
+  },
+  "task_manifest": "task.yaml"
+}

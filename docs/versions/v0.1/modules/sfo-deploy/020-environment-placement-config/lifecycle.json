@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "stages": {
+    "proposal": {
+      "inputs": {
+        "docs/versions/v0.1/modules/sfo-deploy/020-environment-placement-config/proposal.md": "af74cccbe6c826ab53f89c63193c30f419dd27cfbea56cc690fef372ce2924e8"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "c85e698510023e2dae01092e1e5eb077439d4d324225ba8f6bfae6173dad877e"
+    }
+  },
+  "task_manifest": "task.yaml"
+}

@@ -1,0 +1,1490 @@
+/** 稳定准备本地输入，并按目标 fail-fast、跨目标隔离执行不可变计划。 */
+
+import { join } from "jsr:@std/path@1.1.6";
+import { buildDeploymentBundle, type BuiltDeploymentBundle } from "./deployment_bundle.ts";
+import { assertGzipTar, DownloadProviderRegistry, type VerifiedArtifact } from "./downloads.ts";
+import { EnvironmentCheckResult } from "./environment.ts";
+import { CancelledError, PreflightError, TransportError } from "./errors.ts";
+import { generateConfigSkeleton } from "./config_generation.ts";
+import type { CachePolicy, PackageCache, PackageMetadata } from "./package_cache.ts";
+import {
+  type ManagedConfigPublication,
+  REMOTE_CONFIG_UPDATER_BUNDLE_PATH,
+  REMOTE_CONFIG_UPDATER_SOURCE,
+  type ScopedSecretCopy,
+  type StagedDeploymentBundle,
+} from "./remote_deployment.ts";
+import { DEFAULT_KEEP_VERSIONS, MAX_KEEP_VERSIONS } from "./user_config.ts";
+import {
+  type CommandResult,
+  DeploymentResult,
+  type StepBundleResult,
+  type StepRecoveryResult,
+  StepResult,
+  type StepServiceResult,
+  StepStatus,
+} from "./results.ts";
+import { DEFAULT_SECRETS_DIR, ProjectBindings, Redactor } from "./secrets.ts";
+import {
+  convergeSystemd,
+  inspectSystemd,
+  restoreSystemd,
+  type SystemdState,
+} from "./service_management.ts";
+import { generateSystemdUnitSkeleton, serviceUnitManagedConfig } from "./systemd_unit.ts";
+import { OpenSshTransport, type RemoteSession, type Transport } from "./transport.ts";
+import type {
+  AppManagementHook,
+  ExecutionPlan,
+  ManagedConfigChangeAction,
+  ManagedConfigFile,
+  PlanStep,
+  ScriptInvocation,
+} from "./types.ts";
+
+const DENO_LOADER_SOURCE = new URL("./secret_loader/deno.ts", import.meta.url).pathname;
+const PYTHON_LOADER_SOURCE = new URL("./secret_loader/python.py", import.meta.url).pathname;
+const DENO_LOADER_REMOTE_NAME = "sfo-secret-loader.ts";
+const PYTHON_LOADER_REMOTE_NAME = "sfo_secret_loader.py";
+const UNSAFE_REDACTORS = new WeakSet<Redactor>();
+
+export interface PreparedStep {
+  readonly step: PlanStep;
+  readonly artifact?: VerifiedArtifact;
+  readonly deliveryBundle?: BuiltDeploymentBundle;
+  readonly redactor: Redactor;
+}
+
+/** 一步计划步骤完成后的流式进度事件。 */
+export interface StepProgress {
+  readonly step: StepResult;
+  readonly index: number;
+  readonly total: number;
+}
+
+export type StepProgressListener = (progress: StepProgress) => void | Promise<void>;
+
+interface PrepareState {
+  readonly resource: string;
+  previousVersion?: string;
+  upToDate: boolean;
+  action?: "start" | "restart";
+}
+
+export class PreparedExecution implements AsyncDisposable {
+  readonly plan: ExecutionPlan;
+  readonly steps: ReadonlyMap<string, PreparedStep>;
+  readonly localDirectory: string;
+  #closed = false;
+
+  constructor(
+    plan: ExecutionPlan,
+    steps: ReadonlyMap<string, PreparedStep>,
+    localDirectory: string,
+  ) {
+    this.plan = plan;
+    this.steps = new Map(steps);
+    this.localDirectory = localDirectory;
+  }
+
+  get closed(): boolean {
+    return this.#closed;
+  }
+
+  async close(primary?: unknown): Promise<readonly string[]> {
+    if (this.#closed) return [];
+    const errors: string[] = [];
+    for (const prepared of this.steps.values()) {
+      if (!prepared.artifact) continue;
+      try {
+        await prepared.artifact.cleanup();
+      } catch (cause) {
+        errors.push(errorText(cause));
+      }
+    }
+    try {
+      await Deno.remove(this.localDirectory, { recursive: true });
+    } catch (cause) {
+      if (!(cause instanceof Deno.errors.NotFound)) errors.push(errorText(cause));
+    }
+    this.#closed = true;
+    if (primary === undefined && errors.length > 0) {
+      throw new PreflightError(`本地准备资源清理失败: ${errors[0]}`);
+    }
+    return Object.freeze(errors);
+  }
+
+  async [Symbol.asyncDispose](): Promise<void> {
+    await this.close();
+  }
+}
+
+export interface PrepareOptions {
+  readonly bindings?: ProjectBindings;
+  readonly downloadProviders?: DownloadProviderRegistry;
+  readonly packageCache?: PackageCache;
+  readonly signal?: AbortSignal;
+}
+
+/** 在首次 SSH 连接前解析并固定脚本、模板、私钥、秘密和下载工件。 */
+export async function prepareExecution(
+  plan: ExecutionPlan,
+  options: PrepareOptions = {},
+): Promise<PreparedExecution> {
+  validatePlanShape(plan);
+  throwIfAborted(options.signal);
+  const downloads = options.downloadProviders ?? new DownloadProviderRegistry();
+  const bindings = options.bindings ?? new ProjectBindings();
+  const directory = await Deno.makeTempDir({ prefix: "sfo-deploy-prepared-" });
+  await Deno.chmod(directory, 0o700);
+  const prepared = new Map<string, PreparedStep>();
+  const runtimeKinds = new Map<string, string>();
+  const privateKeys = new Map<string, string>();
+  const artifacts: VerifiedArtifact[] = [];
+  const planSteps: PlanStep[] = [];
+  const redactor = await operationRedactor(plan.steps, bindings);
+  try {
+    for (const [index, original] of plan.steps.entries()) {
+      throwIfAborted(options.signal);
+      if (prepared.has(original.id)) {
+        throw new PreflightError(`执行计划包含重复步骤 ID: ${original.id}`);
+      }
+      let stagedKey: string | undefined;
+      const key = original.machine.machine.sshPrivateKey;
+      if (key !== undefined) {
+        stagedKey = privateKeys.get(key);
+        if (!stagedKey) {
+          stagedKey = join(directory, `ssh-key-${privateKeys.size}`);
+          await copyStableLocalInput(key, stagedKey, "SSH 私钥");
+          privateKeys.set(key, stagedKey);
+        }
+      }
+      const scripts: ScriptInvocation[] = [];
+      for (const [scriptIndex, invocation] of original.scripts.entries()) {
+        const path = join(directory, `step-${index}-script-${scriptIndex}`);
+        await copyStableLocalInput(invocation.source, path, `步骤 ${original.id} 脚本`);
+        scripts.push(Object.freeze({ ...invocation, source: path }));
+      }
+      const templates = [];
+      for (const [templateIndex, template] of original.templates.entries()) {
+        const path = join(directory, `step-${index}-template-${templateIndex}`);
+        await copyStableLocalInput(template.source, path, `步骤 ${original.id} 模板`);
+        templates.push(Object.freeze({ ...template, source: path }));
+      }
+      const deliveryScripts: ScriptInvocation[] = [];
+      const rawDeliveryScripts = original.deliveryInputs?.scripts ?? original.bundleScripts ?? [];
+      for (const [scriptIndex, invocation] of rawDeliveryScripts.entries()) {
+        const path = join(directory, `step-${index}-delivery-script-${scriptIndex}`);
+        await copyStableLocalInput(invocation.source, path, `步骤 ${original.id} 部署包脚本`);
+        deliveryScripts.push(Object.freeze({ ...invocation, source: path }));
+      }
+      const deliveryFiles = [];
+      const rawDeliveryFiles = original.deliveryInputs?.files ??
+        (original.bundleScripts === undefined ? [] : original.templates);
+      for (const [fileIndex, file] of rawDeliveryFiles.entries()) {
+        const path = join(directory, `step-${index}-delivery-file-${fileIndex}`);
+        await copyStableLocalInput(file.source, path, `步骤 ${original.id} 部署包普通文件`);
+        deliveryFiles.push(Object.freeze({ ...file, source: path }));
+      }
+      const machine = Object.freeze({ ...original.machine.machine, sshPrivateKey: stagedKey });
+      const target = Object.freeze({ ...original.machine, machine });
+      const step: PlanStep = Object.freeze({
+        ...original,
+        machine: target,
+        scripts: Object.freeze(scripts),
+        templates: Object.freeze(templates),
+        deliveryInputs:
+          original.deliveryInputs === undefined && original.bundleScripts === undefined
+            ? undefined
+            : Object.freeze({
+              scripts: Object.freeze(deliveryScripts),
+              files: Object.freeze(deliveryFiles),
+            }),
+        bundleScripts: original.bundleScripts === undefined
+          ? undefined
+          : Object.freeze(deliveryScripts),
+        parameters: Object.freeze(structuredClone(original.parameters)),
+      });
+      let artifact: VerifiedArtifact | undefined;
+      if (needsPackage(step)) {
+        const packagePath = join(directory, `package-${index}.bin`);
+        const packageValue = step.package!;
+        if (options.packageCache) {
+          const policy: CachePolicy = plan.requestedAction === "deploy"
+            ? "local-only"
+            : "remote-fallback";
+          const metadata: PackageMetadata = {
+            kind: step.kind,
+            name: step.resource,
+            version: parameterVersion(step.parameters),
+            cluster: plan.cluster,
+          };
+          artifact = await options.packageCache.prepare(
+            packageValue,
+            packagePath,
+            policy,
+            metadata,
+            options.signal,
+          );
+        } else {
+          artifact = await downloads.fetchPackage(packageValue, packagePath, {}, options.signal);
+        }
+        if (step.kind === "app") {
+          await assertGzipTar(artifact.path, `步骤 ${step.id} 安装包`);
+        }
+        artifacts.push(artifact);
+      }
+      let deliveryBundle: BuiltDeploymentBundle | undefined;
+      if (step.kind === "app" && step.deliveryInputs !== undefined) {
+        const configs = [];
+        for (const config of step.management?.configs ?? []) {
+          configs.push(Object.freeze({
+            skeleton: await generateConfigSkeleton(config, step.parameters),
+            relativePath: configSkeletonKey(config),
+            mode: 0o600,
+          }));
+        }
+        const service = step.management?.service;
+        const unitConfig = service === undefined ? undefined : serviceUnitManagedConfig(service);
+        if (unitConfig !== undefined) {
+          configs.push(Object.freeze({
+            skeleton: generateSystemdUnitSkeleton(
+              unitConfig,
+              service!,
+              requiredManagedRunAs(step),
+            ),
+            relativePath: configSkeletonKey(unitConfig),
+            mode: 0o600,
+          }));
+        }
+        const bundleScripts = step.deliveryInputs.scripts.map((invocation) =>
+          Object.freeze({
+            source: invocation.source,
+            relativePath: invocation.relativePath,
+            mode: 0o700,
+          })
+        );
+        if (configs.some((config) => config.skeleton.format !== "systemd")) {
+          bundleScripts.push(Object.freeze({
+            source: REMOTE_CONFIG_UPDATER_SOURCE,
+            relativePath: REMOTE_CONFIG_UPDATER_BUNDLE_PATH,
+            mode: 0o700,
+          }));
+        }
+        deliveryBundle = await buildDeploymentBundle({
+          destination: join(directory, `bundle-${index}.tar.gz`),
+          package: artifact === undefined ? undefined : Object.freeze({
+            source: artifact.path,
+            expectedSha256: artifact.hashAlgorithm === "sha256" ? artifact.hashValue : undefined,
+          }),
+          scripts: bundleScripts,
+          configs,
+          ordinaryFiles: step.deliveryInputs.files.map((file) =>
+            Object.freeze({
+              source: file.source,
+              relativePath: file.relativePath,
+              mode: 0o600,
+            })
+          ),
+          signal: options.signal,
+        });
+      }
+      const runtime = step.machine.machine.scriptRuntime;
+      if (runtime.kind !== "deno" && runtime.kind !== "python") {
+        throw new PreflightError(`步骤 ${step.id} 使用不支持的脚本运行时: ${runtime.kind}`);
+      }
+      const machineName = step.machine.machine.name;
+      const existingRuntimeKind = runtimeKinds.get(machineName);
+      if (existingRuntimeKind === undefined) runtimeKinds.set(machineName, runtime.kind);
+      else if (existingRuntimeKind !== runtime.kind) {
+        throw new PreflightError(`机器 ${machineName} 在同一计划中混用了脚本运行时`);
+      }
+      prepared.set(
+        step.id,
+        Object.freeze({
+          step,
+          artifact,
+          deliveryBundle,
+          redactor,
+        }),
+      );
+      planSteps.push(step);
+    }
+    const preparedPlan = Object.freeze({ ...plan, steps: Object.freeze(planSteps) });
+    return new PreparedExecution(preparedPlan, prepared, directory);
+  } catch (cause) {
+    for (const artifact of artifacts) await artifact.cleanup().catch(() => undefined);
+    await Deno.remove(directory, { recursive: true }).catch(() => undefined);
+    throw cause;
+  }
+}
+
+function environmentPrepareState(
+  states: Map<string, PrepareState>,
+  key: string,
+  resource: string,
+): PrepareState {
+  let state = states.get(key);
+  if (state === undefined) {
+    state = { resource, upToDate: false };
+    states.set(key, state);
+  }
+  return state;
+}
+
+export interface ExecuteOptions extends PrepareOptions {
+  readonly transport?: Transport;
+  readonly knownHosts?: string;
+  readonly keepVersions?: number;
+  readonly onStep?: StepProgressListener;
+}
+
+export class DeploymentExecutor {
+  readonly transport: Transport;
+  readonly bindings: ProjectBindings;
+  readonly downloadProviders: DownloadProviderRegistry;
+  readonly packageCache?: PackageCache;
+  readonly keepVersions: number;
+  readonly onStep?: StepProgressListener;
+
+  constructor(
+    transport: Transport,
+    options: Omit<PrepareOptions, "signal"> & {
+      readonly keepVersions?: number;
+      readonly onStep?: StepProgressListener;
+    } = {},
+  ) {
+    this.transport = transport;
+    this.bindings = options.bindings ?? new ProjectBindings();
+    this.downloadProviders = options.downloadProviders ?? new DownloadProviderRegistry();
+    this.packageCache = options.packageCache;
+    const keepVersions = options.keepVersions ?? DEFAULT_KEEP_VERSIONS;
+    if (!Number.isInteger(keepVersions) || keepVersions < 1 || keepVersions > MAX_KEEP_VERSIONS) {
+      throw new PreflightError(`keep_versions 必须是 1-${MAX_KEEP_VERSIONS} 的整数`);
+    }
+    this.keepVersions = keepVersions;
+    this.onStep = options.onStep;
+  }
+
+  async execute(plan: ExecutionPlan, signal?: AbortSignal): Promise<DeploymentResult> {
+    const prepared = await prepareExecution(plan, {
+      bindings: this.bindings,
+      downloadProviders: this.downloadProviders,
+      packageCache: this.packageCache,
+      signal,
+    });
+    try {
+      const result = await this.executePrepared(prepared, signal);
+      try {
+        await prepared.close();
+        return result;
+      } catch (cause) {
+        const steps = [...result.steps];
+        const byStep = new Map(steps.map((step) => [step.stepId, step]));
+        if (steps.length > 0) {
+          appendCleanupError(steps, byStep, steps.at(-1)!.machine, errorText(cause));
+        }
+        return new DeploymentResult({
+          cluster: result.cluster,
+          requestedAction: result.requestedAction,
+          steps,
+          releaseId: result.releaseId,
+          sourceReleaseId: result.sourceReleaseId,
+        });
+      }
+    } catch (cause) {
+      await prepared.close(cause);
+      throw cause;
+    }
+  }
+
+  async executePrepared(
+    prepared: PreparedExecution,
+    signal?: AbortSignal,
+  ): Promise<DeploymentResult> {
+    if (!(prepared instanceof PreparedExecution) || prepared.closed) {
+      throw new PreflightError("PreparedExecution 无效或已关闭");
+    }
+    const plan = prepared.plan;
+    const results: StepResult[] = [];
+    const byStep = new Map<string, StepResult>();
+    const sessions = new Map<string, RemoteSession>();
+    const failedMachines = new Set<string>();
+    const runtimeChecked = new Set<string>();
+    const checks = new Map<string, EnvironmentCheckResult>();
+    const prepareStates = new Map<string, PrepareState>();
+    const prepareLastStepIndex = new Map<string, number>();
+    const installCheckIds = new Set(
+      plan.steps
+        .filter((step) => step.kind === "environment" && step.action === "install")
+        .flatMap((step) => [...step.dependsOn]),
+    );
+    if (plan.requestedAction === "prepare") {
+      plan.steps.forEach((step, index) => {
+        if (step.kind === "environment") {
+          prepareLastStepIndex.set(
+            `${step.machine.machine.name}\0${step.resource}`,
+            index,
+          );
+        }
+      });
+    }
+    let cancelled = signal?.aborted ?? false;
+
+    try {
+      for (const [index, step] of plan.steps.entries()) {
+        const machineName = step.machine.machine.name;
+        const prepareKey = `${machineName}\0${step.resource}`;
+        const prepareState = plan.requestedAction === "prepare" &&
+            step.kind === "environment"
+          ? environmentPrepareState(prepareStates, prepareKey, step.resource)
+          : undefined;
+        let result: StepResult | undefined;
+        if (cancelled || signal?.aborted) {
+          cancelled = true;
+          result = skipped(step, "cancelled", StepStatus.CANCELLED, "用户取消");
+        } else {
+          const blocked = step.dependsOn.filter((dependency) =>
+            !byStep.get(dependency)?.satisfiesDependency
+          );
+          const externalBlockers = blocked.filter((dependency) => {
+            const value = byStep.get(dependency);
+            return !value || value.machine !== machineName || value.kind !== step.kind ||
+              value.resource !== step.resource;
+          });
+          if (externalBlockers.length > 0) {
+            result = skipped(
+              step,
+              "dependency-failed",
+              StepStatus.BLOCKED,
+              `依赖未成功: ${externalBlockers.join(", ")}`,
+            );
+          } else if (failedMachines.has(machineName)) {
+            result = skipped(step, "target-fail-fast");
+          } else if (blocked.length > 0) {
+            result = skipped(
+              step,
+              "dependency-failed",
+              StepStatus.BLOCKED,
+              `依赖未成功: ${blocked.join(", ")}`,
+            );
+          } else if (
+            step.kind === "environment" && step.action === "install" &&
+            (checks.get(prepareKey) === EnvironmentCheckResult.SATISFIED ||
+              (prepareState?.upToDate ?? false))
+          ) {
+            result = skipped(step, prepareState?.upToDate ? "up-to-date" : "check-satisfied");
+          } else if (
+            step.kind === "environment" && plan.requestedAction === "prepare" &&
+            step.action === "configure" && prepareState?.upToDate
+          ) {
+            result = skipped(step, "up-to-date");
+          } else if (
+            plan.requestedAction === "prepare" && step.kind === "environment" &&
+            (step.action === "start" || step.action === "restart")
+          ) {
+            if (prepareState?.upToDate) result = skipped(step, "up-to-date");
+            else if (step.action === "start" && prepareState?.action !== "start") {
+              result = skipped(step, "using-restart");
+            } else if (step.action === "restart" && prepareState?.action !== "restart") {
+              result = skipped(step, "using-start");
+            }
+          }
+          if (result === undefined) {
+            let session = sessions.get(machineName);
+            try {
+              if (!session) {
+                session = await this.transport.connect(step.machine, signal);
+                sessions.set(machineName, session);
+              }
+              const acquireLock = session.acquireOperationLock;
+              const releaseLock = session.releaseOperationLock;
+              let operationLease: Awaited<ReturnType<NonNullable<typeof acquireLock>>> | undefined;
+              try {
+                if (managedLifecycleStep(step)) {
+                  if (acquireLock === undefined || releaseLock === undefined) {
+                    throw new PreflightError("远端会话不支持 managed App 目标操作锁");
+                  }
+                  operationLease = await acquireLock.call(session, {
+                    app: step.resource,
+                    target: machineName,
+                    timeoutMs: step.management?.service?.timeoutMs ?? 300_000,
+                  }, signal);
+                }
+                const workspace = await session.createWorkspace(signal);
+                if (
+                  prepareState !== undefined && step.action === "check" &&
+                  prepareState.previousVersion === undefined
+                ) {
+                  prepareState.previousVersion = await session.readEnvironmentVersion(
+                    step.resource,
+                    signal,
+                  );
+                }
+                let executionError: unknown;
+                try {
+                  result = await this.#executeStep(prepared.steps.get(step.id)!, {
+                    index,
+                    session,
+                    workspace,
+                    localDirectory: prepared.localDirectory,
+                    runtimeChecked,
+                    checks,
+                    checkCanInstall: installCheckIds.has(step.id),
+                    signal,
+                  });
+                } catch (cause) {
+                  executionError = cause;
+                }
+                try {
+                  await session.cleanupWorkspace(workspace, signal?.aborted ? undefined : signal);
+                } catch (cause) {
+                  const cleanup = safeRedact(
+                    prepared.steps.get(step.id)!.redactor,
+                    errorText(cause),
+                  );
+                  if (result) result = result.withCleanupError(cleanup);
+                  else if (executionError instanceof CancelledError) {
+                    executionError = new CancelledError(
+                      `${executionError.message}; 远端工作目录清理失败: ${cleanup}`,
+                      { cause: executionError },
+                    );
+                  } else if (executionError !== undefined) {
+                    executionError = new Error(
+                      `${
+                        safeRedact(prepared.steps.get(step.id)!.redactor, errorText(executionError))
+                      }; ` +
+                        `远端工作目录清理失败: ${cleanup}`,
+                      { cause: executionError },
+                    );
+                  } else executionError = cause;
+                }
+                if (executionError !== undefined) throw executionError;
+              } finally {
+                if (operationLease !== undefined) {
+                  await releaseLock!.call(session, operationLease);
+                }
+              }
+            } catch (cause) {
+              const redactor = prepared.steps.get(step.id)!.redactor;
+              const safeMessage = safeRedact(redactor, errorText(cause));
+              if (cause instanceof CancelledError || signal?.aborted) {
+                cancelled = true;
+                result = skipped(step, "cancelled", StepStatus.CANCELLED, "用户取消");
+              } else if (cause instanceof PreflightError) {
+                result = failed(step, safeMessage, "preflight");
+              } else {
+                result = failed(step, safeMessage);
+              }
+            }
+            if (result?.status === StepStatus.FAILED) failedMachines.add(machineName);
+          }
+        }
+        if (!result) result = failed(step, "执行器未生成步骤结果");
+        if (prepareState !== undefined && plan.requestedAction === "prepare") {
+          if (step.action === "check" && result.status === StepStatus.SUCCEEDED) {
+            const currentVersion = parameterVersion(step.parameters);
+            const satisfied = result.exitCode === 0;
+            prepareState.upToDate = satisfied && currentVersion !== undefined &&
+              prepareState.previousVersion !== undefined &&
+              prepareState.previousVersion === currentVersion;
+            prepareState.action = prepareState.previousVersion === undefined ? "start" : "restart";
+          }
+          if (
+            prepareLastStepIndex.get(prepareKey) === index && !prepareState.upToDate &&
+            (result.status === StepStatus.SUCCEEDED ||
+              (result.status === StepStatus.SKIPPED && result.skipReason !== "up-to-date"))
+          ) {
+            const currentVersion = parameterVersion(step.parameters);
+            const session = sessions.get(machineName);
+            if (currentVersion !== undefined && session !== undefined) {
+              try {
+                await session.writeEnvironmentVersion(step.resource, currentVersion, signal);
+              } catch (cause) {
+                result = failed(
+                  step,
+                  `环境应用版本标记写入失败: ${errorText(cause)}`,
+                  "preflight",
+                );
+              }
+            }
+          }
+        }
+        results.push(result);
+        byStep.set(step.id, result);
+        if (this.onStep !== undefined) {
+          await this.onStep({ step: result, index, total: plan.steps.length });
+        }
+      }
+    } finally {
+      for (const [machineName, session] of sessions) {
+        try {
+          await session.close();
+        } catch (cause) {
+          appendCleanupError(results, byStep, machineName, errorText(cause));
+        }
+      }
+    }
+    return new DeploymentResult({
+      cluster: plan.cluster,
+      requestedAction: plan.requestedAction,
+      steps: results,
+    });
+  }
+
+  async #executeStep(
+    prepared: PreparedStep,
+    options: {
+      readonly index: number;
+      readonly session: RemoteSession;
+      readonly workspace: string;
+      readonly localDirectory: string;
+      readonly runtimeChecked: Set<string>;
+      readonly checks: Map<string, EnvironmentCheckResult>;
+      readonly checkCanInstall: boolean;
+      readonly signal?: AbortSignal;
+    },
+  ): Promise<StepResult> {
+    const step = prepared.step;
+    const machine = step.machine.machine;
+    const runtime = machine.scriptRuntime;
+    const runtimeKey = `${machine.name}\0${runtime.kind}\0${runtime.executable}`;
+    const metadataRemote = `${options.workspace}/metadata-${options.index}.json`;
+    const cleanupErrors: string[] = [];
+    const outputs: CommandResult[] = [];
+    const service = step.kind === "app" &&
+        ["deploy", "activate", "configure", "start", "stop", "restart"].includes(step.action)
+      ? step.management?.service
+      : undefined;
+    const serviceUnit = service === undefined ? undefined : serviceUnitManagedConfig(service);
+    const managedConfigs = step.kind === "app" &&
+        (step.action === "deploy" || step.action === "configure" || step.action === "activate")
+      ? [...step.management?.configs ?? [], ...(serviceUnit ? [serviceUnit] : [])]
+      : [];
+    const runAs = step.kind === "app" &&
+        (step.management !== undefined || step.deployment?.kind === "versioned")
+      ? requiredManagedRunAs(step)
+      : undefined;
+    const secretNames = [...new Set([...step.secretValues, ...step.secretFiles])];
+    const lifecycleSecretNames = runAs === undefined ? secretNames : [
+      ...new Set([
+        ...(step.lifecycleSecretValues ?? secretNames),
+        ...(step.lifecycleSecretFiles ?? []),
+      ]),
+    ];
+    const needsLegacySecrets = runAs === undefined && secretNames.length > 0;
+    let secretCopyDir: string | undefined;
+    let staged: StagedDeploymentBundle | undefined;
+    let status = StepStatus.SUCCEEDED;
+    let message: string | undefined;
+    let errorCategory: string | undefined;
+    let exitCode: number | undefined = 0;
+    let changed: boolean | undefined;
+    let serviceResult: StepServiceResult | undefined;
+    let recoveryResult: StepRecoveryResult | undefined;
+    let bundleResult: StepBundleResult | undefined;
+    const staticCandidates: string[] = [];
+    try {
+      const stageBundle = options.session.stageDeploymentBundle;
+      const createBuiltinCandidate = options.session.createManagedConfigCandidate;
+      const publishConfigs = options.session.publishManagedConfigs;
+      const restoreConfigs = options.session.restoreManagedConfigs;
+      const commitConfigs = options.session.commitManagedConfigs;
+      const validateIdentity = options.session.validateManagedIdentity;
+      const createScopedSecrets = options.session.createScopedSecretCopy;
+      const cleanupScopedSecrets = options.session.cleanupScopedSecretCopy;
+      const extractAppPackage = options.session.extractAppPackage;
+      if (runAs !== undefined) {
+        if (
+          validateIdentity === undefined || createScopedSecrets === undefined ||
+          cleanupScopedSecrets === undefined
+        ) {
+          throw new PreflightError("远端会话不支持 managed App 身份或逐消费者秘密原语");
+        }
+        await validateIdentity.call(options.session, runAs, options.signal);
+      }
+      if (prepared.deliveryBundle !== undefined && stageBundle === undefined) {
+        throw new PreflightError("远端会话不支持单部署包暂存能力");
+      }
+      if (managedConfigs.length > 0) {
+        if (
+          createBuiltinCandidate === undefined || publishConfigs === undefined ||
+          restoreConfigs === undefined || commitConfigs === undefined
+        ) {
+          throw new PreflightError("远端会话不支持完整 managed config 事务能力");
+        }
+      }
+      if (prepared.deliveryBundle !== undefined) {
+        staged = await stageBundle!.call(options.session, prepared.deliveryBundle, {
+          workspace: options.workspace,
+          signal: options.signal,
+        });
+        bundleResult = Object.freeze({
+          sha256: staged.sha256,
+          size: prepared.deliveryBundle.size,
+          reused: staged.reused,
+        });
+      }
+      let extractedPackageRoot: string | undefined;
+      if (
+        runAs !== undefined &&
+        (step.action === "deploy" || step.action === "stage") &&
+        staged?.packagePath !== undefined
+      ) {
+        if (extractAppPackage === undefined) {
+          throw new PreflightError("远端会话不支持 App 内层包安全解包");
+        }
+        extractedPackageRoot = (await extractAppPackage.call(options.session, {
+          workspace: options.workspace,
+          packagePath: staged.packagePath,
+          runAs,
+          signal: options.signal,
+        })).root;
+      }
+      if (
+        step.kind === "app" &&
+        (step.action === "deploy" || step.action === "stage" || step.action === "activate") &&
+        step.deployment?.kind === "versioned"
+      ) {
+        if (runAs === undefined) {
+          throw new PreflightError("versioned App 发布缺少 run_as");
+        }
+        if (step.installDirectory === undefined) {
+          throw new PreflightError("versioned App 发布缺少 install_directory");
+        }
+        await options.session.run(
+          ["/usr/bin/install", "-d", "-m", "0750", "-o", runAs, "--", step.installDirectory],
+          { signal: options.signal, privileged: true },
+        );
+      }
+      if (!options.runtimeChecked.has(runtimeKey)) {
+        if (runtime.kind === "deno") {
+          await options.session.preflightDeno(runtime.executable, options.signal, 2);
+        } else await options.session.preflightPython(runtime.executable, options.signal);
+        options.runtimeChecked.add(runtimeKey);
+      }
+      if (managedConfigs.length > 0 && runtime.kind !== "deno") {
+        const updaterRuntimeKey = `${machine.name}\0deno\0deno`;
+        if (!options.runtimeChecked.has(updaterRuntimeKey)) {
+          await options.session.preflightDeno("deno", options.signal, 2);
+          options.runtimeChecked.add(updaterRuntimeKey);
+        }
+      }
+      if (needsLegacySecrets) {
+        const secretsDir = machine.secretsDir ?? DEFAULT_SECRETS_DIR;
+        secretCopyDir = await options.session.exposeStepSecrets(
+          secretNames,
+          secretsDir,
+          options.workspace,
+          options.signal,
+        );
+      }
+      if (lifecycleSecretNames.length > 0) {
+        const localLoader = runtime.kind === "deno" ? DENO_LOADER_SOURCE : PYTHON_LOADER_SOURCE;
+        const remoteLoader = `${options.workspace}/${
+          runtime.kind === "deno" ? DENO_LOADER_REMOTE_NAME : PYTHON_LOADER_REMOTE_NAME
+        }`;
+        await options.session.uploadFile(localLoader, remoteLoader, {
+          signal: options.signal,
+          mode: 0o600,
+        });
+      }
+      const metadata: Record<string, unknown> = {
+        machine: machine.name,
+        kind: step.kind,
+        resource: step.resource,
+        action: step.action,
+        parameters: structuredClone(step.parameters),
+      };
+      if (step.deployment !== undefined) metadata.deployment = step.deployment;
+      if (needsPackage(step)) {
+        if (!prepared.artifact) throw new PreflightError(`步骤 ${step.id} 缺少已准备下载工件`);
+        const remotePackage = staged?.packagePath ??
+          `${options.workspace}/package-${options.index}.bin`;
+        if (staged === undefined) {
+          await options.session.uploadFile(prepared.artifact.path, remotePackage, {
+            signal: options.signal,
+          });
+        }
+        metadata.package_path = extractedPackageRoot ?? remotePackage;
+        if (step.package) {
+          metadata.package_hash = Object.freeze({
+            algorithm: step.package.hashAlgorithm,
+            value: step.package.hashValue,
+          });
+        }
+      }
+      if (step.kind === "app" && step.installDirectory !== undefined) {
+        metadata.install_directory = step.installDirectory;
+      }
+      if (step.kind === "app" && (step.action === "deploy" || step.action === "stage")) {
+        if (extractedPackageRoot !== undefined) metadata.package_kind = "validated-directory";
+      }
+      if (step.kind === "app" && (step.action === "deploy" || step.action === "activate")) {
+        metadata.keep_versions = this.keepVersions;
+      }
+      if (
+        step.action === "configure" ||
+        (step.kind === "app" && (step.action === "deploy" || step.action === "activate"))
+      ) {
+        const remoteTemplates: Record<string, string> = {};
+        for (const [templateIndex, template] of step.templates.entries()) {
+          const remote = staged?.files.get(bundleFileKey(template.relativePath)) ??
+            `${options.workspace}/template-${options.index}-${templateIndex}`;
+          if (staged !== undefined && !staged.files.has(bundleFileKey(template.relativePath))) {
+            throw new PreflightError(`部署包缺少模板成员: ${template.relativePath}`);
+          }
+          if (staged === undefined) {
+            await options.session.uploadFile(template.source, remote, { signal: options.signal });
+          }
+          remoteTemplates[template.relativePath] = remote;
+        }
+        metadata.templates = remoteTemplates;
+      }
+      if (
+        step.kind === "app" &&
+        (step.action === "deploy" || step.action === "activate") &&
+        step.bundleScripts !== undefined
+      ) {
+        const remoteScripts: Record<string, string> = {};
+        for (const invocation of step.bundleScripts) {
+          const remote = staged?.scripts.get(bundleScriptKey(invocation.relativePath));
+          if (remote === undefined) {
+            throw new PreflightError(`部署包缺少 App 脚本成员: ${invocation.relativePath}`);
+          }
+          remoteScripts[invocation.relativePath] = remote;
+        }
+        metadata.scripts = remoteScripts;
+      }
+      const metadataLocal = await Deno.makeTempFile({
+        dir: options.localDirectory,
+        prefix: "step-metadata-",
+        suffix: ".json",
+      });
+      await Deno.chmod(metadataLocal, 0o600);
+      await Deno.writeTextFile(metadataLocal, JSON.stringify(metadata));
+      try {
+        await options.session.uploadFile(metadataLocal, metadataRemote, {
+          signal: options.signal,
+        });
+        const privileged = step.parameters.requires_privilege === true;
+        if (privileged) await options.session.preflightPrivilege(options.signal);
+        let invocationIndex = 0;
+        const executeInvocation = async (invocation: ScriptInvocation): Promise<CommandResult> => {
+          const member = staged?.scripts.get(bundleScriptKey(invocation.relativePath));
+          if (staged !== undefined && member === undefined) {
+            throw new PreflightError(`部署包缺少执行脚本成员: ${invocation.relativePath}`);
+          }
+          const remoteScript = member ??
+            `${options.workspace}/script-${options.index}-${invocationIndex++}.${
+              runtime.kind === "deno" ? "ts" : "py"
+            }`;
+          if (member === undefined) {
+            await options.session.uploadFile(invocation.source, remoteScript, {
+              signal: options.signal,
+              mode: 0o700,
+            });
+          }
+          let invocationSecrets: ScopedSecretCopy | undefined;
+          let command: CommandResult | undefined;
+          let invocationError: unknown;
+          try {
+            if (runAs !== undefined && lifecycleSecretNames.length > 0) {
+              invocationSecrets = await createScopedSecrets!.call(options.session, {
+                workspace: options.workspace,
+                sourceDirectory: machine.secretsDir ?? DEFAULT_SECRETS_DIR,
+                names: lifecycleSecretNames,
+                runAs,
+              }, options.signal);
+            }
+            const invocationSecretDir = invocationSecrets?.path ?? secretCopyDir;
+            command = runtime.kind === "deno"
+              ? await options.session.executeDeno(runtime.executable, remoteScript, {
+                workspace: options.workspace,
+                metadataPath: metadataRemote,
+                secretDir: invocationSecretDir,
+                permissions: invocation.permissions,
+                privileged: runAs === undefined ? privileged : undefined,
+                runAs,
+                signal: options.signal,
+              })
+              : await options.session.executePython(runtime.executable, remoteScript, {
+                metadataPath: metadataRemote,
+                secretDir: invocationSecretDir,
+                privileged: runAs === undefined ? privileged : undefined,
+                runAs,
+                signal: options.signal,
+              });
+          } catch (cause) {
+            invocationError = cause;
+          }
+          if (invocationSecrets !== undefined) {
+            try {
+              await cleanupScopedSecrets!.call(options.session, invocationSecrets);
+            } catch (cleanupCause) {
+              throw new TransportError("App 生命周期脚本秘密副本清理失败", {
+                cause: invocationError === undefined
+                  ? cleanupCause
+                  : new AggregateError([invocationError, cleanupCause]),
+              });
+            }
+          }
+          if (invocationError !== undefined) throw invocationError;
+          outputs.push(command!);
+          exitCode = command!.exitCode;
+          return command!;
+        };
+        const executeHooks = async (hook: AppManagementHook): Promise<void> => {
+          for (const invocation of step.management?.hooks.get(hook) ?? []) {
+            const command = await executeInvocation(invocation);
+            if (command.exitCode !== 0) {
+              throw new TransportError(`App hook ${hook} 退出码为 ${command.exitCode}`);
+            }
+          }
+        };
+        const before = actionHook(step.action, "before");
+        if (before !== undefined) await executeHooks(before);
+        for (const invocation of step.scripts) {
+          const command = await executeInvocation(invocation);
+          if (step.kind === "environment" && step.action === "check" && command.exitCode !== 0) {
+            options.checks.set(
+              `${machine.name}\0${step.resource}`,
+              EnvironmentCheckResult.UNSATISFIED,
+            );
+            if (options.checkCanInstall) message = "环境检查未满足，将执行 install";
+            else {
+              status = StepStatus.FAILED;
+              message = "环境依赖检查未满足；定向部署不会自动安装依赖，请先运行 sfo-deploy prepare";
+            }
+            break;
+          }
+          if (command.exitCode !== 0) {
+            status = StepStatus.FAILED;
+            message = `脚本退出码为 ${command.exitCode}`;
+            break;
+          }
+        }
+        if (status === StepStatus.SUCCEEDED && step.kind === "app") {
+          let publications: readonly ManagedConfigPublication[] = Object.freeze([]);
+          let systemdBefore: SystemdState | undefined;
+          let systemdAttempted = false;
+          try {
+            if (
+              (step.action === "deploy" || step.action === "activate") &&
+              managedConfigs.length > 0
+            ) {
+              await executeHooks("before_configure");
+            }
+            if (service !== undefined) {
+              systemdBefore = await inspectSystemd(options.session, service, options.signal);
+            }
+            if (managedConfigs.length > 0) {
+              if (staged === undefined || runAs === undefined) {
+                throw new PreflightError("managed config 缺少部署包或 run_as");
+              }
+              const needsUpdater = managedConfigs.some((config) => config.format !== "systemd");
+              const updaterScript = needsUpdater
+                ? staged.scripts.get(REMOTE_CONFIG_UPDATER_BUNDLE_PATH)
+                : undefined;
+              if (needsUpdater && updaterScript === undefined) {
+                throw new PreflightError("部署包缺少框架配置更新器");
+              }
+              const candidates = [];
+              for (const config of managedConfigs) {
+                const skeletonKey = configSkeletonKey(config);
+                const skeleton = staged.configSkeletons.get(skeletonKey);
+                const bindings = staged.configBindings.get(`${skeletonKey}.bindings.json`);
+                if (skeleton === undefined || bindings === undefined) {
+                  throw new PreflightError(`部署包缺少配置骨架或绑定: ${config.name}`);
+                }
+                let candidate;
+                if (config.format === "systemd") {
+                  const candidatePath =
+                    `${options.workspace}/managed-unit-candidate-${crypto.randomUUID()}`;
+                  staticCandidates.push(candidatePath);
+                  const copied = await options.session.run(
+                    ["cp", "--", skeleton, candidatePath],
+                    { signal: options.signal },
+                  );
+                  if (copied.exitCode !== 0) {
+                    await options.session.run(["rm", "-f", "--", candidatePath]).catch(() =>
+                      undefined
+                    );
+                    throw new TransportError(`创建 ${config.name} 候选失败`);
+                  }
+                  candidate = Object.freeze({
+                    name: config.name,
+                    workspace: options.workspace,
+                    path: candidatePath,
+                  });
+                } else {
+                  const configSecrets = managedConfigValueSecretNames(config);
+                  const scopedSecrets = await createScopedSecrets!.call(options.session, {
+                    workspace: options.workspace,
+                    sourceDirectory: machine.secretsDir ?? DEFAULT_SECRETS_DIR,
+                    names: configSecrets,
+                    runAs,
+                  }, options.signal);
+                  let candidateError: unknown;
+                  try {
+                    candidate = await createBuiltinCandidate!.call(options.session, {
+                      name: config.name,
+                      workspace: options.workspace,
+                      updaterScript: updaterScript!,
+                      denoExecutable: runtime.kind === "deno" ? runtime.executable : "deno",
+                      format: config.format,
+                      skeleton,
+                      bindings,
+                      secretDir: scopedSecrets.path,
+                      secretRoot: machine.secretsDir ?? DEFAULT_SECRETS_DIR,
+                      fileSecrets: managedConfigFileSecretNames(config),
+                      runAs,
+                      timeoutMs: service?.timeoutMs,
+                    }, options.signal);
+                  } catch (cause) {
+                    candidateError = cause;
+                  }
+                  try {
+                    await cleanupScopedSecrets!.call(options.session, scopedSecrets);
+                  } catch (cleanupCause) {
+                    throw new TransportError(`配置 ${config.name} 的秘密副本清理失败`, {
+                      cause: candidateError === undefined
+                        ? cleanupCause
+                        : new AggregateError([candidateError, cleanupCause]),
+                    });
+                  }
+                  if (candidateError !== undefined) throw candidateError;
+                }
+                candidates.push(Object.freeze({
+                  candidate: candidate!,
+                  target: config.target,
+                  mode: config.mode,
+                  owner: config.owner,
+                  group: config.group,
+                  validator: config.validator,
+                  runAs,
+                  secretRoot: machine.secretsDir ?? DEFAULT_SECRETS_DIR,
+                  secretFiles: managedConfigFileSecretNames(config),
+                }));
+              }
+              publications = await publishConfigs!.call(
+                options.session,
+                candidates,
+                options.signal,
+              );
+              if (step.action === "deploy" || step.action === "activate") {
+                await executeHooks("after_configure");
+              }
+            }
+            if (managedConfigs.length > 0) {
+              changed = publications.some((publication) =>
+                publication.changed || publication.serviceChange
+              );
+            }
+            if (service !== undefined && systemdBefore !== undefined) {
+              systemdAttempted = true;
+              const convergence = await convergeSystemd(
+                options.session,
+                service,
+                {
+                  operation: (step.action === "activate" ? "deploy" : step.action) as
+                    | "deploy"
+                    | "configure"
+                    | "start"
+                    | "stop"
+                    | "restart",
+                  changed: changed ?? false,
+                  configAction: mergedConfigAction(managedConfigs, publications),
+                },
+                systemdBefore,
+                options.signal,
+              );
+              serviceResult = Object.freeze({
+                unit: service.unit,
+                action: convergence.action,
+                daemonReloaded: convergence.daemonReloaded,
+                enableAction: convergence.enableAction,
+                before: Object.freeze({
+                  enabled: convergence.before.enabled,
+                  active: convergence.before.active,
+                }),
+                after: Object.freeze({
+                  enabled: convergence.after.enabled,
+                  active: convergence.after.active,
+                }),
+              });
+            }
+            const after = actionHook(step.action, "after");
+            if (after !== undefined) await executeHooks(after);
+          } catch (cause) {
+            const recoveryErrors: unknown[] = [];
+            const configRecoveryAttempted = publications.some((publication) => publication.changed);
+            for (const candidate of staticCandidates) {
+              await options.session.run(["rm", "-f", "--", candidate], {
+                signal: options.signal,
+              }).catch(() => undefined);
+            }
+            if (configRecoveryAttempted) {
+              try {
+                await restoreConfigs!.call(options.session, publications);
+              } catch (recovery) {
+                recoveryErrors.push(recovery);
+              }
+            }
+            if (systemdAttempted && service !== undefined && systemdBefore !== undefined) {
+              try {
+                await restoreSystemd(
+                  options.session,
+                  service,
+                  systemdBefore,
+                  service.daemonReload,
+                );
+              } catch (recovery) {
+                recoveryErrors.push(recovery);
+              }
+            }
+            recoveryResult = Object.freeze({
+              attempted: configRecoveryAttempted || systemdAttempted,
+              succeeded: recoveryErrors.length === 0,
+              configAttempted: configRecoveryAttempted,
+              serviceAttempted: systemdAttempted,
+            });
+            if (recoveryErrors.length > 0) {
+              throw new TransportError("managed App 执行失败且恢复不完整", {
+                cause: new AggregateError([cause, ...recoveryErrors]),
+              });
+            }
+            throw cause;
+          }
+          if (publications.length > 0) {
+            try {
+              await commitConfigs!.call(options.session, publications, options.signal);
+            } catch (cause) {
+              cleanupErrors.push(
+                safeRedact(prepared.redactor, `配置备份清理失败: ${errorText(cause)}`),
+              );
+            }
+            message = publications.some((publication) => publication.changed)
+              ? "managed 配置已更新"
+              : "managed 配置 unchanged";
+          }
+        }
+        if (
+          step.kind === "environment" && step.action === "check" &&
+          status === StepStatus.SUCCEEDED &&
+          outputs.every((output) => output.exitCode === 0)
+        ) {
+          options.checks.set(`${machine.name}\0${step.resource}`, EnvironmentCheckResult.SATISFIED);
+          message = "环境检查已满足";
+        }
+      } finally {
+        try {
+          await Deno.remove(metadataLocal);
+        } catch (cause) {
+          cleanupErrors.push(safeRedact(prepared.redactor, errorText(cause)));
+        }
+      }
+    } catch (cause) {
+      if (cause instanceof CancelledError) throw cause;
+      status = StepStatus.FAILED;
+      message = safeRedact(prepared.redactor, errorText(cause));
+      errorCategory = cause instanceof PreflightError ? "preflight" : undefined;
+      if (step.kind === "environment" && step.action === "check") {
+        options.checks.set(`${machine.name}\0${step.resource}`, EnvironmentCheckResult.FAILED);
+      }
+    } finally {
+      try {
+        await options.session.removeFile(
+          metadataRemote,
+          options.signal?.aborted ? undefined : options.signal,
+        );
+      } catch (cause) {
+        cleanupErrors.push(safeRedact(prepared.redactor, errorText(cause)));
+      }
+    }
+    if (cleanupErrors.length > 0 && status === StepStatus.SUCCEEDED) status = StepStatus.FAILED;
+    return new StepResult({
+      stepId: step.id,
+      machine: machine.name,
+      kind: step.kind,
+      resource: step.resource,
+      action: step.action,
+      status,
+      exitCode,
+      stdout: safeOutput(prepared.redactor, outputs.map((output) => output.stdout).join("")),
+      stderr: safeOutput(prepared.redactor, outputs.map((output) => output.stderr).join("")),
+      message,
+      errorCategory,
+      cleanupErrors,
+      changed,
+      service: serviceResult,
+      recovery: recoveryResult,
+      bundle: bundleResult,
+    });
+  }
+}
+
+export async function executePlan(
+  plan: ExecutionPlan,
+  options: ExecuteOptions = {},
+): Promise<DeploymentResult> {
+  const transport = options.transport ?? new OpenSshTransport({ knownHosts: options.knownHosts });
+  return await new DeploymentExecutor(transport, options).execute(plan, options.signal);
+}
+
+export async function executePrepared(
+  prepared: PreparedExecution,
+  transport: Transport,
+  signal?: AbortSignal,
+  onStep?: StepProgressListener,
+): Promise<DeploymentResult> {
+  return await new DeploymentExecutor(transport, { onStep }).executePrepared(prepared, signal);
+}
+
+export function needsPackage(step: PlanStep): boolean {
+  return step.package !== undefined &&
+    ((step.kind === "environment" && step.action === "install") ||
+      (step.kind === "app" && (step.action === "deploy" || step.action === "stage")));
+}
+
+function parameterVersion(
+  parameters: Readonly<Record<string, unknown>>,
+): string | undefined {
+  const value = parameters.version;
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  return undefined;
+}
+
+async function operationRedactor(
+  steps: readonly PlanStep[],
+  bindings: ProjectBindings,
+): Promise<Redactor> {
+  try {
+    const valueNames = [...new Set(steps.flatMap((step) => [...step.secretValues]))].sort();
+    const fileNames = [...new Set(steps.flatMap((step) => [...step.secretFiles]))].sort();
+    const values = await bindings.selectConfigSecrets(valueNames);
+    const sensitive = Object.values(values);
+    const decoder = new TextDecoder();
+    for (const name of fileNames) {
+      const bytes = await bindings.fileSecret(name);
+      if (bytes.byteLength > 0) sensitive.push(decoder.decode(bytes));
+    }
+    return new Redactor(sensitive);
+  } catch {
+    const redactor = new Redactor();
+    UNSAFE_REDACTORS.add(redactor);
+    return redactor;
+  }
+}
+
+function safeRedact(redactor: Redactor, text: string): string {
+  try {
+    return redactor.redact(text);
+  } catch {
+    return "";
+  }
+}
+
+function safeOutput(redactor: Redactor, text: string): string {
+  return UNSAFE_REDACTORS.has(redactor) ? "" : safeRedact(redactor, text);
+}
+
+function configSkeletonKey(config: ManagedConfigFile): string {
+  return `${config.name}.skeleton`;
+}
+
+function bundleScriptKey(path: string): string {
+  return path.startsWith("scripts/") ? path.slice("scripts/".length) : path;
+}
+
+function bundleFileKey(path: string): string {
+  return path.startsWith("files/") ? path.slice("files/".length) : path;
+}
+
+function actionHook(
+  action: string,
+  position: "before" | "after",
+): AppManagementHook | undefined {
+  if (
+    action !== "install" && action !== "configure" && action !== "deploy" && action !== "start" &&
+    action !== "stop" && action !== "restart"
+  ) return undefined;
+  return `${position}_${action}` as AppManagementHook;
+}
+
+function managedLifecycleStep(step: PlanStep): boolean {
+  return step.kind === "app" &&
+    (
+      (step.management !== undefined &&
+        ["deploy", "configure", "start", "stop", "restart", "rollback", "activate"].includes(
+          step.action,
+        )) ||
+      (step.deployment?.kind === "versioned" && ["stage", "activate"].includes(step.action))
+    );
+}
+
+function requiredManagedRunAs(step: PlanStep): string {
+  const declared = step.management?.runAs;
+  const value = step.runAs ?? declared;
+  if (
+    typeof value !== "string" || value === "root" ||
+    !/^[a-z_][a-z0-9_-]{0,31}\$?$/u.test(value) ||
+    (declared !== undefined && declared !== value)
+  ) {
+    throw new PreflightError(`managed App ${step.resource} 缺少或包含不一致的 run_as`);
+  }
+  return value;
+}
+
+function managedConfigValueSecretNames(config: ManagedConfigFile): readonly string[] {
+  return Object.freeze(
+    [...config.secretReferences.entries()]
+      .filter(([, reference]) => reference.kind === "value")
+      .map(([name]) => name)
+      .sort(),
+  );
+}
+
+function managedConfigFileSecretNames(config: ManagedConfigFile): readonly string[] {
+  return Object.freeze(
+    [...config.secretReferences.entries()]
+      .filter(([, reference]) => reference.kind === "file")
+      .map(([name]) => name)
+      .sort(),
+  );
+}
+
+function mergedConfigAction(
+  configs: readonly ManagedConfigFile[],
+  publications: readonly ManagedConfigPublication[],
+): ManagedConfigChangeAction {
+  const changed = new Set(
+    publications.filter((publication) => publication.changed || publication.serviceChange)
+      .map((publication) => publication.name),
+  );
+  const actions = configs.filter((config) => changed.has(config.name)).map((config) =>
+    config.onChange
+  );
+  if (actions.includes("restart")) return "restart";
+  if (actions.includes("reload")) return "reload";
+  return "none";
+}
+
+async function copyStableLocalInput(
+  source: string,
+  destination: string,
+  label: string,
+): Promise<void> {
+  let input: Deno.FsFile | undefined;
+  let output: Deno.FsFile | undefined;
+  try {
+    const beforePath = await Deno.lstat(source);
+    if (
+      !beforePath.isFile || beforePath.isSymlink ||
+      (beforePath.nlink !== null && beforePath.nlink !== 1)
+    ) {
+      throw new PreflightError(`${label}必须是非链接普通文件`);
+    }
+    input = await Deno.open(source, { read: true });
+    const before = await input.stat();
+    if (!sameSnapshot(beforePath, before)) throw new PreflightError(`${label}在打开期间发生变化`);
+    output = await Deno.open(destination, { write: true, createNew: true, mode: 0o600 });
+    const buffer = new Uint8Array(64 * 1024);
+    while (true) {
+      const count = await input.read(buffer);
+      if (count === null) break;
+      let offset = 0;
+      while (offset < count) offset += await output.write(buffer.subarray(offset, count));
+    }
+    await output.sync();
+    const after = await input.stat();
+    const afterPath = await Deno.lstat(source);
+    if (!sameSnapshot(before, after) || !sameSnapshot(after, afterPath)) {
+      throw new PreflightError(`${label}在固定期间发生变化`);
+    }
+    await Deno.chmod(destination, 0o600);
+  } catch (cause) {
+    output?.close();
+    output = undefined;
+    input?.close();
+    input = undefined;
+    await Deno.remove(destination).catch(() => undefined);
+    if (cause instanceof PreflightError) throw cause;
+    throw new PreflightError(`固定${label}失败`, { cause });
+  } finally {
+    output?.close();
+    input?.close();
+  }
+}
+
+function sameSnapshot(left: Deno.FileInfo, right: Deno.FileInfo): boolean {
+  return left.dev === right.dev && left.ino === right.ino && left.nlink === right.nlink &&
+    left.size === right.size && left.mtime?.getTime() === right.mtime?.getTime() &&
+    left.ctime?.getTime() === right.ctime?.getTime();
+}
+
+function validatePlanShape(plan: ExecutionPlan): void {
+  if (
+    !plan || typeof plan !== "object" ||
+    (plan.schemaVersion !== 3 && plan.schemaVersion !== 4) || !Array.isArray(plan.steps)
+  ) {
+    throw new TypeError("plan 必须是 schemaVersion=3/4 的 ExecutionPlan");
+  }
+}
+
+function skipped(
+  step: PlanStep,
+  skipReason: string,
+  status = StepStatus.SKIPPED,
+  message?: string,
+): StepResult {
+  return new StepResult({
+    stepId: step.id,
+    machine: step.machine.machine.name,
+    kind: step.kind,
+    resource: step.resource,
+    action: step.action,
+    status,
+    skipReason,
+    message,
+  });
+}
+
+function failed(step: PlanStep, message: string, errorCategory?: string): StepResult {
+  return new StepResult({
+    stepId: step.id,
+    machine: step.machine.machine.name,
+    kind: step.kind,
+    resource: step.resource,
+    action: step.action,
+    status: StepStatus.FAILED,
+    message,
+    errorCategory,
+  });
+}
+
+function appendCleanupError(
+  results: StepResult[],
+  byStep: Map<string, StepResult>,
+  machine: string,
+  message: string,
+): void {
+  for (let index = results.length - 1; index >= 0; index--) {
+    if (results[index].machine !== machine) continue;
+    const updated = results[index].withCleanupError(message);
+    results[index] = updated;
+    byStep.set(updated.stepId, updated);
+    return;
+  }
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new CancelledError("部署已取消");
+}
+
+function errorText(cause: unknown): string {
+  return cause instanceof Error ? cause.message : String(cause);
+}

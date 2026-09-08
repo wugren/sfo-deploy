@@ -1,0 +1,125 @@
+schema_version: 1
+task_manifest: task.yaml
+risk_profile: risk-profile.yaml
+api_impact:
+  public_api: none
+  crate_root_export_change: false
+  build_surface_change: false
+  documentation_examples_affected: true
+evidence_inputs: [
+  "src/ssh_install.ts",
+  "src/integration.ts",
+  "src/cli.ts",
+  "tests/_support/fake_session.ts",
+  "tests/unit/ssh_install.test.ts",
+  "tests/unit/install_deno_cli.test.ts",
+  "tests/dv/install_deno.test.ts",
+  "tests/integration/install_deno_cli.test.ts",
+  "tests/contract/verify_install_deno_contract.ts",
+  "README.md",
+  "docs/versions/v0.1/modules/sfo-deploy/044-install-deno-pinned-verified/testplan.yaml",
+]
+contract_checks:
+  mode: enabled
+  steps:
+    - id: docs-contract
+      kind: documentation-examples
+      assertion: documentation-examples-compile
+      name: 验证 README/指南/示例 README 的 install-deno 示例与行为说明一致
+      change_ids: ["CHG-install-deno-latest-verified"]
+      run: ["deno", "run", "--allow-read", "tests/contract/verify_install_deno_contract.ts"]
+defaults:
+  workdir: .
+  timeout_sec: 600
+  env: {}
+manual_gaps:
+  - id: real-ssh-install
+    owner: sfo-deploy 维护者与具备隔离 Linux 目标机的运维人员
+    reason: 当前仓库没有可安全修改的真实 SSH 目标机、受信任 host key 与可提权身份
+    acceptance_impact: 自动测试用 FakeSession 验证编排、URL、校验分支和结果语义；真实发行版工具链与网络行为需要受控环境验证
+  - id: latest-release-race
+    owner: sfo-deploy 维护者
+    reason: 无法在自动测试中稳定模拟两次 GitHub 下载之间发布新版本的竞态
+    acceptance_impact: 设计与脚本依赖同一 Release 的同名校验文件，竞态会因 sha256sum 不匹配 fail-closed 并可重跑
+levels:
+  unit:
+    mode: enabled
+    summary: 覆盖版本归一化、latest/显式版本、升级/跳过、校验失败、URL 与安全脚本形态。
+    test_targets: ["tests/unit/ssh_install.test.ts", "tests/unit/install_deno_cli.test.ts"]
+    preconditions:
+      tools: ["deno>=2"]
+      env: []
+      services: []
+      notes: ["远端 shell、下载与安装行为由 FakeSession 替身模拟。"]
+    steps:
+      - id: U1
+        name: install-deno 远端引导版本与校验语义
+        change_ids: ["CHG-install-deno-latest-verified"]
+        run: [
+          "deno",
+          "test",
+          "--allow-read",
+          "--allow-write",
+          "--allow-env",
+          "tests/unit/ssh_install.test.ts",
+        ]
+      - id: U2
+        name: install-deno CLI 帮助与 JSON 结果回归
+        change_ids: ["CHG-install-deno-latest-verified"]
+        run: [
+          "deno",
+          "test",
+          "--allow-read",
+          "--allow-write",
+          "--allow-env",
+          "tests/unit/install_deno_cli.test.ts",
+        ]
+  dv:
+    mode: enabled
+    summary: 使用临时集群与 FakeTransport 验证 run() 主流程、最新版跳过、升级、失败与关闭。
+    test_targets: ["tests/dv/install_deno.test.ts"]
+    preconditions:
+      tools: ["deno>=2"]
+      env: []
+      services: []
+      notes: ["集群配置写入临时目录，SSH 会话由 FakeTransport 注入。"]
+    steps:
+      - id: D1
+        name: install-deno run() 全链生命周期与失败
+        change_ids: ["CHG-install-deno-latest-verified"]
+        run: [
+          "deno",
+          "test",
+          "--allow-read",
+          "--allow-write",
+          "--allow-env",
+          "tests/dv/install_deno.test.ts",
+        ]
+  integration:
+    mode: enabled
+    summary: 验证公开 CLI 动作、模块导出、JSON 输出和文档契约。
+    test_targets: [
+      "tests/integration/install_deno_cli.test.ts",
+      "tests/contract/verify_install_deno_contract.ts",
+    ]
+    preconditions:
+      tools: ["deno>=2"]
+      env: []
+      services: []
+      notes: ["CLI 使用注入 runAction；文档契约只读取仓库文件。"]
+    steps:
+      - id: I1
+        name: install-deno 公开动作/导出/JSON 输出契约
+        change_ids: ["CHG-install-deno-latest-verified"]
+        run: [
+          "deno",
+          "test",
+          "--allow-read",
+          "--allow-write",
+          "--allow-env",
+          "tests/integration/install_deno_cli.test.ts",
+        ]
+      - id: I2
+        name: install-deno 文档示例与信任边界契约
+        change_ids: ["CHG-install-deno-latest-verified"]
+        run: ["deno", "run", "--allow-read", "tests/contract/verify_install_deno_contract.ts"]

@@ -1,0 +1,150 @@
+schema_version: 1
+task_manifest: task.yaml
+risk_profile: risk-profile.yaml
+api_impact:
+  public_api: backward-compatible
+  crate_root_export_change: false
+  build_surface_change: false
+  documentation_examples_affected: true
+evidence_inputs: [
+  "src/cli.ts",
+  "src/integration.ts",
+  "src/execution.ts",
+  "src/results.ts",
+  "tests/unit/cli_human_output.test.ts",
+  "tests/unit/transport_cli.test.ts",
+  "tests/unit/install_deno_cli.test.ts",
+  "tests/unit/env_prepare_cli.test.ts",
+  "tests/integration/env_prepare_cli.test.ts",
+  "tests/dv/execution.test.ts",
+  "tests/integration/fetch_package.test.ts",
+  "tests/integration/install_deno_cli.test.ts",
+  "tests/contract/verify_cli_output_docs.ts",
+  "README.md",
+  "docs/versions/v0.1/modules/sfo-deploy/036-cli-human-readable-output/testplan.yaml",
+]
+contract_checks:
+  mode: enabled
+  steps:
+    - id: C1
+      kind: repository-compile-closure
+      assertion: repository-consumers-compile
+      name: 生产与测试文件 deno check 编译闭包
+      change_ids: ["CHG-cli-step-human-output", "CHG-cli-json-flag", "CHG-cli-output-docs"]
+      run: [
+        "deno",
+        "check",
+        "--frozen",
+        "src/mod.ts",
+        "src/main.ts",
+        "src/cli.ts",
+        "tests/unit/cli_human_output.test.ts",
+        "tests/dv/execution.test.ts",
+      ]
+    - id: C2
+      kind: documentation-examples
+      assertion: documentation-examples-compile
+      name: README 与帮助文本的输出契约示例
+      change_ids: ["CHG-cli-step-human-output", "CHG-cli-json-flag", "CHG-cli-output-docs"]
+      run: ["deno", "run", "--allow-read", "tests/contract/verify_cli_output_docs.ts"]
+defaults:
+  workdir: .
+  timeout_sec: 600
+  env: {}
+manual_gaps:
+  - id: real-multipass-prepare
+    owner: sfo-deploy 维护者与具备 multipass 目标机的用户
+    reason: 自动化环境不持有 multipass 机器、镜像与受信主机密钥；用户现场命令已在既有环境冒烟通过（check 通过、install/configure 跳过）
+    acceptance_impact: 自动测试以注入 runAction/内存传输验证渲染与事件契约，不证明具体发行版 deep 远端行为
+levels:
+  unit:
+    mode: enabled
+    summary: 覆盖 --json 解析、默认人可读渲染、错误模式、脱敏、帮助与 README 契约。
+    test_targets: [
+      "tests/unit/cli_human_output.test.ts",
+      "tests/unit/transport_cli.test.ts",
+      "tests/unit/install_deno_cli.test.ts",
+    ]
+    preconditions:
+      tools: ["deno>=2"]
+      env: []
+      services: []
+      notes: ["CLI 输出使用注入的 runAction 与 BufferWriter。"]
+    steps:
+      - id: U1
+        name: 默认人可读输出、--json、帮助与 README 契约
+        change_ids: ["CHG-cli-step-human-output", "CHG-cli-json-flag", "CHG-cli-output-docs"]
+        run: [
+          "deno",
+          "test",
+          "--allow-read",
+          "--allow-write",
+          "--allow-env",
+          "--allow-net",
+          "--allow-run",
+          "tests/unit/cli_human_output.test.ts",
+        ]
+      - id: U2
+        name: 错误分类、脱敏与稳定 JSON 退出码回归
+        change_ids: ["CHG-cli-json-flag"]
+        run: [
+          "deno",
+          "test",
+          "--allow-read",
+          "--allow-write",
+          "--allow-env",
+          "--allow-net",
+          "--allow-run",
+          "tests/unit/transport_cli.test.ts",
+          "tests/unit/install_deno_cli.test.ts",
+        ]
+  dv:
+    mode: enabled
+    summary: 覆盖 DeploymentExecutor 步骤事件的顺序、失败/跳过与取消路径。
+    test_targets: ["tests/dv/execution.test.ts"]
+    preconditions:
+      tools: ["deno>=2"]
+      env: []
+      services: []
+      notes: ["使用内存传输与临时集群，不连接真实 SSH。"]
+    steps:
+      - id: D1
+        name: onStep 事件顺序与成功/失败/跳过/取消覆盖
+        change_ids: ["CHG-cli-step-human-output", "CHG-cli-json-flag"]
+        run: [
+          "deno",
+          "test",
+          "--allow-read",
+          "--allow-write",
+          "--allow-env",
+          "--allow-net",
+          "--allow-run",
+          "tests/dv/execution.test.ts",
+        ]
+  integration:
+    mode: enabled
+    summary: 覆盖 fetch 与 install-deno 在 --json 下的 stdout 契约与错误退出码。
+    test_targets: [
+      "tests/integration/fetch_package.test.ts",
+      "tests/integration/install_deno_cli.test.ts",
+    ]
+    preconditions:
+      tools: ["deno>=2"]
+      env: []
+      services: []
+      notes: ["缓存与传输使用替身，避免外网依赖。"]
+    steps:
+      - id: I1
+        name: fetch/install-deno --json 输出契约
+        change_ids: ["CHG-cli-json-flag", "CHG-cli-step-human-output"]
+        run: [
+          "deno",
+          "test",
+          "--allow-read",
+          "--allow-write",
+          "--allow-env",
+          "--allow-net",
+          "--allow-run",
+          "tests/integration/fetch_package.test.ts",
+          "tests/integration/install_deno_cli.test.ts",
+        ]

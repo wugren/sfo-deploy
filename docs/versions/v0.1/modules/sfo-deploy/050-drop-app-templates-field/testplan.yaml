@@ -1,0 +1,181 @@
+schema_version: 1
+task_manifest: task.yaml
+risk_profile: risk-profile.yaml
+api_impact:
+  public_api: breaking
+  crate_root_export_change: false
+  build_surface_change: false
+  documentation_examples_affected: true
+evidence_inputs: ["src", "tests", "README.md", "docs/guides/sfo-deploy-cluster-configuration.md"]
+contract_checks:
+  mode: enabled
+  steps:
+    - id: new-path-load-accepts
+      kind: external-positive
+      assertion: new-path-compiles
+      name: 新路径装载：app.yaml/environment.yaml 不含顶层 templates，management.configs 模板交付装载成功
+      change_ids: [
+        "CHG-templates-config-load",
+        "CHG-templates-planning-serialization",
+        "CHG-templates-docs-tests",
+      ]
+      run: [
+        "deno",
+        "test",
+        "--allow-read",
+        "--allow-write",
+        "--allow-env",
+        "--allow-net",
+        "--allow-run",
+        "tests/unit/app_management_config.test.ts",
+      ]
+    - id: old-path-load-rejected
+      kind: external-negative
+      assertion: old-path-rejected-for-removed-symbol
+      name: 旧路径拒收：app.yaml/环境定义顶层 templates 装载即定向报错（指引改用 management.configs）
+      change_ids: ["CHG-templates-config-load", "CHG-templates-docs-tests"]
+      run: [
+        "deno",
+        "test",
+        "--allow-read",
+        "--allow-write",
+        "--allow-env",
+        "--allow-net",
+        "--allow-run",
+        "tests/unit/app_management_config.test.ts",
+      ]
+    - id: removed-symbol-scan
+      kind: removed-symbol-scan
+      assertion: no-unallowlisted-old-symbol-references
+      name: 已删除顶层 templates/方法符号仓库级消费者扫描
+      change_ids: [
+        "CHG-templates-config-load",
+        "CHG-templates-planning-serialization",
+        "CHG-templates-docs-tests",
+      ]
+      run: [
+        "python3",
+        "harness/scripts/consumer-closure-check.py",
+        "--root",
+        ".",
+        "--version",
+        "v0.1",
+        "--module",
+        "sfo-deploy",
+        "--task-name",
+        "050-drop-app-templates-field",
+      ]
+    - id: repository-compile-closure
+      kind: repository-compile-closure
+      assertion: repository-consumers-compile
+      name: 生产入口类型检查闭包（deno task check，ScriptDefinition 收窄后全仓编译）
+      change_ids: [
+        "CHG-templates-config-load",
+        "CHG-templates-planning-serialization",
+        "CHG-templates-docs-tests",
+      ]
+      run: ["deno", "task", "check"]
+    - id: documentation-examples
+      kind: documentation-examples
+      assertion: documentation-examples-compile
+      name: 文档/示例契约：README 与指南收敛为「模板交付走 management.configs」，不再声明顶层 templates 字段
+      change_ids: ["CHG-templates-config-load", "CHG-templates-docs-tests"]
+      run: [
+        "deno",
+        "test",
+        "--allow-read",
+        "--allow-write",
+        "--allow-env",
+        "--allow-net",
+        "--allow-run",
+        "tests/contract/verify_app_management_contract.ts",
+      ]
+defaults:
+  workdir: .
+  timeout_sec: 600
+  env: {}
+manual_gaps: []
+levels:
+  unit:
+    mode: enabled
+    summary: 覆盖顶层 templates 定向拒收（app.yaml 与环境定义）、环境夹具去模板后回归、history 新快照不写 templates 与旧快照 decode 兼容。
+    test_targets: [
+      "tests/unit/app_management_config.test.ts",
+      "tests/unit/environment_placement.test.ts",
+      "tests/unit/history.test.ts",
+    ]
+    preconditions:
+      tools: ["deno>=2"]
+      env: []
+      services: []
+      notes: ["全部用例离线运行，仅使用临时目录夹具。"]
+    steps:
+      - id: U1
+        name: 装载契约：顶层 templates 定向拒收（app.yaml 与环境定义）且 management.configs 路由回归
+        change_ids: ["CHG-templates-config-load", "CHG-templates-docs-tests"]
+        run: [
+          "deno",
+          "test",
+          "--allow-read",
+          "--allow-write",
+          "--allow-env",
+          "--allow-net",
+          "--allow-run",
+          "tests/unit/app_management_config.test.ts",
+        ]
+      - id: U2
+        name: 环境夹具与放置回归：不再依赖顶层 templates
+        change_ids: ["CHG-templates-docs-tests"]
+        run: [
+          "deno",
+          "test",
+          "--allow-read",
+          "--allow-write",
+          "--allow-env",
+          "--allow-net",
+          "--allow-run",
+          "tests/unit/environment_placement.test.ts",
+        ]
+      - id: U3
+        name: 快照契约：新 encode 不写 templates、旧 plan-v1/2/3/旧 v4 快照 decode 兼容
+        change_ids: ["CHG-templates-planning-serialization"]
+        run: [
+          "deno",
+          "test",
+          "--allow-read",
+          "--allow-write",
+          "--allow-env",
+          "--allow-net",
+          "--allow-run",
+          "tests/unit/history.test.ts",
+        ]
+  dv:
+    mode: disabled
+    reason: 本任务为配置装载与计划/快照序列化的确定性分支，顶层模板交付为消灭的旁路；deno dv 执行工作流由 integration 全量回归兜底。
+  integration:
+    mode: enabled
+    summary: 全量集成回归确认 management.configs 模板交付、旧快照回滚执行与发布历史流程不回归。
+    test_targets: ["tests/integration/", "tests/contract/verify_app_management_contract.ts"]
+    preconditions:
+      tools: ["deno>=2"]
+      env: []
+      services: []
+      notes: ["契约脚本只读仓库文档与源码；集成测试自建临时集群。"]
+    steps:
+      - id: I1
+        name: 集成回归：全量 deno task test（含 dv/execution 与 history 回滚、新版无 templates 交付）
+        change_ids: ["CHG-templates-planning-serialization", "CHG-templates-docs-tests"]
+        run: ["deno", "task", "test"]
+      - id: I2
+        name: 契约：README 与指南模板交付收敛、管理配置 source/bindings 文档边界
+        change_ids: ["CHG-templates-docs-tests"]
+        run: [
+          "deno",
+          "test",
+          "--allow-read",
+          "--allow-write",
+          "--allow-env",
+          "--allow-net",
+          "--allow-run",
+          "tests/contract/verify_app_management_contract.ts",
+        ]

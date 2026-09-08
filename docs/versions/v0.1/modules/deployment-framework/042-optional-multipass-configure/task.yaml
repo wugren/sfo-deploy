@@ -1,0 +1,30 @@
+schema_version: 1
+
+# 用户已确认 high-risk 方案。
+workflow_tier: high-risk
+
+version: v0.1
+packet_module: deployment-framework
+task_name: 042-optional-multipass-configure
+stage: acceptance
+mode: manual
+auto_pipeline_start_stage:
+
+proposal: proposal.md
+completion_report: completion-report.md
+change_record:
+design: design.md
+testing: testing.md
+testplan: testplan.yaml
+acceptance_report: acceptance-report.md
+pipeline_plan:
+risk_profile: risk-profile.yaml
+lifecycle_state:
+
+changed_paths_file: .harness/evidence/v0.1/stage-scope/042-optional-multipass-configure.paths
+baseline_manifest: .harness/baselines/v0.1/042-optional-multipass-configure-delivery/manifest.json
+
+changes:
+  - id: CHG-optional-multipass-configure
+    target_module: deployment-framework
+    scope_paths: ["src/**", "tests/**", "docs/**", "examples/eleph-server-multipass/**"]

@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "stages": {
+    "acceptance": {
+      "inputs": {
+        "docs/versions/v0.1/modules/sfo-deploy/051-secret-placeholder-config/acceptance-report.md": "c6e28b2218ec25bb831b691a10ef08a89bb66f8d8d2c0e7f82d915f1c9393d09"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "9744ebeb795465b4830220a3a30ec02f5f63331a4cfcbc72309c243015f0357a"
+    },
+    "design": {
+      "inputs": {
+        "docs/versions/v0.1/modules/sfo-deploy/051-secret-placeholder-config/design.md": "53c688a8f5a4faea8ffc94cdbafe7051383f85ae6d669ed3d34279b917bb6625",
+        "docs/versions/v0.1/modules/sfo-deploy/051-secret-placeholder-config/risk-profile.yaml": "fd539dd6b50a78b5548d7d537a173a18b530c9eb43b988f044d50281f5c2aed6"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "9744ebeb795465b4830220a3a30ec02f5f63331a4cfcbc72309c243015f0357a"
+    },
+    "implementation": {
+      "inputs": {},
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "9744ebeb795465b4830220a3a30ec02f5f63331a4cfcbc72309c243015f0357a"
+    },
+    "proposal": {
+      "inputs": {
+        "docs/versions/v0.1/modules/sfo-deploy/051-secret-placeholder-config/proposal.md": "a518445a56af45f65b934870275912c9f09dca37ff048146469e81734c4ad550"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "9744ebeb795465b4830220a3a30ec02f5f63331a4cfcbc72309c243015f0357a"
+    },
+    "testing": {
+      "inputs": {
+        "docs/versions/v0.1/modules/sfo-deploy/051-secret-placeholder-config/testing.md": "468b583716103e4c5ea10260b14e0b817be4179c188194c4f73d80fbcf7b5210",
+        "docs/versions/v0.1/modules/sfo-deploy/051-secret-placeholder-config/testplan.yaml": "4b9ed3697eca9b5cf86a48c85feeec57a6b27e6397e6b96ca8bbee4014c4e303"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "9744ebeb795465b4830220a3a30ec02f5f63331a4cfcbc72309c243015f0357a",
+      "test_run": ".harness/test-results/test-runs/20260906T073605Z-sfo-deploy+051-secret-placeholder-config-all.json",
+      "test_run_sha256": "8a1c316c430720b0aded05846d1dec36f84fd661b6c064e1997a315777f14a6c"
+    }
+  },
+  "task_manifest": "task.yaml"
+}

@@ -1,0 +1,57 @@
+schema_version: 1
+task_manifest: task.yaml
+
+change_ids: ["CHG-environment-placement-config"]
+source_bindings:
+  proposal: proposal.md
+  design_source: pipeline/plan.md
+
+risks:
+  contract:
+    applies: true
+    evidence:
+      - proposal.md 的 P-001 至 P-004 新增 cluster.yaml v2 公开配置格式，并要求保持 v1 与执行计划快照兼容
+      - pipeline/plan.md 的 Exported Interfaces、Consumer Migration Closure 与 Failure Flows 固化版本选择、放置映射和依赖语义
+    required_checks:
+      - v2 cluster.yaml 正常、边界和负例配置契约
+      - v1 旧布局继续装载且新旧布局混用失败关闭
+      - ClusterConfig、CLI 选择和历史计划消费者兼容
+  data:
+    applies: true
+    evidence:
+      - proposal.md 要求版本化迁移集群 YAML schema 和 Environment 目录布局
+      - pipeline/plan.md 的 State Ownership 明确配置文件、派生实例和归档计划的所有者与生命周期
+    required_checks:
+      - v1 与 v2 配置分别按显式版本解析，不猜测布局
+      - 缺失、多余、空、重复和未知放置全部拒绝
+      - 不自动改写 v1 配置，归档计划 schema 不变
+  security:
+    applies: false
+    evidence: 不改变 SSH、权限白名单、密钥、秘密选择或模板投递的信任边界；环境目录资源继续经过现有受限路径校验。
+    required_checks: []
+  runtime:
+    applies: true
+    evidence:
+      - proposal.md 的 P-002 与 P-004 改变 Environment 实例生成和依赖闭合输入
+      - pipeline/plan.md 的 Key Call Flow 与 Failure Flows 固化多机实例化、过滤和计划顺序
+    required_checks:
+      - 同一共享 Environment 在所有目标机器生成独立且确定的计划步骤
+      - App 和 Environment 的同机短依赖及显式跨机依赖正确闭合
+      - 机器、App、Environment 过滤和 with-dependencies 行为回归
+  build:
+    applies: true
+    evidence:
+      - proposal.md 的 P-005 要求生产文档、测试夹具和 multipass 部署示例切换到 v2
+      - pipeline/plan.md 的 Consumer Migration Closure 与 File-Level Implementation Sequence 列出仓库消费者迁移
+    required_checks:
+      - deno check 覆盖公共入口、测试与示例入口
+      - multipass 模板采用 v2 且 validate/plan 契约通过
+      - 任务级统一测试入口成功
+  ui:
+    applies: false
+    evidence: 不涉及 UI、导航、可访问性或本地化交互；仅更新命令行配置文档。
+    required_checks: []
+  harness:
+    applies: false
+    evidence: 不修改 Harness 规则、检查器或测试框架，只新增本任务的正常自动流水线制品和测试注册。
+    required_checks: []

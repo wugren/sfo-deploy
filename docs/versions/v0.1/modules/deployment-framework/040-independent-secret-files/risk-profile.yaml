@@ -1,0 +1,71 @@
+schema_version: 1
+task_manifest: task.yaml
+
+change_ids: ["CHG-cluster-secret-source", "CHG-cluster-known-hosts", "CHG-multipass-no-binding-cli"]
+source_bindings:
+  proposal: proposal.md
+  design_source: design.md
+
+risks:
+  contract:
+    applies: true
+    evidence:
+      - "src/integration.ts"
+      - "src/secrets.ts"
+      - "src/cli.ts"
+      - "docs/guides/sfo-deploy-cluster-configuration.md"
+      - "examples/eleph-server-multipass/deno.json"
+      - "examples/eleph-server-multipass/README.md"
+      - "tests/**"
+    required_checks: [
+      "通用 `secrets-deploy` CLI 参数、帮助文本和结果结构保持兼容；`secrets.yaml` 顶层键、未知字段、重复键和 `kind` 分派均有单元/集成测试",
+      "文档命令与示例 `deno task`、通用 CLI 使用方式一致，ProjectBindings 保留为显式 API 并有现有公共导出测试覆盖",
+    ]
+  data:
+    applies: false
+    evidence: 不修改历史快照、持久化 schema 或数据库结构；只新增本地秘密来源装载行为。
+    required_checks: []
+  security:
+    applies: true
+    evidence:
+      - "src/integration.ts"
+      - "src/secrets.ts"
+      - "src/cli.ts"
+      - "examples/eleph-server-multipass/clusters/multipass/secrets.yaml"
+      - "docs/guides/sfo-deploy-cluster-configuration.md"
+    required_checks: [
+      "部署操作在 SSH 前解析并暂存全部声明密钥；任一来源缺失或无效时不连接目标机",
+      "`--check`/`--remove` 在无 `secrets.yaml` 时仍可按集群声明工作；部署和幂等重跑收敛且临时目录清理成功",
+      "集群目录存在 `known_hosts` 时自动使用，缺失时回退默认；连接失败和取消路径资源关闭",
+    ]
+  runtime:
+    applies: true
+    evidence:
+      - "src/integration.ts"
+      - "src/cli.ts"
+      - "src/secrets.ts"
+      - "src/transport.ts"
+      - "tests/**"
+    required_checks: [
+      "部署操作在 SSH 前解析并暂存全部声明密钥；任一来源缺失或无效时不连接目标机",
+      "`--check`/`--remove` 在无 `secrets.yaml` 时仍可按集群声明工作；部署和幂等重跑收敛且临时目录清理成功",
+      "集群目录存在 `known_hosts` 时自动使用，缺失时回退默认；连接失败和取消路径资源关闭",
+    ]
+  build:
+    applies: true
+    evidence:
+      - "examples/eleph-server-multipass/deno.json"
+      - "deno.lock"
+      - "docs/guides/sfo-deploy-cluster-configuration.md"
+    required_checks: [
+      "示例 `deno task eleph-deploy` 改用通用 CLI 后 `deno check`、`deno task test` 和示例相关集成测试全部通过；不新增外部依赖且 deno.lock 不变",
+      "移除项目绑定脚本后示例命令文档与实际行为一致，旧 `.env` 不再存在",
+    ]
+  ui:
+    applies: false
+    evidence: 不涉及图形界面、导航或无障碍流程；CLI 文本输出沿用现有中文文案。
+    required_checks: []
+  harness:
+    applies: false
+    evidence: 不修改 Harness 规则、检查器或任务工作流实现。
+    required_checks: []

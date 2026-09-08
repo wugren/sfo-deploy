@@ -1,0 +1,42 @@
+schema_version: 1
+
+workflow_tier: high-risk
+
+version: v0.1
+packet_module: sfo-deploy
+task_name: 046-app-service-management
+stage: design
+mode: auto-pipeline
+auto_pipeline_start_stage: design
+
+proposal: proposal.md
+completion_report: completion-report.md
+change_record:
+design: design.md
+testing: testing.md
+testplan: testplan.yaml
+acceptance_report: acceptance-report.md
+pipeline_plan: pipeline/plan.md
+risk_profile: risk-profile.yaml
+lifecycle_state: lifecycle.json
+
+changed_paths_file: .harness/evidence/v0.1/stage-scope/046-app-service-management.paths
+baseline_manifest:
+
+changes:
+  - id: CHG-app-management-contract
+    target_module: sfo-deploy
+    scope_paths: ["src/types.ts", "src/config.ts", "src/mod.ts", "README.md", "docs/guides/sfo-deploy-cluster-configuration.md", "examples/eleph-server-multipass/README.md", "examples/eleph-server-multipass/cluster-template/apps/nginx/app.yaml"]
+    changed_paths_file:
+  - id: CHG-app-file-delivery
+    target_module: sfo-deploy
+    scope_paths: ["src/config_generation.ts", "src/deployment_bundle.ts", "src/remote_deployment.ts", "src/remote_runtime", "src/transport.ts", "src/package_cache.ts", "src/execution.ts", "deno.json", "deno.lock"]
+    changed_paths_file:
+  - id: CHG-app-managed-runtime
+    target_module: sfo-deploy
+    scope_paths: ["src/planning.ts", "src/execution.ts", "src/integration.ts", "src/results.ts", "src/cli.ts", "src/service_management.ts", "src/history.ts"]
+    changed_paths_file:
+  - id: CHG-app-management-validation
+    target_module: sfo-deploy
+    scope_paths: ["tests/unit", "tests/dv", "tests/integration", "tests/contract", "tests/_support", "harness/scripts/test-run.py"]
+    changed_paths_file:

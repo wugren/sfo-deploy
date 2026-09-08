@@ -1,0 +1,136 @@
+schema_version: 1
+task_manifest: task.yaml
+risk_profile: risk-profile.yaml
+api_impact:
+  public_api: backward-compatible
+  crate_root_export_change: false
+  build_surface_change: false
+  documentation_examples_affected: true
+evidence_inputs: [
+  "examples/eleph-server-multipass/prepare-multipass.sh",
+  "examples/eleph-server-multipass/README.md",
+  "examples/eleph-server-multipass/tests",
+]
+contract_checks:
+  mode: enabled
+  steps:
+    - id: bash-prepare-documentation
+      kind: documentation-examples
+      assertion: documentation-examples-compile
+      name: 验证 README 的 Bash 准备命令、参数与执行顺序
+      change_ids: ["CHG-shell-multipass-prepare"]
+      run: [
+        "uv",
+        "run",
+        "--extra",
+        "test",
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "examples/eleph-server-multipass/tests/test_prepare_multipass_sh.py::test_readme_documents_bash_prepare_contract",
+        "examples/eleph-server-multipass/tests/test_prepare_multipass_sh.py::test_conditional_e2e_selects_a_host_native_prepare_script",
+      ]
+defaults:
+  workdir: .
+  timeout_sec: 600
+  env: {}
+manual_gaps:
+  - id: real-multipass-e2e
+    reason: 当前任务环境未提供 ELEPH_RUN_MULTIPASS_E2E=1、可下载 JAR 的 URL/SHA-256 和部署所需三个 secret；默认任务运行不得创建真实 VM 或部署外部制品
+    acceptance_impact: 未在真实 Linux/macOS Multipass、网络和 systemd 环境证明端到端部署；由宿主分支契约测试及 fake Multipass 成功/失败流降低风险，但不能替代具备凭据环境中的实机验收
+levels:
+  unit:
+    mode: enabled
+    summary: 验证 Bash 语法、可执行属性、命令边界、帮助和参数拒绝分支
+    test_targets: ["examples/eleph-server-multipass/tests/test_prepare_multipass_sh.py"]
+    preconditions: {
+      tools: ["bash", "ssh-keygen", "python3"],
+      env: [],
+      services: [],
+      notes: ["非法参数在依赖检查和宿主状态写入前失败"],
+    }
+    steps:
+      - id: bash-prepare-unit
+        name: 运行 Bash 静态契约和参数边界单元测试
+        change_ids: ["CHG-shell-multipass-prepare"]
+        run: [
+          "uv",
+          "run",
+          "--extra",
+          "test",
+          "python",
+          "-m",
+          "pytest",
+          "-q",
+          "examples/eleph-server-multipass/tests/test_prepare_multipass_sh.py::test_shell_bootstrap_cli_and_static_security_contract",
+          "examples/eleph-server-multipass/tests/test_prepare_multipass_sh.py::test_shell_bootstrap_rejects_invalid_arguments_before_host_mutation",
+        ]
+  dv:
+    mode: enabled
+    summary: 用 fake Multipass 与 ssh-keyscan 验证创建/重跑/启动、RSA/Ed25519 身份、info/扫描/权限失败和异常状态关闭
+    test_targets: ["examples/eleph-server-multipass/tests/test_prepare_multipass_sh.py"]
+    preconditions: {
+      tools: ["bash", "ssh-keygen", "python3"],
+      env: [],
+      services: [],
+      notes: ["不连接真实 Multipass 或网络"],
+    }
+    steps:
+      - id: bash-prepare-dv
+        name: 运行信任包生命周期与实例身份失败流测试
+        change_ids: ["CHG-shell-multipass-prepare"]
+        run: [
+          "uv",
+          "run",
+          "--extra",
+          "test",
+          "python",
+          "-m",
+          "pytest",
+          "-q",
+          "examples/eleph-server-multipass/tests/test_prepare_multipass_sh.py::test_shell_bootstrap_first_create_and_trusted_rerun_publish_one_bundle",
+          "examples/eleph-server-multipass/tests/test_prepare_multipass_sh.py::test_shell_bootstrap_starts_trusted_stopped_instance",
+          "examples/eleph-server-multipass/tests/test_prepare_multipass_sh.py::test_shell_bootstrap_refuses_unknown_instance_without_writing_state",
+          "examples/eleph-server-multipass/tests/test_prepare_multipass_sh.py::test_shell_bootstrap_refuses_changed_instance_identity_and_preserves_bundle",
+          "examples/eleph-server-multipass/tests/test_prepare_multipass_sh.py::test_shell_bootstrap_rejects_non_directory_cluster_target",
+          "examples/eleph-server-multipass/tests/test_prepare_multipass_sh.py::test_shell_bootstrap_refuses_existing_prepare_lock_before_host_mutation",
+          "examples/eleph-server-multipass/tests/test_prepare_multipass_sh.py::test_shell_bootstrap_rejects_invalid_openssh_host_key_blob",
+          "examples/eleph-server-multipass/tests/test_prepare_multipass_sh.py::test_shell_bootstrap_accepts_valid_rsa_host_key_blob",
+          "examples/eleph-server-multipass/tests/test_prepare_multipass_sh.py::test_shell_bootstrap_cleans_staging_and_lock_when_launch_fails",
+          "examples/eleph-server-multipass/tests/test_prepare_multipass_sh.py::test_shell_bootstrap_start_failure_preserves_trusted_bundle",
+          "examples/eleph-server-multipass/tests/test_prepare_multipass_sh.py::test_shell_bootstrap_post_launch_info_failure_keeps_vm_without_bundle",
+          "examples/eleph-server-multipass/tests/test_prepare_multipass_sh.py::test_shell_bootstrap_host_key_scan_times_out_after_30_attempts",
+          "examples/eleph-server-multipass/tests/test_prepare_multipass_sh.py::test_shell_bootstrap_refuses_stale_backup_before_host_mutation",
+          "examples/eleph-server-multipass/tests/test_prepare_multipass_sh.py::test_shell_bootstrap_rejects_symlinked_trust_paths",
+          "examples/eleph-server-multipass/tests/test_prepare_multipass_sh.py::test_shell_bootstrap_permission_failure_cleans_unpublished_state",
+        ]
+  integration:
+    mode: enabled
+    summary: 验证备份/发布/恢复/提交后清理各故障点及 TERM 中断下的状态、残留和自有资源清理
+    test_targets: ["examples/eleph-server-multipass/tests/test_prepare_multipass_sh.py"]
+    preconditions: {
+      tools: ["bash", "ssh-keygen", "python3"],
+      env: [],
+      services: [],
+      notes: ["用 fake mv 在第二次目录改名时注入失败"],
+    }
+    steps:
+      - id: bash-prepare-publication-integration
+        name: 运行信任包原子发布恢复集成测试
+        change_ids: ["CHG-shell-multipass-prepare"]
+        run: [
+          "uv",
+          "run",
+          "--extra",
+          "test",
+          "python",
+          "-m",
+          "pytest",
+          "-q",
+          "examples/eleph-server-multipass/tests/test_prepare_multipass_sh.py::test_shell_bootstrap_restores_previous_bundle_when_publish_move_fails",
+          "examples/eleph-server-multipass/tests/test_prepare_multipass_sh.py::test_shell_bootstrap_preserves_bundle_when_backup_move_fails",
+          "examples/eleph-server-multipass/tests/test_prepare_multipass_sh.py::test_shell_bootstrap_keeps_recovery_backup_when_restore_fails",
+          "examples/eleph-server-multipass/tests/test_prepare_multipass_sh.py::test_shell_bootstrap_reports_committed_backup_cleanup_failure",
+          "examples/eleph-server-multipass/tests/test_prepare_multipass_sh.py::test_shell_bootstrap_signal_cleans_owned_staging_and_lock",
+        ]

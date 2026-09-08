@@ -1,0 +1,39 @@
+schema_version: 1
+
+# 用户已确认：提案通过，high-risk；问题 1=A 方案、2=环境定义一并移除、3=v3 内收窄。
+workflow_tier: high-risk
+
+version: v0.1
+packet_module: sfo-deploy
+task_name: 049-drop-app-secret-declaration
+stage: acceptance
+mode: manual
+auto_pipeline_start_stage:
+
+proposal: proposal.md
+completion_report: completion-report.md
+change_record: docs/changes/049-drop-app-secret-declaration.md
+design: design.md
+testing: testing.md
+testplan: testplan.yaml
+acceptance_report: acceptance-report.md
+pipeline_plan: pipeline/plan.md
+risk_profile: risk-profile.yaml
+lifecycle_state: lifecycle.json
+
+changed_paths_file: .harness/evidence/v0.1/stage-scope/049-drop-app-secret-declaration.paths
+baseline_manifest:
+
+changes:
+  - id: CHG-cluster-secret-bindings
+    target_module: sfo-deploy
+    scope_paths: ["src/config.ts", "src/types.ts"]
+    changed_paths_file: .harness/evidence/v0.1/stage-scope/049-drop-app-secret-declaration-sfo-deploy.paths
+  - id: CHG-secret-delivery-planning
+    target_module: sfo-deploy
+    scope_paths: ["src/planning.ts", "src/history.ts", "src/cli.ts", "src/mod.ts"]
+    changed_paths_file: .harness/evidence/v0.1/stage-scope/049-drop-app-secret-declaration-sfo-deploy.paths
+  - id: CHG-secret-docs-tests
+    target_module: sfo-deploy
+    scope_paths: ["README.md", "docs/guides/sfo-deploy-cluster-configuration.md", "tests/_support/fixtures.ts", "tests/unit/app_management_config.test.ts", "tests/unit/config_planning.test.ts", "tests/unit/cli_human_output.test.ts", "tests/unit/environment_placement.test.ts", "tests/unit/history.test.ts", "tests/unit/secrets_deploy_config.test.ts", "tests/contract/verify_app_management_contract.ts"]
+    changed_paths_file: .harness/evidence/v0.1/stage-scope/049-drop-app-secret-declaration-sfo-deploy.paths

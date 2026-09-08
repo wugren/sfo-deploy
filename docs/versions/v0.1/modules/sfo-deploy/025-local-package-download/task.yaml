@@ -1,0 +1,43 @@
+schema_version: 1
+
+# 每个任务创建此清单和 proposal.md，并在用户确认前保持 pending。
+workflow_tier: standard
+
+version: v0.1
+packet_module: sfo-deploy
+task_name: 025-local-package-download
+stage: proposal
+mode: manual
+auto_pipeline_start_stage:
+
+proposal: proposal.md
+completion_report: completion-report.md
+change_record: docs/changes/025-local-package-download.md
+design: design.md
+testing: testing.md
+testplan: testplan.yaml
+acceptance_report: acceptance-report.md
+pipeline_plan: pipeline/plan.md
+risk_profile: risk-profile.yaml
+lifecycle_state: lifecycle.json
+
+changed_paths_file: .harness/evidence/v0.1/stage-scope/025-local-package-download.paths
+baseline_manifest: .harness/baselines/v0.1/025-local-package-download-delivery/manifest.json
+
+changes:
+  - id: CHG-fetch-cli-action
+    target_module: sfo-deploy
+    scope_paths: ["src/cli.ts", "src/integration.ts", "src/mod.ts", "tests/unit/downloads_secrets.test.ts", "tests/integration/package_cli.test.ts", "tests/unit/config_planning.test.ts"]
+    changed_paths_file:
+  - id: CHG-package-cache
+    target_module: sfo-deploy
+    scope_paths: ["src/execution.ts", "src/downloads.ts", "tests/unit/downloads_secrets.test.ts"]
+    changed_paths_file:
+  - id: CHG-user-config
+    target_module: sfo-deploy
+    scope_paths: ["src/cli.ts", "src/config.ts"]
+    changed_paths_file:
+  - id: CHG-docs
+    target_module: sfo-deploy
+    scope_paths: ["README.md", "docs/guides/sfo-deploy-cluster-configuration.md", "examples/eleph-server-multipass/README.md", "docs/changes/025-local-package-download.md"]
+    changed_paths_file:

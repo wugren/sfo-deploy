@@ -1,0 +1,123 @@
+schema_version: 1
+task_manifest: task.yaml
+risk_profile: risk-profile.yaml
+api_impact:
+  public_api: none
+  crate_root_export_change: false
+  build_surface_change: false
+  documentation_examples_affected: true
+evidence_inputs: [
+  "src/ssh_install.ts",
+  "src/integration.ts",
+  "src/cli.ts",
+  "tests/unit/ssh_install.test.ts",
+  "tests/unit/install_deno_cli.test.ts",
+  "tests/dv/install_deno.test.ts",
+  "tests/integration/install_deno_cli.test.ts",
+  "tests/contract/verify_install_deno_contract.ts",
+  "README.md",
+  "docs/guides/sfo-deploy-cluster-configuration.md",
+  "examples/eleph-server-multipass/README.md",
+  "docs/versions/v0.1/modules/sfo-deploy/035-deno-home-fallback/testplan.yaml",
+]
+contract_checks:
+  mode: enabled
+  steps:
+    - id: docs-contract
+      kind: documentation-examples
+      assertion: documentation-examples-compile
+      name: 验证 install-deno 缺省命令与不修改 machines.yaml 文档契约
+      change_ids: ["CHG-install-deno-path-default", "CHG-install-deno-path-docs"]
+      run: ["deno", "run", "--allow-read", "tests/contract/verify_install_deno_contract.ts"]
+defaults:
+  workdir: .
+  timeout_sec: 600
+  env: {}
+manual_gaps:
+  - id: real-ssh-install
+    owner: sfo-deploy 维护者与具备隔离目标机的运维人员
+    reason: 当前仓库环境没有可安全修改的真实 SSH 目标机、受信任 host key 与可被允许提权的远端身份
+    acceptance_impact: 自动测试以内存 SSH 替身验证缺省 /usr/local 安装与提权语义，不证明具体发行版远程行为
+levels:
+  unit:
+    mode: enabled
+    summary: 覆盖缺省安装根、提权判定、present 探针与 CLI 帮助/退出码回归。
+    test_targets: ["tests/unit/ssh_install.test.ts", "tests/unit/install_deno_cli.test.ts"]
+    preconditions:
+      tools: ["deno>=2"]
+      env: []
+      services: []
+      notes: ["SSH 行为用 FakeSession 替身。"]
+    steps:
+      - id: U1
+        name: install-deno 缺省 /usr/local 与提权分支
+        change_ids: ["CHG-install-deno-path-default"]
+        run: [
+          "deno",
+          "test",
+          "--allow-read",
+          "--allow-write",
+          "--allow-env",
+          "--allow-net",
+          "--allow-run",
+          "tests/unit/ssh_install.test.ts",
+        ]
+      - id: U2
+        name: install-deno CLI 帮助与结果退出码回归
+        change_ids: ["CHG-install-deno-path-default", "CHG-install-deno-path-docs"]
+        run: [
+          "deno",
+          "test",
+          "--allow-read",
+          "--allow-write",
+          "--allow-env",
+          "--allow-net",
+          "--allow-run",
+          "tests/unit/install_deno_cli.test.ts",
+        ]
+  dv:
+    mode: enabled
+    summary: 使用临时集群与 FakeTransport 验证缺省安装、显式提权、present、失败与确认门禁。
+    test_targets: ["tests/dv/install_deno.test.ts"]
+    preconditions:
+      tools: ["deno>=2"]
+      env: []
+      services: []
+      notes: ["不连接真实 SSH。"]
+    steps:
+      - id: D1
+        name: install-deno run() 缺省路径/生命周期/失败流程
+        change_ids: ["CHG-install-deno-path-default", "CHG-install-deno-path-docs"]
+        run: [
+          "deno",
+          "test",
+          "--allow-read",
+          "--allow-write",
+          "--allow-env",
+          "--allow-net",
+          "--allow-run",
+          "tests/dv/install_deno.test.ts",
+        ]
+  integration:
+    mode: enabled
+    summary: 验证公开动作/JSON 与文档契约。
+    test_targets: ["tests/integration/install_deno_cli.test.ts"]
+    preconditions:
+      tools: ["deno>=2"]
+      env: []
+      services: []
+      notes: ["CLI 输出使用注入的 runAction。"]
+    steps:
+      - id: I1
+        name: install-deno 公开动作/导出/JSON 契约
+        change_ids: ["CHG-install-deno-path-default", "CHG-install-deno-path-docs"]
+        run: [
+          "deno",
+          "test",
+          "--allow-read",
+          "--allow-write",
+          "--allow-env",
+          "--allow-net",
+          "--allow-run",
+          "tests/integration/install_deno_cli.test.ts",
+        ]

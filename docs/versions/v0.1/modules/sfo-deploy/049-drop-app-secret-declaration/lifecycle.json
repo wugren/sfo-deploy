@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "stages": {
+    "acceptance": {
+      "inputs": {
+        "docs/versions/v0.1/modules/sfo-deploy/049-drop-app-secret-declaration/acceptance-report.md": "030007f0527b5b6bcbe70a848dea3f8a37ec58a01e93d6ed4b0a5a721f1a02fe"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "0649e288fb195ce371686f8ddb63cd3c625be8486c2ceb6ce1cf454adb028eac"
+    },
+    "design": {
+      "inputs": {
+        "docs/versions/v0.1/modules/sfo-deploy/049-drop-app-secret-declaration/design.md": "001947952f4efdb4b93b1963abf2aec1e78ae9445f08a1737f6c6b3eb808b868",
+        "docs/versions/v0.1/modules/sfo-deploy/049-drop-app-secret-declaration/risk-profile.yaml": "fc22b7a9e06a505c3e3cf325a04a7c3aa96b1fc31cbd438bdb0b16a105710347"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "0649e288fb195ce371686f8ddb63cd3c625be8486c2ceb6ce1cf454adb028eac"
+    },
+    "implementation": {
+      "inputs": {},
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "0649e288fb195ce371686f8ddb63cd3c625be8486c2ceb6ce1cf454adb028eac"
+    },
+    "proposal": {
+      "inputs": {
+        "docs/versions/v0.1/modules/sfo-deploy/049-drop-app-secret-declaration/proposal.md": "4c69aba2062ff5d15b8128ef779b15527d08e596a3b5052ddaf0765354be9697"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "0649e288fb195ce371686f8ddb63cd3c625be8486c2ceb6ce1cf454adb028eac"
+    },
+    "testing": {
+      "inputs": {
+        "docs/versions/v0.1/modules/sfo-deploy/049-drop-app-secret-declaration/testing.md": "adf0478bd5164be21bf63c82f5c60971e354a06c8404f322565b9fad66b7df3f",
+        "docs/versions/v0.1/modules/sfo-deploy/049-drop-app-secret-declaration/testplan.yaml": "b8bcf26ff3135488b35915b52566c1eb26bfb702ae0af8a5cc0f2dd64d3fafbe"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "0649e288fb195ce371686f8ddb63cd3c625be8486c2ceb6ce1cf454adb028eac",
+      "test_run": ".harness/test-results/test-runs/20260905T144614Z-sfo-deploy+049-drop-app-secret-declaration-all.json",
+      "test_run_sha256": "accf861141223369b7d37dee7f60d8c61293395e14dde5c88b318f47ecb3a51b"
+    }
+  },
+  "task_manifest": "task.yaml"
+}

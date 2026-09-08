@@ -1,0 +1,282 @@
+schema_version: 1
+task_manifest: task.yaml
+risk_profile: risk-profile.yaml
+api_impact:
+  public_api: breaking
+  crate_root_export_change: true
+  build_surface_change: false
+  documentation_examples_affected: true
+evidence_inputs: [
+  "src",
+  "tests",
+  "README.md",
+  "docs/guides/sfo-deploy-cluster-configuration.md",
+  "docs/changes",
+  "examples/eleph-server-multipass",
+  "docs/versions/v0.1/modules/sfo-deploy/037-secrets-env-delivery/testplan.yaml",
+]
+contract_checks:
+  mode: enabled
+  steps:
+    - id: C1
+      kind: repository-compile-closure
+      assertion: repository-consumers-compile
+      name: 生产模块与新测试的 deno check 编译闭包
+      change_ids: [
+        "CHG-secret-declaration",
+        "CHG-secret-placement",
+        "CHG-secret-deploy-command",
+        "CHG-secret-env-loading",
+        "CHG-secret-compat",
+        "CHG-secret-docs-example",
+      ]
+      run: [
+        "deno",
+        "check",
+        "--frozen",
+        "src/mod.ts",
+        "src/main.ts",
+        "src/cli.ts",
+        "tests/dv/execution.test.ts",
+        "tests/unit/secrets_cli.test.ts",
+        "tests/integration/secret_loader_contract.test.ts",
+      ]
+    - id: C2
+      kind: removed-symbol-scan
+      assertion: no-unallowlisted-old-symbol-references
+      name: 旧 config_secrets/file_secrets/context JSON 符号删除扫描
+      change_ids: [
+        "CHG-secret-declaration",
+        "CHG-secret-placement",
+        "CHG-secret-deploy-command",
+        "CHG-secret-env-loading",
+        "CHG-secret-compat",
+        "CHG-secret-docs-example",
+      ]
+      run: [
+        "python",
+        "harness/scripts/consumer-closure-check.py",
+        "--version",
+        "v0.1",
+        "--module",
+        "sfo-deploy",
+        "--task-name",
+        "037-secrets-env-delivery",
+      ]
+    - id: C3
+      kind: external-negative
+      assertion: old-path-rejected-for-removed-symbol
+      name: 已移除 PreparedStep 密钥字段在类型层被拒绝
+      change_ids: [
+        "CHG-secret-declaration",
+        "CHG-secret-placement",
+        "CHG-secret-deploy-command",
+        "CHG-secret-env-loading",
+        "CHG-secret-compat",
+        "CHG-secret-docs-example",
+      ]
+      run: [
+        "deno",
+        "run",
+        "--allow-read",
+        "--allow-write",
+        "--allow-run",
+        "--allow-env",
+        "tests/contract/verify_independent_remote_scripts.ts",
+        "negative",
+      ]
+    - id: C4
+      kind: repository-compile-closure
+      assertion: repository-consumers-compile
+      name: 仓库消费者与独立集群脚本编译闭包
+      change_ids: [
+        "CHG-secret-declaration",
+        "CHG-secret-placement",
+        "CHG-secret-deploy-command",
+        "CHG-secret-env-loading",
+        "CHG-secret-compat",
+        "CHG-secret-docs-example",
+      ]
+      run: [
+        "deno",
+        "run",
+        "--allow-read",
+        "--allow-write",
+        "--allow-run",
+        "--allow-env",
+        "tests/contract/verify_independent_remote_scripts.ts",
+        "closure",
+      ]
+    - id: C5
+      kind: documentation-examples
+      assertion: documentation-examples-compile
+      name: README/指南/示例 README 的新机制文档契约
+      change_ids: [
+        "CHG-secret-declaration",
+        "CHG-secret-placement",
+        "CHG-secret-deploy-command",
+        "CHG-secret-env-loading",
+        "CHG-secret-compat",
+        "CHG-secret-docs-example",
+      ]
+      run: [
+        "deno",
+        "run",
+        "--allow-read",
+        "--allow-write",
+        "--allow-run",
+        "--allow-env",
+        "tests/contract/verify_independent_remote_scripts.ts",
+        "docs",
+      ]
+    - id: C6
+      kind: external-positive
+      assertion: new-path-compiles
+      name: 新 loader/CLI 密钥路径在示例消费方可编译
+      change_ids: [
+        "CHG-secret-declaration",
+        "CHG-secret-placement",
+        "CHG-secret-deploy-command",
+        "CHG-secret-env-loading",
+        "CHG-secret-compat",
+        "CHG-secret-docs-example",
+      ]
+      run: [
+        "deno",
+        "check",
+        "--frozen",
+        "src/secret_loader/deno.ts",
+        "src/cli.ts",
+        "examples/eleph-server-multipass/cluster-template/apps/jx-server/scripts/configure.ts",
+        "examples/eleph-server-multipass/cluster-template/environments/mysql/scripts/configure.ts",
+      ]
+defaults:
+  workdir: .
+  timeout_sec: 600
+  env: {}
+levels:
+  unit:
+    mode: enabled
+    summary: 覆盖声明/放置配置、secrets-deploy CLI、传输原语、绑定解析与历史编解码回归。
+    test_targets: [
+      "tests/unit/secrets_deploy_config.test.ts",
+      "tests/unit/secrets_cli.test.ts",
+      "tests/unit/secrets_transport.test.ts",
+      "tests/unit/downloads_secrets.test.ts",
+    ]
+    preconditions:
+      tools: ["deno>=2"]
+      env: []
+      services: []
+      notes: ["全部使用内存/临时目录与命令替身，不连接真实 SSH。"]
+    steps:
+      - id: U1
+        name: 秘密声明/放置/CLI/传输单元
+        change_ids: [
+          "CHG-secret-declaration",
+          "CHG-secret-placement",
+          "CHG-secret-deploy-command",
+          "CHG-secret-compat",
+        ]
+        run: [
+          "deno",
+          "test",
+          "--allow-read",
+          "--allow-write",
+          "--allow-env",
+          "--allow-net",
+          "--allow-run",
+          "tests/unit/secrets_deploy_config.test.ts",
+          "tests/unit/secrets_cli.test.ts",
+          "tests/unit/secrets_transport.test.ts",
+          "tests/unit/downloads_secrets.test.ts",
+        ]
+      - id: U2
+        name: 全量单元回归（含历史与规划）
+        change_ids: ["CHG-secret-declaration", "CHG-secret-compat"]
+        run: [
+          "deno",
+          "test",
+          "--allow-read",
+          "--allow-write",
+          "--allow-env",
+          "--allow-net",
+          "--allow-run",
+          "tests/unit",
+        ]
+  dv:
+    mode: enabled
+    summary: 覆盖执行器秘密副本装载、loader 上传、白名单注入与缺失失败关闭。
+    test_targets: ["tests/dv/execution.test.ts"]
+    preconditions:
+      tools: ["deno>=2"]
+      env: []
+      services: []
+      notes: ["使用内存传输替身模拟远端安全目录与步骤 workspace。"]
+    steps:
+      - id: D1
+        name: 执行器秘密装载与失败路径
+        change_ids: ["CHG-secret-env-loading", "CHG-secret-compat"]
+        run: [
+          "deno",
+          "test",
+          "--allow-read",
+          "--allow-write",
+          "--allow-env",
+          "--allow-net",
+          "--allow-run=ssh,scp,filehub,deno",
+          "tests/dv/execution.test.ts",
+        ]
+  integration:
+    mode: enabled
+    summary: 覆盖 loader 合约、独立集群脚本、secrets-deploy 端到端与既有 prepare 集成。
+    test_targets: [
+      "tests/integration/secret_loader_contract.test.ts",
+      "tests/integration/independent_remote_scripts.test.ts",
+      "tests/integration/env_prepare_cli.test.ts",
+    ]
+    preconditions:
+      tools: ["deno>=2", "python3"]
+      env: []
+      services: []
+      notes: ["Python loader 用本机 python3 校验；集群脚本用 deno 子进程执行。"]
+    steps:
+      - id: I1
+        name: 秘密装载与独立脚本集成
+        change_ids: [
+          "CHG-secret-env-loading",
+          "CHG-secret-deploy-command",
+          "CHG-secret-docs-example",
+        ]
+        run: [
+          "deno",
+          "test",
+          "--allow-read",
+          "--allow-write",
+          "--allow-env",
+          "--allow-net",
+          "--allow-run",
+          "tests/integration/secret_loader_contract.test.ts",
+          "tests/integration/independent_remote_scripts.test.ts",
+          "tests/integration/env_prepare_cli.test.ts",
+        ]
+      - id: I2
+        name: 全量集成回归
+        change_ids: [
+          "CHG-secret-declaration",
+          "CHG-secret-placement",
+          "CHG-secret-deploy-command",
+          "CHG-secret-env-loading",
+          "CHG-secret-compat",
+          "CHG-secret-docs-example",
+        ]
+        run: [
+          "deno",
+          "test",
+          "--allow-read",
+          "--allow-write",
+          "--allow-env",
+          "--allow-net",
+          "--allow-run",
+          "tests/integration",
+        ]

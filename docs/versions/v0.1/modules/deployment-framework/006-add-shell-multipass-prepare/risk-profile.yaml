@@ -1,0 +1,58 @@
+schema_version: 1
+task_manifest: task.yaml
+
+change_ids: ["CHG-shell-multipass-prepare"]
+source_bindings:
+  proposal: proposal.md
+  design_source: pipeline/plan.md
+
+risks:
+  contract:
+    applies: true
+    evidence:
+      - proposal.md 定义新增 Bash 命令入口、与 PowerShell 等价的默认值和失败关闭边界
+      - pipeline/plan.md 的 Exported Interfaces 与 Failure Flows 固化长选项、帮助、退出语义和消费者
+    required_checks:
+      - 验证 Bash 帮助、空格分隔长选项、默认值、重复/未知/缺值/位置参数、合法和非法参数以及退出码契约
+      - 验证 README 记录的命令与脚本实际参数一致
+  data:
+    applies: true
+    evidence:
+      - proposal.md 要求 bootstrap.json、machines.yaml、known_hosts 和 SSH 密钥作为同一修订发布
+      - pipeline/plan.md 的 State Ownership 与 Failure Flows 定义 staging、备份、提交、恢复和残留状态
+    required_checks:
+      - 验证生成状态的字段、路径、模板替换和 UTF-8 文本格式与现有契约一致
+      - 验证备份前、备份后、目标改名、恢复及提交后清理失败均不会暴露部分或混合修订状态，并验证强杀/主机崩溃残留会在重跑时失败关闭
+  security:
+    applies: true
+    evidence:
+      - proposal.md 要求生成并保护 SSH 私钥、注入公钥、固定 host key 并拒绝接管未知实例
+      - pipeline/plan.md 的 State Ownership 与 Failure Flows 定义参数、状态解析、key 集合比较及受限清理边界
+    required_checks:
+      - 验证 077 umask/0600 私钥、公私钥一致性、OpenSSH host-key blob 结构、未知实例拒绝接管，以及 bootstrap、IP、扫描地址和 host-key 集合不匹配时失败关闭
+      - 验证镜像参数不能成为命令选项，所有外部命令参数均保持独立 argv 边界，不使用 eval/source，JSON、模板和状态内容不会被当作 shell 代码执行
+      - 验证 EXIT/INT/TERM 清理仅删除当前进程在示例 `.state` 下创建且通过父目录/前缀校验的 staging 或备份路径
+  runtime:
+    applies: true
+    evidence:
+      - proposal.md 要求创建或启动 Multipass 实例、等待 SSH 可用并保留新建后失败的 VM
+      - pipeline/plan.md 的 Dependency Graphs、State Ownership 与 Failure Flows 定义实例、SSH 和发布的顺序及失败转换
+    required_checks:
+      - 验证首次创建、可信重跑、非运行实例启动、创建后读取失败、新建 VM 保留、互斥 prepare 锁、30 次扫描重试超时、信号处理和临时目录清理
+      - 在可用环境运行真实 Multipass E2E，否则记录明确的环境缺口及验收影响
+  build:
+    applies: true
+    evidence:
+      - proposal.md 将 Linux/macOS Bash 入口加入受支持的宿主部署表面
+      - pipeline/plan.md 的 Rejected Alternatives 与文件实现顺序限定 Bash 3.2 兼容、依赖和可执行文件属性
+    required_checks:
+      - 验证脚本具备可执行位、通过 `bash -n`、不使用 Bash 4+ 或 GNU-only 语法/选项，并仅依赖 README 声明的 Bash、Python 3.11、Multipass、OpenSSH 和 Linux/macOS 标准文件工具
+      - 验证脚本不调用 multipass exec、transfer、mount 或 VM 内安装命令
+  ui:
+    applies: false
+    evidence: 不涉及图形界面、导航、无障碍、本地化或交互式 UI 工作流。
+    required_checks: []
+  harness:
+    applies: false
+    evidence: 不修改 Harness 规则、脚本、任务路由或质量门配置；仅增加任务级计划与测试元数据。
+    required_checks: []

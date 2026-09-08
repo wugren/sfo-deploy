@@ -1,0 +1,58 @@
+schema_version: 1
+task_manifest: task.yaml
+
+change_ids: [
+  "CHG-templates-config-load",
+  "CHG-templates-planning-serialization",
+  "CHG-templates-docs-tests",
+]
+source_bindings:
+  proposal: proposal.md
+  design_source: design.md
+
+risks:
+  contract:
+    applies: true
+    evidence:
+      - proposal.md 的 P-001 删除 app.yaml（APP_V2_FIELDS）与 environment.yaml 顶层 templates 字段，v2/v3 合法字段集收窄（破坏性），模板文件交付收敛到 management.configs；对已移除字段定向拒绝并指引迁移
+      - proposal.md 的 P-002 改变计划步骤序列化 emit 面（不再写入 templates），decode 面对旧快照保留读取（方案 A：可选/缺省空数组）保持回滚兼容
+      - src/config.ts 是唯一配置装载实现，src/types.ts 是公开类型，README.md 与 docs/guides/sfo-deploy-cluster-configuration.md 是契约文档消费者
+    required_checks:
+      - 含顶层 templates 的 app.yaml 与环境定义装载即报定向迁移错误（指明「模板改用 management.configs 交付」）；其余 v2/v3 装载结果回归逐字段不变
+      - 新生成计划步骤不再包含 templates 字段；plan-v1/2/3 与旧 v4 快照仍可 decode 且字段缺省为空数组
+  data:
+    applies: true
+    evidence:
+      - proposal.md 的 P-002 改变计划步骤 emit/decode：新 plans 不再写入 templates，旧快照 decode 需容忍该字段（方案 A）
+      - src/history.ts decodeStep 是持久化发布历史的解码点，plan-v1/2/3 fixture 是兼容性回归基线
+    required_checks:
+      - 新计划 encode/decode 往返逐字段一致且不含 templates；plan-v1/2/3 与旧 v4 快照解码回归不变（含缺失 templates 时缺省空数组）
+      - history 既有校验不变量在移除步骤 templates 后保持成立（与 047/049 迁移回归一致）
+  security:
+    applies: false
+    evidence: templates 仅打包非机密资源文件，不涉及秘密解密、loader 名单或放置；管理配置通道（management.configs/delivery_inputs.files）与秘密绑定语义保持不变。错误文案不暴露任何秘密值。
+    required_checks: []
+  runtime:
+    applies: true
+    evidence:
+      - proposal.md 的 P-002 移除 execution 步骤 templates 暂存与远端模板元数据（execution.ts 167-172/797-808），bundle 成员形态变化需回归证据
+    required_checks:
+      - dv/integration 执行路径在移除步骤 templates 后回归：不再交付步骤模板文件，management.configs/delivery_inputs.files 通道交付保持逐字段不变
+  ui:
+    applies: false
+    evidence: 本任务无图形界面、导航、前端状态或无障碍表面；CLI 计划序列化仅字段形状收窄，行为断言归 contract/harness 检查。
+    required_checks: []
+  build:
+    applies: false
+    evidence: 不新增第三方依赖、不改远端 config_updater bundle 与安装产物；公开类型收窄由 `deno task check`（contract repository-compile-closure）覆盖。
+    required_checks: []
+  harness:
+    applies: true
+    evidence:
+      - proposal.md 的 P-003 要求夹具/用例改写与文档收敛，并保持 `deno task check` 全绿
+      - design.md 的 Directly Mapped Change Items 将测试实现、testplan.yaml、runner 注册限定为本任务的测试责任
+      - harness/scripts/test-run.py 是任务注册消费者，不改变 Harness 规则或其他任务语义
+    required_checks:
+      - testplan.yaml 精确映射三个 change_id 与适用风险 required_checks，步骤可从 sfo-deploy/050-drop-app-templates-field all 到达
+      - runner list 只新增本任务 scope 且既有 scope/命令保持不变，成功运行写出覆盖本任务 testplan 和三个 change_id 的机器制品
+      - unit/integration/dv 新增/更新用例覆盖顶层字段拒绝、emit 不含 templates、旧快照 decode 兼容；`deno task check` 全绿

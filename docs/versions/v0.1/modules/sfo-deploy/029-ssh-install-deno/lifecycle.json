@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "stages": {
+    "acceptance": {
+      "inputs": {
+        "docs/versions/v0.1/modules/sfo-deploy/029-ssh-install-deno/acceptance-report.md": "3082d42fa0241a97ac1f8463ce599123dadf6d41d1bd12d7884bc6b76d579994"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "eae18d9b20597cb2a2fe88814191dc8d9927bbec662c4176a29601752e879347"
+    },
+    "design": {
+      "inputs": {
+        "docs/versions/v0.1/modules/sfo-deploy/029-ssh-install-deno/design.md": "d934286cfdf58bf76624fc5c70117da6d46ea73fe6bebe0d912ffb165db8cae8",
+        "docs/versions/v0.1/modules/sfo-deploy/029-ssh-install-deno/risk-profile.yaml": "8d11bded208c1d02f896619e7427c94a6ca2afe707adc0108f13b72463819de9"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "eae18d9b20597cb2a2fe88814191dc8d9927bbec662c4176a29601752e879347"
+    },
+    "implementation": {
+      "inputs": {},
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "eae18d9b20597cb2a2fe88814191dc8d9927bbec662c4176a29601752e879347"
+    },
+    "proposal": {
+      "inputs": {
+        "docs/versions/v0.1/modules/sfo-deploy/029-ssh-install-deno/proposal.md": "f50a295f79dd4073864ed72af02ae3a04de60f99322106fa37d47ff4ada75f9c"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "eae18d9b20597cb2a2fe88814191dc8d9927bbec662c4176a29601752e879347"
+    },
+    "testing": {
+      "inputs": {
+        "docs/versions/v0.1/modules/sfo-deploy/029-ssh-install-deno/testing.md": "6a9f912f7b2fca96a92f51bc29ebe36715b3c78b100718e8117ab475d2ad8044",
+        "docs/versions/v0.1/modules/sfo-deploy/029-ssh-install-deno/testplan.yaml": "c231e740a3418404b5dc61e55251c09f634063a4807ef5f01718f5ac78d898d1"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "eae18d9b20597cb2a2fe88814191dc8d9927bbec662c4176a29601752e879347",
+      "test_run": ".harness/test-results/test-runs/20260902T135449Z-sfo-deploy+029-ssh-install-deno-all.json",
+      "test_run_sha256": "dc4c33c5182776b2d52b207bff0e8cf25ee3c2c50d2d1ace63b4cd5a0da22150"
+    }
+  },
+  "task_manifest": "task.yaml"
+}

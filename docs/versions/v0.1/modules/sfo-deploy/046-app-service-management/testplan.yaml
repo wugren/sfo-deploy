@@ -1,0 +1,241 @@
+schema_version: 1
+task_manifest: task.yaml
+risk_profile: risk-profile.yaml
+api_impact:
+  public_api: backward-compatible
+  crate_root_export_change: true
+  build_surface_change: true
+  documentation_examples_affected: true
+evidence_inputs: [
+  "src",
+  "tests",
+  "README.md",
+  "docs/guides",
+  "examples/eleph-server-multipass",
+  "deno.json",
+  "deno.lock",
+  "harness/scripts/test-run.py",
+  "docs/versions/v0.1/modules/sfo-deploy/046-app-service-management/testplan.yaml",
+]
+contract_checks:
+  mode: enabled
+  steps:
+    - id: C1
+      kind: external-positive
+      assertion: new-path-compiles
+      name: 验证公开 managed 配置、部署包、远端和 systemd API 可被独立消费者编译
+      change_ids: [
+        "CHG-app-management-contract",
+        "CHG-app-file-delivery",
+        "CHG-app-managed-runtime",
+        "CHG-app-management-validation",
+      ]
+      run: ["deno", "check", "--frozen", "tests/contract/app_management_consumer.ts"]
+    - id: C2
+      kind: repository-compile-closure
+      assertion: repository-consumers-compile
+      name: 验证生产入口与本任务测试的冻结依赖编译闭包
+      change_ids: [
+        "CHG-app-management-contract",
+        "CHG-app-file-delivery",
+        "CHG-app-managed-runtime",
+        "CHG-app-management-validation",
+      ]
+      run: [
+        "deno",
+        "check",
+        "--frozen",
+        "src/mod.ts",
+        "src/main.ts",
+        "src/cli.ts",
+        "tests/unit/app_management_config.test.ts",
+        "tests/unit/managed_config_generation.test.ts",
+        "tests/unit/deployment_bundle.test.ts",
+        "tests/unit/service_management.test.ts",
+        "tests/dv/app_management_execution.test.ts",
+        "tests/integration/config_updater.test.ts",
+        "tests/integration/remote_deployment.test.ts",
+        "tests/integration/managed_transport_security.test.ts",
+        "tests/integration/env_prepare_cli.test.ts",
+        "tests/integration/deploy_version_skip.test.ts",
+      ]
+    - id: C3
+      kind: documentation-examples
+      assertion: documentation-examples-compile
+      name: 验证 README、中文指南和 nginx 示例与 app v3 契约一致
+      change_ids: [
+        "CHG-app-management-contract",
+        "CHG-app-file-delivery",
+        "CHG-app-managed-runtime",
+        "CHG-app-management-validation",
+      ]
+      run: ["deno", "run", "--allow-read", "tests/contract/verify_app_management_contract.ts"]
+defaults:
+  workdir: .
+  timeout_sec: 600
+  env: {}
+manual_gaps:
+  - id: real-ssh-systemd-deploy
+    owner: sfo-deploy 维护者与具备隔离 Linux 目标机的运维人员
+    reason: 当前自动化环境没有可安全修改的受信 SSH 目标机、sudo/systemd unit 和真实发布目录
+    acceptance_impact: 自动测试验证固定 argv、超时、状态收敛、补偿、归档和传输协议，但不证明具体发行版的 systemd/GNU tar/OpenSSH 组合兼容性
+levels:
+  unit:
+    mode: enabled
+    summary: 覆盖 app v3 四格式/script schema 正负与兼容、控制端无秘密骨架、确定性 bundle、systemd 分支及 plan-v4/v1-v3 history codec。
+    test_targets: [
+      "tests/unit/app_management_config.test.ts",
+      "tests/unit/managed_config_generation.test.ts",
+      "tests/unit/deployment_bundle.test.ts",
+      "tests/unit/service_management.test.ts",
+      "tests/unit/history.test.ts",
+      "tests/unit/history_regressions.test.ts",
+    ]
+    preconditions:
+      tools: ["deno>=2"]
+      env: []
+      services: []
+      notes: [
+        "全部使用临时目录、内存状态和命令替身，不连接 SSH 或操作宿主 systemd。",
+      ]
+    steps:
+      - id: U1
+        name: app v3 schema、普通变量骨架与秘密隔离
+        change_ids: ["CHG-app-management-contract", "CHG-app-managed-runtime"]
+        run: [
+          "deno",
+          "test",
+          "--allow-read",
+          "--allow-write",
+          "--allow-env",
+          "--allow-net",
+          "tests/unit/app_management_config.test.ts",
+          "tests/unit/managed_config_generation.test.ts",
+        ]
+      - id: U2
+        name: 确定性单部署包布局、原包字节与危险输入拒绝
+        change_ids: ["CHG-app-file-delivery"]
+        run: [
+          "deno",
+          "test",
+          "--allow-read",
+          "--allow-write",
+          "tests/unit/deployment_bundle.test.ts",
+        ]
+      - id: U3
+        name: systemd 动作合并、unchanged、超时、状态和恢复
+        change_ids: ["CHG-app-managed-runtime"]
+        run: [
+          "deno",
+          "test",
+          "--allow-read",
+          "--allow-write",
+          "tests/unit/service_management.test.ts",
+        ]
+      - id: U4
+        name: plan-v4 写入与 v1/v2/v3 历史读取兼容
+        change_ids: ["CHG-app-managed-runtime", "CHG-app-management-validation"]
+        run: [
+          "deno",
+          "test",
+          "--allow-read",
+          "--allow-write",
+          "--allow-env",
+          "--allow-net",
+          "tests/unit/history.test.ts",
+          "tests/unit/history_regressions.test.ts",
+        ]
+  dv:
+    mode: enabled
+    summary: 使用内存 RemoteSession 验证 packageCache local-only 单次消费、单包暂存、配置批量候选/发布、每消费者秘密隔离与清理、全秘密脱敏/fail-closed、通知、失败恢复和目标锁。
+    test_targets: ["tests/dv/app_management_execution.test.ts", "tests/dv/execution.test.ts"]
+    preconditions:
+      tools: ["deno>=2"]
+      env: []
+      services: []
+      notes: [
+        "远端文件、秘密和 systemd 状态由显式替身模拟；不会运行宿主服务命令。",
+      ]
+    steps:
+      - id: D1
+        name: managed App 执行顺序、单包、缓存、秘密隔离/脱敏、unchanged、恢复与目标锁
+        change_ids: ["CHG-app-file-delivery", "CHG-app-managed-runtime"]
+        run: [
+          "deno",
+          "test",
+          "--allow-read",
+          "--allow-write",
+          "--allow-env",
+          "--allow-net",
+          "--allow-run",
+          "tests/dv/app_management_execution.test.ts",
+        ]
+      - id: D2
+        name: legacy 执行、取消、跨目标隔离和清理回归
+        change_ids: ["CHG-app-management-contract", "CHG-app-management-validation"]
+        run: [
+          "deno",
+          "test",
+          "--allow-read",
+          "--allow-write",
+          "--allow-env",
+          "--allow-net",
+          "--allow-run=ssh,scp,filehub,deno",
+          "tests/dv/execution.test.ts",
+        ]
+  integration:
+    mode: enabled
+    summary: 覆盖固定 updater 四格式离线复解析及无效候选 fail-closed、真实 OpenSSH argv、Python/Deno 降权后 metadata/secret/HOME 环境、flock、外层和恶意内层归档、六操作发布历史，以及公开 CLI/文档示例兼容。
+    test_targets: [
+      "tests/integration/config_updater.test.ts",
+      "tests/integration/remote_deployment.test.ts",
+      "tests/integration/managed_transport_security.test.ts",
+      "tests/integration/package_cli.test.ts",
+      "tests/integration/env_prepare_cli.test.ts",
+      "tests/integration/deploy_version_skip.test.ts",
+      "tests/contract/verify_app_management_contract.ts",
+    ]
+    preconditions:
+      tools: ["deno>=2"]
+      env: []
+      services: []
+      notes: [
+        "归档远端命令通过协议替身返回确定性 stat/tar/sha256 结果；固定 updater 在本地临时目录真实读写。",
+      ]
+    steps:
+      - id: I1
+        name: 四格式秘密注入后离线复解析、无效候选 fail-closed、类型/编码/残留与 script 安全边界
+        change_ids: ["CHG-app-management-contract", "CHG-app-managed-runtime"]
+        run: [
+          "deno",
+          "test",
+          "--allow-read",
+          "--allow-write",
+          "tests/integration/config_updater.test.ts",
+        ]
+      - id: I2
+        name: 真实 OpenSSH argv、Python/Deno 降权后协议环境、verified HOME、flock 与部署包外层/恶意内层校验
+        change_ids: ["CHG-app-file-delivery", "CHG-app-managed-runtime"]
+        run: [
+          "deno",
+          "test",
+          "--allow-read",
+          "--allow-write",
+          "tests/integration/remote_deployment.test.ts",
+          "tests/integration/managed_transport_security.test.ts",
+        ]
+      - id: I3
+        name: 六操作 control attempt、公共 CLI、validated-directory 与 legacy 包命令回归
+        change_ids: ["CHG-app-management-validation"]
+        run: [
+          "deno",
+          "test",
+          "--allow-read",
+          "--allow-write",
+          "--allow-env",
+          "--allow-net",
+          "--allow-run",
+          "tests/integration/package_cli.test.ts",
+          "tests/integration/env_prepare_cli.test.ts",
+          "tests/integration/deploy_version_skip.test.ts",
+        ]

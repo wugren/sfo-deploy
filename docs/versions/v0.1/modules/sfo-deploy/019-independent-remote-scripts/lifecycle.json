@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "stages": {
+    "proposal": {
+      "inputs": {
+        "docs/versions/v0.1/modules/sfo-deploy/019-independent-remote-scripts/proposal.md": "8dfd61f18316f2f8c9503bab9be1c8740a6a110869418965c89b34fd79430d2f"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "ad90f324f6e851bedfa0d873a880cc3feb61570b2536df9783a1f68776a70dbc"
+    }
+  },
+  "task_manifest": "task.yaml"
+}

@@ -1,0 +1,216 @@
+schema_version: 1
+task_manifest: task.yaml
+risk_profile: risk-profile.yaml
+api_impact:
+  public_api: breaking
+  crate_root_export_change: true
+  build_surface_change: true
+  documentation_examples_affected: true
+evidence_inputs: [
+  "deno.json",
+  "deno.lock",
+  "src",
+  "tests",
+  "examples",
+  "README.md",
+  "docs/guides",
+  "harness/scripts/test-run.py",
+  "harness/quality-gates.yaml",
+  "test-run.sh",
+  "test-run.bat",
+]
+contract_checks:
+  mode: enabled
+  steps:
+    - id: deno-external-positive
+      kind: external-positive
+      assertion: new-path-compiles
+      name: 编译仅从公开 src/mod.ts 导入的外部 TypeScript 消费者
+      change_ids: [
+        "CHG-deno-package-entry",
+        "CHG-typescript-control-plane",
+        "CHG-deno-consumer-migration",
+        "CHG-deno-verification",
+      ]
+      run: ["deno", "check", "--frozen", "tests/contract/new_path_consumer.ts"]
+    - id: deno-external-negative
+      kind: external-negative
+      assertion: old-path-rejected-for-removed-symbol
+      name: 验证已移除的 Python 产品入口因目标不存在而不能编译
+      change_ids: [
+        "CHG-deno-package-entry",
+        "CHG-typescript-control-plane",
+        "CHG-deno-consumer-migration",
+        "CHG-deno-verification",
+      ]
+      run: [
+        "deno",
+        "run",
+        "--allow-read",
+        "--allow-write",
+        "--allow-run=deno",
+        "tests/contract/verify_deno_contract.ts",
+        "old-path",
+      ]
+    - id: deno-removed-symbol-scan
+      kind: removed-symbol-scan
+      assertion: no-unallowlisted-old-symbol-references
+      name: 扫描现存产品、示例、测试和文档消费者中的旧 Python 符号
+      change_ids: [
+        "CHG-deno-package-entry",
+        "CHG-typescript-control-plane",
+        "CHG-deno-consumer-migration",
+        "CHG-deno-verification",
+      ]
+      run: [
+        "python",
+        "harness/scripts/consumer-closure-check.py",
+        "--root",
+        ".",
+        "--version",
+        "v0.1",
+        "--module",
+        "sfo-deploy",
+        "--task-name",
+        "018-migrate-to-deno-typescript",
+      ]
+    - id: deno-repository-compile-closure
+      kind: repository-compile-closure
+      assertion: repository-consumers-compile
+      name: 对生产模块、Deno 测试和示例消费者执行完整类型闭包
+      change_ids: [
+        "CHG-deno-package-entry",
+        "CHG-typescript-control-plane",
+        "CHG-deno-consumer-migration",
+        "CHG-deno-verification",
+      ]
+      run: [
+        "deno",
+        "run",
+        "--allow-read",
+        "--allow-run=deno",
+        "tests/contract/verify_deno_contract.ts",
+        "closure",
+      ]
+    - id: deno-documentation-examples
+      kind: documentation-examples
+      assertion: documentation-examples-compile
+      name: 验证 README 安装权限合同并编译示例项目入口
+      change_ids: [
+        "CHG-deno-package-entry",
+        "CHG-typescript-control-plane",
+        "CHG-deno-consumer-migration",
+        "CHG-deno-verification",
+      ]
+      run: [
+        "deno",
+        "run",
+        "--allow-read",
+        "--allow-run=deno",
+        "tests/contract/verify_deno_contract.ts",
+        "docs",
+      ]
+defaults:
+  workdir: .
+  timeout_sec: 600
+  env: {}
+manual_gaps:
+  - id: real-ssh-deployment
+    owner: sfo-deploy 维护者与具备隔离目标机的运维人员
+    reason: 当前仓库环境没有可安全修改的真实 SSH 目标机、受信任 host key、sudo/systemd 服务与发布制品
+    acceptance_impact: 自动测试验证 OpenSSH argv、known_hosts、超时终止、执行隔离和清理，但不证明某个具体发行版及网络环境的真实部署成功
+levels:
+  unit:
+    mode: enabled
+    summary: 覆盖严格配置与规划、公开 filehub provider/registry 的 pre-abort 零暂存、provider-return/link 后取消清理、哈希/容量/no-publish 合同、秘密失败关闭、历史短写/原子发布/nlink 收敛/磁盘式 v1-v3 codec/rollback、OpenSSH 同步取消/timeout kill-reap 与 CLI 分支
+    test_targets: [
+      "tests/unit/config_planning.test.ts",
+      "tests/unit/downloads_secrets.test.ts",
+      "tests/unit/history.test.ts",
+      "tests/unit/history_regressions.test.ts",
+      "tests/unit/transport_cli.test.ts",
+      "tests/fixtures/history/plan-v1.json",
+      "tests/fixtures/history/plan-v2.json",
+      "tests/fixtures/history/plan-v3.json",
+    ]
+    preconditions:
+      tools: ["deno>=2"]
+      env: []
+      services: []
+      notes: [
+        "HTTP 测试只绑定 127.0.0.1 临时端口；registry pre-abort 直接计数 Deno.makeTempDir 为零；provider-return 与 hard-link syscall 后取消分别验证不返回成功且清理 owned artifact/target；filehub 与 OpenSSH 进程使用固定 argv 的可控替身；同步 commandFactory 取消断言 kill 及 output reap 已完成；FsFile 短写注入在单个测试内恢复原型；v1/v2/v3 计划来自独立磁盘 fixture 而非当前 encoder 回环",
+      ]
+    steps:
+      - id: deno-unit
+        name: 运行 Deno 控制平面单元测试
+        change_ids: [
+          "CHG-deno-package-entry",
+          "CHG-typescript-control-plane",
+          "CHG-deno-consumer-migration",
+          "CHG-deno-verification",
+        ]
+        run: [
+          "deno",
+          "test",
+          "--allow-read",
+          "--allow-write",
+          "--allow-env",
+          "--allow-net",
+          "--allow-run",
+          "tests/unit",
+        ]
+  dv:
+    mode: enabled
+    summary: 使用内存传输验证单模块执行生命周期、当前目标 fail-fast、跨目标隔离、执行中取消、session/workspace 与 PreparedExecution 清理
+    test_targets: ["tests/dv/execution.test.ts"]
+    preconditions:
+      tools: ["deno>=2"]
+      env: []
+      services: []
+      notes: [
+        "不连接真实 SSH 目标；执行中取消由可控 RemoteSession 在首个脚本处触发，断言不再连接后续目标且全部本地/远端暂存进入清理路径",
+      ]
+    steps:
+      - id: deno-execution-dv
+        name: 运行 Deno 执行器 DV 测试
+        change_ids: ["CHG-typescript-control-plane", "CHG-deno-verification"]
+        run: [
+          "deno",
+          "test",
+          "--allow-read",
+          "--allow-write",
+          "--allow-env",
+          "--allow-net",
+          "--allow-run=ssh,scp,filehub,deno",
+          "tests/dv",
+        ]
+  integration:
+    mode: enabled
+    summary: 验证公开包、示例消费者及隔离 DENO_INSTALL_ROOT 的真实安装、PATH 调用与卸载
+    test_targets: [
+      "tests/integration/package_cli.test.ts",
+      "tests/integration/example_consumer.test.ts",
+    ]
+    preconditions:
+      tools: ["deno>=2"]
+      env: []
+      services: []
+      notes: ["安装测试使用独立临时安装根和缓存，测试结束后删除"]
+    steps:
+      - id: deno-package-integration
+        name: 运行公开 API、示例和全局命令安装集成测试
+        change_ids: [
+          "CHG-deno-package-entry",
+          "CHG-deno-consumer-migration",
+          "CHG-deno-verification",
+        ]
+        run: [
+          "deno",
+          "test",
+          "--allow-read",
+          "--allow-write",
+          "--allow-env",
+          "--allow-net",
+          "--allow-run",
+          "tests/integration",
+        ]

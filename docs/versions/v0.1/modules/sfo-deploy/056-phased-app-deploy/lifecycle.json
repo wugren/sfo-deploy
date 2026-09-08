@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "stages": {
+    "acceptance": {
+      "inputs": {
+        "docs/versions/v0.1/modules/sfo-deploy/056-phased-app-deploy/acceptance-report.md": "05a42a104587f3f4cf02c6d092e22f15fe9810593ab9d3879a2783561a67aba7"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "1624364d9b071c10b0d1d3a2acbbcb48be1156245fb49836d601b59d399f8164"
+    },
+    "design": {
+      "inputs": {
+        "docs/versions/v0.1/modules/sfo-deploy/056-phased-app-deploy/design.md": "812f7c4ced7a5d711c1f6dbacd0a38fbbcc1cf4065b3014e951def48649e4de5",
+        "docs/versions/v0.1/modules/sfo-deploy/056-phased-app-deploy/risk-profile.yaml": "b10b5394a8a0ca57490b1e8641b30950e77c153558048fdb8878611a6e103342"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "1624364d9b071c10b0d1d3a2acbbcb48be1156245fb49836d601b59d399f8164"
+    },
+    "implementation": {
+      "inputs": {},
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "1624364d9b071c10b0d1d3a2acbbcb48be1156245fb49836d601b59d399f8164"
+    },
+    "proposal": {
+      "inputs": {
+        "docs/versions/v0.1/modules/sfo-deploy/056-phased-app-deploy/proposal.md": "20075dc743a4b25c91099c2ccb5987c5235f00433ab1c695a6fb8bfe1524d4d8"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "1624364d9b071c10b0d1d3a2acbbcb48be1156245fb49836d601b59d399f8164"
+    },
+    "testing": {
+      "inputs": {
+        "docs/versions/v0.1/modules/sfo-deploy/056-phased-app-deploy/testing.md": "c566e68b00e9ff9761fb1d6a3c10a0439f58015371f254d9fbc897206f912ab3",
+        "docs/versions/v0.1/modules/sfo-deploy/056-phased-app-deploy/testplan.yaml": "8f3d94f0ba1bce23c8a84ad968cd7f269bee1aca9d8ef076d9a734e19784c6ce"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "1624364d9b071c10b0d1d3a2acbbcb48be1156245fb49836d601b59d399f8164",
+      "test_run": ".harness/test-results/test-runs/20260907T071327Z-sfo-deploy+056-phased-app-deploy-all.json",
+      "test_run_sha256": "148f20bc905bd0b30a3ccb66170dfd17a38d21f58e65fdf64637a99427b9d0c1"
+    }
+  },
+  "task_manifest": "task.yaml"
+}

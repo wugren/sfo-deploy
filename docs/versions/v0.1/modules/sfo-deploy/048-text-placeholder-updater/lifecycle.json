@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "stages": {
+    "acceptance": {
+      "inputs": {
+        "docs/versions/v0.1/modules/sfo-deploy/048-text-placeholder-updater/acceptance-report.md": "a576fa4e4a22905e3000bf7b901ad881b97e2718e36fe25fc1d14d5110c166ec"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "617a69eae941826af530e12ceda2903b3f89352d9150fad35097eefde5ffa922"
+    },
+    "design": {
+      "inputs": {
+        "docs/versions/v0.1/modules/sfo-deploy/048-text-placeholder-updater/design.md": "dd87b584bdb08b7b725c53d0332a020a5cb78bed6feb1de71302a21f23d81871",
+        "docs/versions/v0.1/modules/sfo-deploy/048-text-placeholder-updater/risk-profile.yaml": "ac934a96b185870fd129d747d910ea9eaddb7b659713f9c19c143d3468b2bf92"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "617a69eae941826af530e12ceda2903b3f89352d9150fad35097eefde5ffa922"
+    },
+    "implementation": {
+      "inputs": {},
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "617a69eae941826af530e12ceda2903b3f89352d9150fad35097eefde5ffa922"
+    },
+    "proposal": {
+      "inputs": {
+        "docs/versions/v0.1/modules/sfo-deploy/048-text-placeholder-updater/proposal.md": "bdc143f182491e7d3a4b0b466b2f8b1d6b44370a8888402e348d681dd811db6f"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "617a69eae941826af530e12ceda2903b3f89352d9150fad35097eefde5ffa922"
+    },
+    "testing": {
+      "inputs": {
+        "docs/versions/v0.1/modules/sfo-deploy/048-text-placeholder-updater/testing.md": "8d390f4359a81c3741be6c6700d294d093193bddc1bcf2c78331bb7c33176109",
+        "docs/versions/v0.1/modules/sfo-deploy/048-text-placeholder-updater/testplan.yaml": "2f6fe8237c19a5f6a9c076c445a25fccb572fb4d33039ff69feb186ae50772ca"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "617a69eae941826af530e12ceda2903b3f89352d9150fad35097eefde5ffa922",
+      "test_run": ".harness/test-results/test-runs/20260905T093558Z-sfo-deploy+048-text-placeholder-updater-all.json",
+      "test_run_sha256": "d5d47f87cba329400da37a9ecc481a15ef380db1675defcd58017df47c495f39"
+    }
+  },
+  "task_manifest": "task.yaml"
+}

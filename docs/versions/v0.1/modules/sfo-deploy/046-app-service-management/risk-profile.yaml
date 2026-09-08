@@ -1,0 +1,92 @@
+schema_version: 1
+task_manifest: task.yaml
+
+# `risk-profile-check.py --prepare --task <packet>/task.yaml` machine-writes the
+# task/change and active-source bindings below. Proposal owns applies/evidence;
+# automatic design owns required_checks for applicable categories.
+change_ids: [
+  "CHG-app-management-contract",
+  "CHG-app-file-delivery",
+  "CHG-app-managed-runtime",
+  "CHG-app-management-validation",
+]
+source_bindings:
+  proposal: proposal.md
+  design_source: pipeline/plan.md
+
+risks:
+  contract:
+    applies: true
+    evidence:
+      - proposal.md 的 PI-1/PI-3 要求显式 opt-in 的 app.yaml 公共管理契约、四种内置格式、script 更新器、systemd 服务和有限 hook
+      - pipeline/plan.md 的 Exported Interfaces、API and Build Surface Impact 与 Consumer Migration Closure 固化 app.yaml v1/v2 兼容、v3 新合同、可选 PlanStep/结果字段和仓库消费者
+      - src/config.ts、src/types.ts、src/planning.ts、src/mod.ts、README.md、docs/guides/sfo-deploy-cluster-configuration.md 与 examples/eleph-server-multipass/cluster-template/apps/nginx/app.yaml 是合同实现和当前消费者
+    required_checks:
+      - app.yaml v3 正向/负向合同覆盖 systemd、YAML/JSON/TOML/INI、script、字段 selector、秘密类型/编码、目标/权限/argv/hook 约束以及同文件单一所有权
+      - app.yaml v3 management 必须声明规范且非 root 的 run_as；缺失、root、未知用户、UID 0 或与非 root SSH 身份不一致均失败关闭，plan-v4/history 保持该身份绑定
+      - app.yaml v1/v2 与旧脚本计划、公开 TypeScript 既有入口和现有 CLI/JSON 字段保持兼容；新增字段仅在 managed App 使用
+      - 仓库具体消费者、README、中文配置指南和 nginx 示例与规范字段、动作顺序、错误语义一致，deno check --frozen 覆盖公开导出
+  data:
+    applies: true
+    evidence:
+      - proposal.md 的 PI-2/PI-3 与 Risks 定义确定性 manifest/部署包、持久最终配置、发布快照骨架、回退和部分发布恢复边界
+      - pipeline/plan.md 的 State Ownership 与 Failure Flows 为本地 PreparedExecution、目标 attempt 根、候选/备份/最终配置、远端锁、systemd 状态和 release plan-v4 指定单一所有者
+      - src/history.ts、src/config_generation.ts、src/deployment_bundle.ts、src/remote_deployment.ts 与 tests/fixtures/history 是序列化和状态消费者
+    required_checks:
+      - history codec 可写含 managed 声明的 plan-v4、可读 v1/v2/v3，快照只归档无秘密骨架/声明且 rollback 使用当前节点声明秘密重新注入
+      - 多配置候选全部成功后才发布；中途或服务动作失败恢复旧配置和 enable 状态，恢复不完整产生明确 partial/recovery 结果而不伪报成功
+      - manifest、bundle digest、ready 标记和复用键全部绑定内容/用途/release attempt；损坏、陈旧、重复或部分状态不被消费
+      - configure/start/stop/restart/deploy/rollback 各自创建控制端 release attempt，目标端同 App 锁状态只有 RemoteSession 拥有；锁超时、取消和失败终态均释放且不留下可消费半成品
+  security:
+    applies: true
+    evidence:
+      - proposal.md 的 In scope/Risks 定义目标路径、systemd 提权、归档解包、秘密最小暴露、固定 updater 与自定义脚本信任边界
+      - pipeline/plan.md 的 External Runtime Dependencies、State Ownership、Failure Flows 与 Invariants 固化 fixed argv、权限、路径 containment、归档限制、无秘密日志/快照和失败清理
+      - src/config.ts、src/deployment_bundle.ts、src/remote_deployment.ts、src/remote_runtime、src/transport.ts、src/service_management.ts 与 src/execution.ts 跨越本地、SSH、秘密目录和提权边界
+    required_checks:
+      - 绝对路径、..、链接/设备/重复成员、数量/单项/总展开大小、摘要/长度/用途不符均在消费或安装前失败，目标目录外零写入
+      - unit 名、owner/group/mode、验证 argv 与 hook/run 权限严格校验；systemctl、install、mv、tar、sha256sum 只经固定 argv 和既有 root/sudo -n 预检执行
+      - 秘密值不进入控制端骨架/部署包/manifest/argv/普通环境/日志/错误/结果/发布快照，最终秘密配置不回传且 workspace/候选/备份/秘密副本在成功、失败、超时和取消后清理
+      - script 更新器显式 opt-in、摘要绑定、非特权、无 run/net、只读输入和独立 workspace 输出；越界、残留 token、超时、异常输出或直接目标/service 所有权冲突失败关闭
+      - root SSH 只可在固定 getent/id 验证 run_as 存在且 UID 非 0 后，经 sudo -n -u 降权执行 updater 和生命周期脚本；任何验证或 sudo 失败都不得回退 root
+      - 每个 config updater 和每次生命周期脚本调用获得独立 0700 目录及仅含自身声明秘密的 0600 文件；其他配置或调用的秘密不可见，目录不共享且逐调用清理
+      - 内层 App gzip tar 在解压前通过固定 list 验证规范相对路径、regular/dir 类型、无重复、成员数和总展开大小；链接、设备、逃逸与容量越界均零解压
+      - 生命周期 stdout/stderr 使用本次操作秘密全集脱敏后才可进入结果、日志或历史；redactor 构造或安全判定失败时输出字段为空且原始字节不可观察
+  runtime:
+    applies: true
+    evidence:
+      - proposal.md 的 PI-2/PI-3 要求每目标单包传输、同 attempt 复用、配置事务、一次通知、systemd 生命周期、超时/取消/恢复和旧脚本兼容
+      - pipeline/plan.md 的 Key Call Flows、State Ownership、Failure Flows 与 File-Level Implementation Sequence 固化 prepare→upload→verify→install→configure→service→cleanup 顺序及依赖
+      - src/planning.ts、src/execution.ts、src/remote_deployment.ts、src/service_management.ts、src/transport.ts、src/integration.ts 与 src/results.ts 是运行链消费者
+    required_checks:
+      - managed packaged deploy 按安装→候选配置→验证/发布→至多一次 daemon-reload/reload/restart→is-active 收敛执行；packageless、configure、start/stop/restart 和 legacy 脚本分别遵守计划语义
+      - 同一目标/release attempt 相同 bundle digest 只上传/解包一次；强摘要不同时不得复用，部署执行期不二次调用 package provider
+      - 目标级 fail-fast、跨目标隔离、控制端/远端锁、命令超时、状态轮询、取消和所有清理路径均有 DV 或集成证据；不自动重试有副作用动作
+      - unchanged 配置不触发通知；多文件变更按 restart 高于 reload 合并为一次动作，服务失败执行有界补偿并提供可操作结果
+      - configure/start/stop/restart/deploy/rollback 共用控制端 attempt 协议和目标端 flock 锁域；并发调用串行，锁等待超时或取消不执行副作用且释放已持资源
+      - 固定 updater 对秘密注入后的 YAML、JSON、TOML、INI 候选使用随包离线 parser 逐格式复解析；无效格式不能只通过 UTF-8/marker 检查或联网补依赖
+  build:
+    applies: true
+    evidence:
+      - proposal.md 的 PI-2 把确定性外层 tar.gz 与框架固定 runtime 定义为新的部署产物和目标端消费表面
+      - pipeline/plan.md 的 External Runtime Dependencies 与 API and Build Surface Impact 约束 deno.json/deno.lock、固定 JSR 格式/归档依赖、vendored remote runtime 和 GNU/Linux 命令边界
+      - deno.json、deno.lock、src/deployment_bundle.ts 与 src/remote_runtime 是构建和供应链表面
+    required_checks:
+      - deno check --frozen、锁文件一致性和 clean-cache 依赖解析通过；只增加设计列明且固定版本的 YAML/TOML/INI/tar 依赖
+      - 相同规范输入重复构建得到相同 manifest 与部署包摘要，原始 App tar.gz 字节和声明摘要保持不变
+      - 部署包内 framework runtime 来源、版本、摘要可追溯且目标端 --no-remote 执行，不在节点动态下载模块
+      - YAML/JSON/TOML/INI parser 版本锁定并作为 deployment bundle 可追溯成员离线交付；clean-cache 构建和目标 --no-remote 执行均不依赖宿主预装 parser
+  ui:
+    applies: false
+    evidence: 本任务没有图形界面、导航、前端状态或无障碍表面；CLI/JSON/确认提示属于 contract/runtime 检查。
+    required_checks: []
+  harness:
+    applies: true
+    evidence:
+      - proposal.md 的 PI-4 要求新增任务级统一测试入口并覆盖四个 change_id
+      - pipeline/plan.md 的 Stage Graph 与 Implementation Scope Bindings 将测试实现、testplan.yaml、runner 注册和 runtime testing evidence 限定为自动 T-1
+      - harness/scripts/test-run.py 是任务注册消费者，不改变 Harness 规则或其他任务语义
+    required_checks:
+      - testplan.yaml 精确映射四个 change_id 与全部适用风险 required_checks，unit/DV/integration/contract 步骤均可从 sfo-deploy/046-app-service-management all 到达
+      - runner list 只新增本任务 scope 且既有 scope/命令保持不变，成功运行写出覆盖本任务 testplan 和四个 change_id 的机器制品
+      - 返回修复验证覆盖真实 OpenSSH argv、root/run_as 降权、逐消费者秘密不可见、四格式失败复解析、六类操作锁、恶意内层 tar 和秘密输出 fail-closed 反例

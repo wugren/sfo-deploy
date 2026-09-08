@@ -1,0 +1,61 @@
+schema_version: 1
+task_manifest: task.yaml
+
+change_ids: [
+  "CHG-versioned-app-layout",
+  "CHG-remote-package-hash",
+  "CHG-release-config",
+  "CHG-repackage",
+  "CHG-docs",
+]
+source_bindings:
+  proposal: proposal.md
+  design_source: design.md
+
+risks:
+  contract:
+    applies: true
+    evidence:
+      - proposal.md 的 P-001/P-004/P-005 要求 app.yaml v2、app_versions.yaml 与部署 context metadata 扩展，并保持纯 v1 集群只读兼容
+      - proposal.md 的 Confirmed Decisions 固化 install_directory 必填、app_versions.yaml 名称与 metadata 字段
+    required_checks:
+      - app_versions.yaml/app.yaml v2 装载合并与纯 v1 兼容契约测试
+      - context metadata 的 package_hash、install_directory、脚本与模板映射注入及脚本读取测试
+  data:
+    applies: true
+    evidence:
+      - proposal.md 的 P-001 与 Success Criteria 定义 ~/.sfo-deploy/apps/<version>/ 安装包目录、版本目录与 latest 状态
+      - proposal.md 的 P-004 定义 app_versions.yaml 持久配置与文件间一致性要求
+    required_checks:
+      - 配置缺失/多余 App、未知字段、非法路径与 hash 的装载失败测试
+      - 版本发布、同版本跳过、失败回滚重建 latest 的状态与幂等测试
+  security:
+    applies: true
+    evidence:
+      - proposal.md 的 P-002/P-005 与 Risks 定义 gzip 魔数、size+SHA-256、目标机 sha256sum 复验与路径逃逸边界
+    required_checks:
+      - 非 gzip 安装包在 SSH 前拒绝的框架测试
+      - 远端 sha256sum 不匹配拒绝发布与 install_directory 路径逃逸拒绝测试
+  runtime:
+    applies: true
+    evidence:
+      - proposal.md 的 P-001/P-005 定义远端解压、重打包、软链原子切换、systemd 启动与健康检查生命周期
+    required_checks:
+      - 发布、跳过、回滚与健康失败流程的脚本行为测试
+      - 临时目录与失败清理的脚本资源生命周期测试
+  build:
+    applies: false
+    evidence: 本任务不新增第三方依赖、不改变构建产物与安装入口；src 与示例均为既有 Deno/TypeScript 路径，由 deno check 与统一测试入口覆盖。
+    required_checks: []
+  ui:
+    applies: false
+    evidence: 本任务没有图形界面、导航或辅助功能表面；命令行交互按 contract 与 runtime 风险验证。
+    required_checks: []
+  harness:
+    applies: true
+    evidence:
+      - task.yaml 定义五个 change_id 与 scope_paths，testing/testplan 需覆盖每个 change_id
+      - proposal.md 的 Required evidence 要求任务级统一测试入口与模板/live 一致契约
+    required_checks:
+      - 任务级统一测试入口运行本任务 unit/dv/integration 测试计划
+      - testing.md/testplan.yaml 与实现、风险档案的 required_checks 一致

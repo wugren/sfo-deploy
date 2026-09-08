@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "stages": {
+    "proposal": {
+      "inputs": {
+        "docs/versions/v0.1/modules/sfo-deploy/018-migrate-to-deno-typescript/proposal.md": "7df3e25ff60ff9f73709dc6706c28c8a03b4ffc8f745ff783b34628aed06c8b8"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "04c380536edbfc707fc02048876f40b19e80e29068bf0dfdfb61af4a815c7dbf"
+    }
+  },
+  "task_manifest": "task.yaml"
+}

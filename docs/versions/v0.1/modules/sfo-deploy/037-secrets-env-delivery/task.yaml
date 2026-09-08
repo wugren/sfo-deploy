@@ -1,0 +1,53 @@
+schema_version: 1
+
+# 用户确认的最终层级（2026-09-03 确认，并授权自动完成后续全部 lifecycle 阶段）。
+workflow_tier: high-risk
+
+# 规范任务身份；其他任务文档引用此文件，不再重复这些值。
+version: v0.1
+packet_module: sfo-deploy
+task_name: 037-secrets-env-delivery
+stage: design
+mode: auto-pipeline
+auto_pipeline_start_stage: design
+
+# proposal 是所有层级共用的基线；其余路径在高风险确认后才会物化。
+proposal: proposal.md
+completion_report: completion-report.md
+change_record:
+design: design.md
+testing: testing.md
+testplan: testplan.yaml
+acceptance_report: acceptance-report.md
+pipeline_plan: pipeline/plan.md
+risk_profile: risk-profile.yaml
+lifecycle_state: lifecycle.json
+
+changed_paths_file: .harness/evidence/v0.1/stage-scope/037-secrets-env-delivery.paths
+baseline_manifest:
+
+changes:
+  - id: CHG-secret-deploy-command
+    target_module: sfo-deploy
+    scope_paths: ["src/integration.ts", "src/cli.ts", "src/execution.ts", "src/transport.ts", "src/secrets.ts"]
+    changed_paths_file: .harness/evidence/v0.1/stage-scope/037-secrets-env-delivery.paths
+  - id: CHG-secret-env-loading
+    target_module: sfo-deploy
+    scope_paths: ["src/execution.ts", "src/remote_context.ts", "src/transport.ts", "src/secrets.ts"]
+    changed_paths_file: .harness/evidence/v0.1/stage-scope/037-secrets-env-delivery.paths
+  - id: CHG-secret-declaration
+    target_module: sfo-deploy
+    scope_paths: ["src/config.ts", "src/types.ts", "src/planning.ts", "src/history.ts"]
+    changed_paths_file: .harness/evidence/v0.1/stage-scope/037-secrets-env-delivery.paths
+  - id: CHG-secret-placement
+    target_module: sfo-deploy
+    scope_paths: ["src/config.ts", "src/planning.ts", "src/cli.ts", "src/secrets.ts", "examples/eleph-server-multipass/**"]
+    changed_paths_file: .harness/evidence/v0.1/stage-scope/037-secrets-env-delivery.paths
+  - id: CHG-secret-compat
+    target_module: sfo-deploy
+    scope_paths: ["src/secrets.ts", "src/execution.ts", "tests/**", "examples/eleph-server-multipass/**"]
+    changed_paths_file: .harness/evidence/v0.1/stage-scope/037-secrets-env-delivery.paths
+  - id: CHG-secret-docs-example
+    target_module: sfo-deploy
+    scope_paths: ["README.md", "docs/guides/**", "examples/eleph-server-multipass/**", "docs/changes/"]
+    changed_paths_file: .harness/evidence/v0.1/stage-scope/037-secrets-env-delivery.paths

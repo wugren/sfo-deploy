@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "stages": {
+    "acceptance": {
+      "inputs": {
+        "docs/versions/v0.1/modules/sfo-deploy/036-cli-human-readable-output/acceptance-report.md": "dd813b28a0a0c633573b0ca47859c772c8d553ea312235cb620f66fffa550062"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "e379ac80fcf889c4a9788a13f5264c18d6f37d21cbd745d69f552298a6332152"
+    },
+    "design": {
+      "inputs": {
+        "docs/versions/v0.1/modules/sfo-deploy/036-cli-human-readable-output/design.md": "9ead509af35d5278b9564e3675854b242e034ac3b24423aa5259f7e6e1a074f4",
+        "docs/versions/v0.1/modules/sfo-deploy/036-cli-human-readable-output/risk-profile.yaml": "46195aff605d5a65235fe05812ed56f0c281cc6630bccf7aed360d5e3369356e"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "e379ac80fcf889c4a9788a13f5264c18d6f37d21cbd745d69f552298a6332152"
+    },
+    "implementation": {
+      "inputs": {},
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "e379ac80fcf889c4a9788a13f5264c18d6f37d21cbd745d69f552298a6332152"
+    },
+    "proposal": {
+      "inputs": {
+        "docs/versions/v0.1/modules/sfo-deploy/036-cli-human-readable-output/proposal.md": "ed72711c7262ee9df26955a1e7a5c3cf2e58d856682f3d4e02de6a0b98deb5c0"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "e379ac80fcf889c4a9788a13f5264c18d6f37d21cbd745d69f552298a6332152"
+    },
+    "testing": {
+      "inputs": {
+        "docs/versions/v0.1/modules/sfo-deploy/036-cli-human-readable-output/testing.md": "b5a6b857d3583a9f64840660fa1677ac41e6ee31aa532808843413844431633e",
+        "docs/versions/v0.1/modules/sfo-deploy/036-cli-human-readable-output/testplan.yaml": "85842b4e5d89ff0759b7dda562cdae910862a327918812a9d436edbc72ab38c8"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "e379ac80fcf889c4a9788a13f5264c18d6f37d21cbd745d69f552298a6332152",
+      "test_run": ".harness/test-results/test-runs/20260903T072528Z-sfo-deploy+036-cli-human-readable-output-all.json",
+      "test_run_sha256": "e890bff27cfe7c32047abd3d7d4f8dd64eb323bd996022ff35da203742771628"
+    }
+  },
+  "task_manifest": "task.yaml"
+}

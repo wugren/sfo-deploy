@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "stages": {
+    "acceptance": {
+      "inputs": {
+        "docs/versions/v0.1/modules/sfo-deploy/050-drop-app-templates-field/acceptance-report.md": "239a918b4dda03456f8b2ec22240cff2d2c327d5a152db0ca72b2bb1dfe92284"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "6d6fc11d81f1a9adf80e7ad728224b8fe540d2df215fe3084816837c679bb1b7"
+    },
+    "design": {
+      "inputs": {
+        "docs/versions/v0.1/modules/sfo-deploy/050-drop-app-templates-field/design.md": "2ccf74e338915ed71f9bce6d73047f4317131faa77f997a6c104440d5627d226",
+        "docs/versions/v0.1/modules/sfo-deploy/050-drop-app-templates-field/risk-profile.yaml": "c4ac3350fa8ed4c171c6c0073d2685f72a427518f8a0751e46d517e63f9e1561"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "6d6fc11d81f1a9adf80e7ad728224b8fe540d2df215fe3084816837c679bb1b7"
+    },
+    "implementation": {
+      "inputs": {},
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "6d6fc11d81f1a9adf80e7ad728224b8fe540d2df215fe3084816837c679bb1b7"
+    },
+    "proposal": {
+      "inputs": {
+        "docs/versions/v0.1/modules/sfo-deploy/050-drop-app-templates-field/proposal.md": "496607c05386eee8994b509d1719a3d5c694f1c19f9e17236dee105f62665ebc"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "6d6fc11d81f1a9adf80e7ad728224b8fe540d2df215fe3084816837c679bb1b7"
+    },
+    "testing": {
+      "inputs": {
+        "docs/versions/v0.1/modules/sfo-deploy/050-drop-app-templates-field/testing.md": "60be229aec56989e24c9a479a7cd163a1412b08fccf9df0af76766858113879c",
+        "docs/versions/v0.1/modules/sfo-deploy/050-drop-app-templates-field/testplan.yaml": "31964d3bfc6469df702d9b7a0de379679041eb0183d7d6bf676cef39cc6e403f"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "6d6fc11d81f1a9adf80e7ad728224b8fe540d2df215fe3084816837c679bb1b7",
+      "test_run": ".harness/test-results/test-runs/20260906T034838Z-sfo-deploy+050-drop-app-templates-field-all.json",
+      "test_run_sha256": "eb9fc179f017778efed984bec8dfd182ea387e2dd91cd12e3ea20866bcde3d99"
+    }
+  },
+  "task_manifest": "task.yaml"
+}

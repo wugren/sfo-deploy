@@ -1,0 +1,38 @@
+{
+  "schema_version": 2,
+  "cluster": "demo",
+  "requested_action": "deploy",
+  "steps": [
+    {
+      "id": "app:node-a/demo:configure",
+      "machine": {
+        "definition": {
+          "name": "node-a",
+          "domains": [],
+          "private_ip": "10.0.0.1",
+          "public_ip": "203.0.113.10",
+          "region": "local",
+          "ssh_user": "deploy",
+          "ssh_port": 22,
+          "ssh_private_key": null,
+          "script_runtime": { "kind": "deno", "executable": "deno" },
+          "environments": []
+        },
+        "address": "10.0.0.1",
+        "address_kind": "private"
+      },
+      "kind": "app",
+      "resource": "demo",
+      "action": "configure",
+      "scripts": [
+        { "source": "files/action.ts", "permissions": { "run": [], "net": [] } }
+      ],
+      "parameters": {},
+      "package": null,
+      "config_secrets": [],
+      "file_secrets": [],
+      "templates": [],
+      "depends_on": []
+    }
+  ]
+}

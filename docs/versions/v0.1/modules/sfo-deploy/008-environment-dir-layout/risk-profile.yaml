@@ -1,0 +1,63 @@
+schema_version: 1
+task_manifest: task.yaml
+
+# `risk-profile-check.py --prepare --task <packet>/task.yaml` writes these
+# task/change and source bindings. Proposal/design changes then invalidate this
+# profile until its judgments are reviewed and the bindings are prepared again.
+change_ids: ["CHG-environment-dir-layout"]
+source_bindings:
+  proposal: proposal.md
+  design_source: design.md
+
+# One task-level matrix. Stage documents reference this file and never copy it.
+# Proposal owns applies/evidence. Design owns required_checks for applicable
+# risks. Testing implements those checks; acceptance may consult the profile
+# but does not require or verify risk evidence as an acceptance gate.
+risks:
+  contract:
+    applies: true
+    evidence:
+      - design.md
+      - tests/unit/test_config_planning.py
+      - examples/eleph-server-multipass/tests/test_config_contract.py
+    required_checks:
+      - KR-001 新布局集群按机器目录装载，CLI validate/plan 输出环境 id 保持 MACHINE/NAME；旧 machines.yaml 的 environments 字段被明确拒绝
+  data:
+    applies: true
+    evidence:
+      - design.md
+      - examples/eleph-server-multipass/cluster-template/machines.yaml.tpl
+      - tests/conftest.py
+      - src/sfo_deploy/config.py
+    required_checks:
+      - KR-002 machines.yaml 不再接受环境相关字段；环境声明只在 environments/<机器名>/<app>/ 下；旧布局目录结构被拒绝
+  security:
+    applies: false
+    evidence: 本次变更不触碰 SSH 身份、known_hosts、私钥权限、原子发布或 file_secrets 投递逻辑；环境目录布局变化不引入新的凭据路径
+    required_checks: []
+  runtime:
+    applies: true
+    evidence:
+      - design.md
+      - src/sfo_deploy/config.py
+      - src/sfo_deploy/planning.py
+      - examples/eleph-server-multipass/tests/test_plan.py
+    required_checks:
+      - KR-003 环境依赖/执行顺序（基础环境先于 jx-runtime、环境先于 App）、依赖循环与缺失 environment.yaml 均失败关闭
+  build:
+    applies: true
+    evidence:
+      - design.md
+      - examples/eleph-server-multipass/cluster-template/**
+      - examples/eleph-server-multipass/README.md
+      - README.md
+    required_checks:
+      - KR-004 prepare 生成的信任包采用新布局，git-ignore 覆盖生成目录，README 与模板布局一致
+  ui:
+    applies: false
+    evidence: 本任务不涉及任何 UI、导航、可访问性、本地化或用户工作流变更
+    required_checks: []
+  harness:
+    applies: false
+    evidence: 不修改 harness 规则、检查器或测试基础设施；仅按既有流程维护任务包文档
+    required_checks: []

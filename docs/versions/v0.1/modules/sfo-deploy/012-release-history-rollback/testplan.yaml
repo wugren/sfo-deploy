@@ -1,0 +1,137 @@
+schema_version: 1
+task_manifest: task.yaml
+risk_profile: risk-profile.yaml
+api_impact:
+  public_api: migration-required
+  crate_root_export_change: true
+  build_surface_change: false
+  documentation_examples_affected: true
+evidence_inputs: ["README.md", "src/sfo_deploy", "tests"]
+contract_checks:
+  mode: enabled
+  steps:
+    - id: release-public-api-contract
+      kind: external-positive
+      assertion: new-path-compiles
+      name: 验证发布记录、执行准备公共导出和 DeploymentResult 元数据兼容契约
+      change_ids: ["CHG-release-history", "CHG-release-history-cli", "CHG-release-rollback"]
+      run: [
+        ".venv/bin/python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_release_history.py::TestReleaseIntegration::test_public_exports_result_metadata_and_readme_contract",
+      ]
+    - id: release-repository-consumer-closure
+      kind: repository-compile-closure
+      assertion: repository-consumers-compile
+      name: 通过任务自有消费者导入检查公共导出和旧 DeploymentResult 构造方式
+      change_ids: ["CHG-release-history", "CHG-release-history-cli", "CHG-release-rollback"]
+      run: [
+        ".venv/bin/python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_release_history.py::TestReleaseIntegration::test_public_exports_result_metadata_and_readme_contract",
+      ]
+    - id: release-removed-symbol-scan
+      kind: removed-symbol-scan
+      assertion: no-unallowlisted-old-symbol-references
+      name: 验证旧的逐步准备和无发布元数据消费者语义未遗留在仓库消费者中
+      change_ids: ["CHG-release-history", "CHG-release-history-cli", "CHG-release-rollback"]
+      run: [
+        ".venv/bin/python",
+        "harness/scripts/consumer-closure-check.py",
+        "--root",
+        ".",
+        "--version",
+        "v0.1",
+        "--module",
+        "sfo-deploy",
+        "--task-name",
+        "012-release-history-rollback",
+      ]
+    - id: release-readme-examples
+      kind: documentation-examples
+      assertion: documentation-examples-compile
+      name: 验证 README 的 history、rollback、存储维护和自定义 codec 示例契约
+      change_ids: ["CHG-release-history", "CHG-release-history-cli", "CHG-release-rollback"]
+      run: [
+        ".venv/bin/python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_release_history.py::TestReleaseIntegration::test_public_exports_result_metadata_and_readme_contract",
+      ]
+defaults:
+  workdir: .
+  timeout_sec: 600
+  env: {}
+manual_gaps: []
+levels:
+  unit:
+    mode: enabled
+    summary: 在最低层验证回退派生、source codec、全计划本地准备、秘密边界、attempt 状态、锁和唯一 ID 分支
+    test_targets:
+      - "tests/test_release_history.py::TestReleaseUnit"
+    preconditions:
+      tools: []
+      env: []
+      services: []
+      notes:
+        - 使用本地 fake provider 与 fake transport，不访问网络、真实 SSH 或 filehub
+    steps:
+      - id: release-history-unit
+        name: 运行发布历史、严格 codec、PreparedExecution 和锁生命周期单元测试
+        change_ids: ["CHG-release-history", "CHG-release-rollback"]
+        run: [
+          ".venv/bin/python",
+          "-m",
+          "pytest",
+          "-q",
+          "tests/test_release_history.py::TestReleaseUnit",
+        ]
+  dv:
+    mode: enabled
+    summary: 在 sfo-deploy 单模块真实装载、规划、归档、准备和执行串联中验证损坏恢复及发布回退生命周期
+    test_targets:
+      - "tests/test_release_history.py::TestReleaseDv"
+    preconditions:
+      tools: []
+      env: []
+      services: []
+      notes:
+        - 临时集群、fake provider 和 fake SSH session 完整覆盖模块内部连线，不产生远端副作用
+    steps:
+      - id: release-history-dv
+        name: 运行 deploy、history、损坏失败关闭、指定来源 rollback 和 lineage 单模块验证
+        change_ids: ["CHG-release-history", "CHG-release-rollback"]
+        run: [
+          ".venv/bin/python",
+          "-m",
+          "pytest",
+          "-q",
+          "tests/test_release_history.py::TestReleaseDv",
+        ]
+  integration:
+    mode: enabled
+    summary: 验证 RunOptions、CLI JSON、公共导出、结果元数据与 README 相邻消费者契约
+    test_targets:
+      - "tests/test_release_history.py::TestReleaseIntegration"
+    preconditions:
+      tools: []
+      env: []
+      services: []
+      notes:
+        - CLI 通过项目绑定入口运行；不依赖外部网络、真实 SSH 或外部 filehub
+    steps:
+      - id: release-history-integration
+        name: 运行 history/rollback CLI 正反参数、JSON 和公共 API 消费者契约测试
+        change_ids: ["CHG-release-history-cli", "CHG-release-rollback"]
+        run: [
+          ".venv/bin/python",
+          "-m",
+          "pytest",
+          "-q",
+          "tests/test_release_history.py::TestReleaseIntegration",
+        ]

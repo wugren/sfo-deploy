@@ -1,0 +1,104 @@
+schema_version: 1
+task_manifest: task.yaml
+
+# `risk-profile-check.py --prepare --task <packet>/task.yaml` 写入任务/变更与设计源绑定；
+# 提案或设计变更后需复核本文件并重新 prepare。
+change_ids: [
+  "CHG-secret-deploy-command",
+  "CHG-secret-env-loading",
+  "CHG-secret-declaration",
+  "CHG-secret-placement",
+  "CHG-secret-compat",
+  "CHG-secret-docs-example",
+]
+source_bindings:
+  proposal: proposal.md
+  design_source: pipeline/plan.md
+
+# 单任务矩阵。阶段文档引用本文件，不复制矩阵。
+# 提案拥有 applies/evidence；设计为适用项补 required_checks；测试实现这些检查。
+risks:
+  contract:
+    applies: true
+    evidence: [
+      "src/cli.ts",
+      "src/integration.ts",
+      "src/config.ts",
+      "src/types.ts",
+      "src/mod.ts",
+      "src/secret_loader/deno.ts",
+      "src/secret_loader/python.py",
+      "README.md",
+      "docs/guides/sfo-deploy-cluster-configuration.md",
+      "examples/eleph-server-multipass/**",
+      "tests/**",
+      "pipeline/plan.md",
+    ]
+    required_checks: [
+      "schema-check 严格校验 cluster.yaml `secrets:`、machines.yaml `secrets_dir` 与环境/App `secret_values`/`secret_files` 声明",
+      "deno check --frozen 编译闭包覆盖新公开 API 与 loader",
+      "旧符号删除扫描：仓库内无 `config_secrets`/`file_secrets`/`DEPLOYMENT_CONTEXT_PATH`/`DeploymentContext`/`temporaryContextFile` 生产引用",
+      "文档示例契约：README/帮助/配置指南与新命令/字段一致",
+    ]
+  data:
+    applies: true
+    evidence: [
+      "src/history.ts",
+      "src/remote_context.ts",
+      "src/transport.ts",
+      "src/execution.ts",
+      "src/types.ts",
+      "src/config.ts",
+      "tests/fixtures/history/*.json",
+    ]
+    required_checks: [
+      "history 编解码单测覆盖新快照 `secret_values`/`secret_files` 字段并可读旧历史字段",
+      "旧快照含 config_secrets/file_secrets 时执行失败关闭并有明确迁移提示",
+      "deno.lock 不因本次任务改变（不引入外部依赖）",
+    ]
+  security:
+    applies: true
+    evidence: [
+      "src/secrets.ts",
+      "src/execution.ts",
+      "src/transport.ts",
+      "src/cli.ts",
+      "src/config.ts",
+      "src/secret_loader/deno.ts",
+      "src/secret_loader/python.py",
+    ]
+    required_checks: [
+      "secrets-deploy 单测/DV 覆盖目录 0700、文件 0600、原子落盘、幂等与失败清理",
+      "`--check` 对照名称/kind/sha256 清单报告缺失/漂移/extra 且不输出秘密值",
+      "loader 拒绝非法名称、空值、路径逃逸与未声明名称，错误只含密钥名",
+      "`secrets-deploy` 输出/错误经 Redactor 脱敏，执行阶段不再按值脱敏但 loader 不打印",
+    ]
+  runtime:
+    applies: true
+    evidence: [
+      "src/execution.ts",
+      "src/transport.ts",
+      "src/planning.ts",
+      "src/integration.ts",
+      "src/remote_context.ts",
+      "src/secret_loader/deno.ts",
+      "src/secret_loader/python.py",
+    ]
+    required_checks: [
+      "执行器在脚本步骤前于 0700 workspace 建立 `secrets/` 声明子集副本，任一声明缺失即 preflight 失败",
+      "只注入 `DEPLOYMENT_SECRETS_DIR`，Deno `--allow-read` 不包含整机安全目录",
+      "secrets-deploy 幂等/`--check`/`--remove` 与 `--machine` 相交在任务级 DV/集成测试中可运行",
+      "脚本步骤顺序（check→install→configure→start/restart）与退出码语义不因装载变化",
+    ]
+  build:
+    applies: false
+    evidence: 不引入或移除外部依赖；deno.json/deno.lock 不变；新增 loader 与测试均为仓库内代码。
+    required_checks: []
+  ui:
+    applies: false
+    evidence: 不涉及 UI、导航、无障碍或交互工作流；CLI 文本输出沿用项目中文文案风格。
+    required_checks: []
+  harness:
+    applies: false
+    evidence: 不修改 Harness 规则、检查器或测试基础结构的实现。
+    required_checks: []

@@ -1,0 +1,59 @@
+schema_version: 1
+task_manifest: task.yaml
+
+# `risk-profile-check.py --prepare --task <packet>/task.yaml` 写入任务/变更与设计源绑定；
+# 提案或设计变更后需复核本文件并重新 prepare。
+change_ids: ["CHG-cli-step-human-output", "CHG-cli-json-flag", "CHG-cli-output-docs"]
+source_bindings:
+  proposal: proposal.md
+  design_source: design.md
+
+# 单任务矩阵。阶段文档引用本文件，不复制矩阵。
+# 提案拥有 applies/evidence；设计为适用项补 required_checks；测试实现这些检查。
+risks:
+  contract:
+    applies: true
+    evidence: [
+      "src/cli.ts",
+      "src/integration.ts",
+      "src/execution.ts",
+      "README.md",
+      "tests/integration/fetch_package.test.ts",
+      "tests/integration/install_deno_cli.test.ts",
+    ]
+    required_checks: [
+      "unit: 默认模式 stdout 不输出 JSON 顶层对象且包含中文字符串",
+      "unit: --json 输出与 serializeResult 保持同一结构",
+      "integration: fetch/install-deno 在 --json 下 stdout 仍可被 JSON.parse",
+    ]
+  data:
+    applies: false
+    evidence: 不修改发布历史、快照、配置或任何持久化 schema；仅 CLI 输出层变化。
+    required_checks: []
+  security:
+    applies: true
+    evidence: ["src/cli.ts", "src/results.ts", "src/secrets.ts"]
+    required_checks: [
+      "unit: 人可读步骤行只使用脱敏后的 message/skipReason，stdout/stderr 原文不进入输出行",
+      "unit: --json 错误对象仍走既有 redactor",
+    ]
+  runtime:
+    applies: true
+    evidence: ["src/execution.ts", "src/integration.ts", "src/cli.ts"]
+    required_checks: [
+      "unit: DeploymentExecutor 在每步完成（成功/跳过/失败/阻塞/取消）时发出 step-result 事件且顺序与总数正确",
+      "unit: onProgress 缺省时不改变 run() 既有行为",
+      "dv: executePlan 带 onStep 的端到端步骤事件顺序与结果一致",
+    ]
+  build:
+    applies: false
+    evidence: 不引入或移除依赖，不改变构建产物；依赖树与 deno.json/deno.lock 不变。
+    required_checks: []
+  ui:
+    applies: false
+    evidence: 不涉及 UI、导航、无障碍或交互工作流；CLI 文本输出沿用项目中文文案风格。
+    required_checks: []
+  harness:
+    applies: false
+    evidence: 不修改 Harness 规则、检查器或测试基础结构的实现。
+    required_checks: []

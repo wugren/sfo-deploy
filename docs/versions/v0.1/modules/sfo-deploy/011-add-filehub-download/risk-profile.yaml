@@ -1,0 +1,49 @@
+schema_version: 1
+task_manifest: task.yaml
+
+change_ids: ["CHG-filehub-download"]
+source_bindings:
+  proposal: proposal.md
+  design_source: pipeline/plan.md
+
+risks:
+  contract:
+    applies: true
+    evidence:
+      - proposal.md 定义新增内置 filehub provider、严格 source.target 形态、客户端缺失错误和现有 provider 兼容边界
+      - pipeline/plan.md 的 Exported Interfaces、Failure Flows 与 Implementation Scope Bindings 固化配置、调用和错误契约
+    required_checks:
+      - 验证默认注册表可解析 filehub，source 只接受非空 target，未知/缺失字段失败且 http/https/自定义 provider 行为不变
+      - 验证 filehub pull 的 argv、目标路径、错误类别与 README 示例一致
+  data:
+    applies: false
+    evidence: 本次不修改持久化数据、schema、迁移、序列化格式或缓存键；下载目标仍是执行期间的临时工件。
+    required_checks: []
+  security:
+    applies: true
+    evidence:
+      - proposal.md 明确凭据只由 filehub 本地配置或 FILEHUB_* 环境变量管理，禁止把密码、token 或 session 放入部署 YAML/argv
+      - pipeline/plan.md 的 State Ownership 与 Failure Flows 固化无 shell argv、非交互 stdin 和错误输出边界
+    required_checks:
+      - 验证 target 与 destination 均作为独立 argv 传递且 shell=False，不读取、拼接或记录 filehub 密码、token、session
+      - 验证 stdout/stderr 不转发给调用方，稳定退出码映射生成有界诊断，安装提示不自动执行远程脚本
+  runtime:
+    applies: true
+    evidence:
+      - proposal.md 要求部署下载路径启动 filehub pull，并处理命令缺失、非零退出、异常工件、失败清理和框架二次校验
+      - pipeline/plan.md 的 Dependency Graphs、State Ownership 与 Failure Flows 定义外部进程、目标工件和失败恢复边界
+    required_checks:
+      - 验证 filehub 成功、命令缺失、非零退出、未创建目标、取消/异常、900 秒总超时、子进程终止/回收、私有暂存目录清理和无自动重试路径
+      - 记录上游 filehub 每请求 60 秒超时兼容依据，并验证 sfo-deploy 最大字节数、普通文件和声明哈希二次校验均生效
+  build:
+    applies: false
+    evidence: 不增加 Python 包依赖、不修改锁文件、构建图、发布产物、生产默认值或回滚策略；filehub 是运行时可选 provider 的外部命令前置条件。
+    required_checks: []
+  ui:
+    applies: false
+    evidence: 不涉及图形界面、导航、无障碍或交互式 UI 流程；仅新增 CLI 下载错误提示和 README 说明。
+    required_checks: []
+  harness:
+    applies: false
+    evidence: 不修改 Harness 规则、脚本、检查器或质量门；仅生成本任务要求的流程文档和运行证据。
+    required_checks: []

@@ -1,0 +1,160 @@
+schema_version: 1
+task_manifest: task.yaml
+risk_profile: risk-profile.yaml
+api_impact:
+  public_api: migration-required
+  crate_root_export_change: false
+  build_surface_change: true
+  documentation_examples_affected: true
+evidence_inputs: [
+  "src/sfo_deploy",
+  "tests",
+  "README.md",
+  "docs/guides",
+  "examples/eleph-server-multipass",
+]
+contract_checks:
+  mode: enabled
+  steps:
+    - id: deno-external-positive
+      kind: external-positive
+      assertion: new-path-compiles
+      name: 验证严格 TypeScript 配置消费者与示例权限对象使用新 Deno 契约
+      change_ids: ["CHG-deno-script-contract", "CHG-deno-example-migration"]
+      run: [
+        ".venv/bin/python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/unit/test_deno_script_contract.py::test_strict_typescript_script_object_preserves_explicit_permissions",
+        "tests/integration/test_deno_script_runtime.py::test_example_yaml_declares_typescript_paths_deno_machine_and_exact_permissions",
+      ]
+    - id: deno-removed-symbol-scan
+      kind: removed-symbol-scan
+      assertion: no-unallowlisted-old-symbol-references
+      name: 扫描新配置消费者中的 Python 字段、裸脚本路径和旧运行时调用残留
+      change_ids: ["CHG-deno-script-contract", "CHG-deno-example-migration"]
+      run: [
+        ".venv/bin/python",
+        "harness/scripts/consumer-closure-check.py",
+        "--root",
+        ".",
+        "--version",
+        "v0.1",
+        "--module",
+        "sfo-deploy",
+        "--task-name",
+        "016-deno-cluster-scripts",
+      ]
+    - id: deno-repository-compile-closure
+      kind: repository-compile-closure
+      assertion: repository-consumers-compile
+      name: 编译框架、测试和示例 Python 消费者并验证全部 TypeScript 生命周期脚本
+      change_ids: ["CHG-deno-script-contract", "CHG-deno-example-migration"]
+      run: [
+        ".venv/bin/python",
+        "-m",
+        "compileall",
+        "-q",
+        "src",
+        "tests",
+        "examples/eleph-server-multipass/src",
+        "examples/eleph-server-multipass/tests",
+      ]
+    - id: deno-documentation-examples
+      kind: documentation-examples
+      assertion: documentation-examples-compile
+      name: 验证 21 个示例脚本离线 Deno check 与三处文档权限边界
+      change_ids: ["CHG-deno-script-contract", "CHG-deno-example-migration"]
+      run: [
+        ".venv/bin/python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/integration/test_deno_script_runtime.py::test_all_21_example_lifecycle_scripts_pass_offline_deno_check",
+        "tests/integration/test_deno_script_runtime.py::test_documentation_publishes_the_same_deno_permission_and_legacy_boundary",
+      ]
+defaults:
+  workdir: .
+  timeout_sec: 600
+  env: {}
+manual_gaps:
+  - id: deno-real-ssh-target
+    owner: sfo-deploy 发布负责人和具备隔离目标机的运维人员
+    reason: 当前任务环境没有可安全修改的隔离 SSH 目标机、sudo/systemd/MySQL/Redis 服务和发布制品，不能执行真实远端部署
+    acceptance_impact: 自动测试覆盖精确 argv、权限拒绝、上传与清理顺序、失败分类和实际 Deno 沙箱，但不证明目标发行版上的 Deno 安装路径、sudo 与系统服务配置
+  - id: unit-paramiko-shell-rendering-branches
+    owner: sfo-deploy 维护者
+    reason: 本任务直接覆盖 execute_deno 的全部固定参数、白名单与路径拒绝分支；Paramiko 通道超时、socket 收集、SFTP 递归目录和通用 run_argv shell quoting 属于既有传输实现，未在本任务重复逐分支构造 Paramiko 私有对象
+    acceptance_impact: Deno 新增参数和值域有直接单元覆盖，通用 Paramiko I/O 分支继续由既有传输测试负责
+  - id: unit-history-capacity-and-platform-branches
+    owner: sfo-deploy 维护者
+    reason: 本任务覆盖 execution-plan v3 正常往返、v2 Deno 与 v1 Python 兼容解码、未知/缺失字段、权限注入和来源逃逸；MAX_STEPS、MAX_SNAPSHOT_BYTES、Windows fsync/chmod 和通用发布锁分支不是本次 Deno codec 新增语义
+    acceptance_impact: Deno runtime/run/net 持久化和严格失败已验证，通用容量与平台分支继续由既有发布历史测试负责
+levels:
+  unit:
+    mode: enabled
+    summary: 在最低层验证严格配置值域、权限 argv、Deno 2 预检、execution-plan v1/v2/v3 codec 和示例脚本分支语义
+    test_targets: [
+      "tests/unit/test_deno_script_contract.py",
+      "examples/eleph-server-multipass/tests/test_lifecycle_scripts.py",
+      "examples/eleph-server-multipass/tests/test_environment_scripts.py",
+      "examples/eleph-server-multipass/tests/deno_script_harness.ts",
+    ]
+    preconditions:
+      tools: ["deno>=2"]
+      env: []
+      services: []
+      notes: ["不建立 SSH、网络或真实子进程；Paramiko 会话以记录替身隔离"]
+    steps:
+      - id: deno-contract-unit
+        name: 运行 Deno 配置、传输参数和发布计划严格 codec 单元测试
+        change_ids: ["CHG-deno-script-contract"]
+        run: [".venv/bin/python", "-m", "pytest", "-q", "tests/unit/test_deno_script_contract.py"]
+      - id: deno-example-behavior-unit
+        name: 以真实 Deno 执行当前 TypeScript 示例并模拟系统边界验证生命周期与故障恢复
+        change_ids: ["CHG-deno-example-migration"]
+        run: [
+          ".venv/bin/python",
+          "-m",
+          "pytest",
+          "-q",
+          "examples/eleph-server-multipass/tests/test_lifecycle_scripts.py",
+          "examples/eleph-server-multipass/tests/test_environment_scripts.py",
+        ]
+  dv:
+    mode: enabled
+    summary: 验证逐步骤工作区、成功/脚本失败/预检失败/取消/清理失败、秘密脱敏和 Python legacy 分派生命周期
+    test_targets: ["tests/dv/test_deno_execution.py"]
+    preconditions:
+      tools: []
+      env: []
+      services: []
+      notes: ["使用内存 SSH 会话替身，不连接真实目标机"]
+    steps:
+      - id: deno-execution-dv
+        name: 运行单模块 Deno 执行与 legacy 回退生命周期测试
+        change_ids: ["CHG-deno-script-contract"]
+        run: [".venv/bin/python", "-m", "pytest", "-q", "tests/dv/test_deno_execution.py"]
+  integration:
+    mode: enabled
+    summary: 用真实 Deno 验证直接 API 沙箱，并验证 21 个示例脚本、YAML 消费接口和文档契约
+    test_targets: ["tests/integration/test_deno_script_runtime.py"]
+    preconditions:
+      tools: ["deno>=2"]
+      env: []
+      services: []
+      notes: [
+        "Deno check 固定 no-config/no-remote/no-npm；权限探针只访问任务临时目录和被拒绝的 127.0.0.1:9",
+      ]
+    steps:
+      - id: deno-runtime-example-integration
+        name: 运行实际 Deno 权限拒绝和示例/文档消费者集成测试
+        change_ids: ["CHG-deno-script-contract", "CHG-deno-example-migration"]
+        run: [
+          ".venv/bin/python",
+          "-m",
+          "pytest",
+          "-q",
+          "tests/integration/test_deno_script_runtime.py",
+        ]

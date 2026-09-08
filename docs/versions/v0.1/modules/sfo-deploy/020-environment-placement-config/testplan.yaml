@@ -1,0 +1,155 @@
+schema_version: 1
+task_manifest: task.yaml
+risk_profile: risk-profile.yaml
+api_impact:
+  public_api: backward-compatible
+  crate_root_export_change: false
+  build_surface_change: true
+  documentation_examples_affected: true
+evidence_inputs: ["src", "tests", "examples/eleph-server-multipass", "README.md", "docs/guides"]
+contract_checks:
+  mode: enabled
+  steps:
+    - id: environment-placement-repository-compile-closure
+      kind: repository-compile-closure
+      assertion: repository-consumers-compile
+      name: 编译生产模块、仓库测试消费者、multipass 项目入口和集中 Environment 生命周期脚本
+      change_ids: ["CHG-environment-placement-config"]
+      run: [
+        "deno",
+        "run",
+        "--allow-read",
+        "--allow-run=deno",
+        "tests/contract/verify_environment_placement_config.ts",
+        "closure",
+      ]
+    - id: environment-placement-documentation-examples
+      kind: documentation-examples
+      assertion: documentation-examples-compile
+      name: 校验三份文档、multipass 完整放置映射、模板树无旧目录/缓存及两套 prepare 的复制前和发布前严格校验并编译示例入口
+      change_ids: ["CHG-environment-placement-config"]
+      run: [
+        "deno",
+        "run",
+        "--allow-read",
+        "--allow-run=deno",
+        "tests/contract/verify_environment_placement_config.ts",
+        "docs",
+      ]
+defaults:
+  workdir: .
+  timeout_sec: 600
+  env: {}
+manual_gaps:
+  - id: real-multipass-service-deployment
+    owner: sfo-deploy 示例维护者与具备隔离 Multipass 虚拟机的运维人员
+    reason: 当前测试环境没有可安全修改的 Multipass VM、sudo/systemd、MySQL、Redis 和可信 JAR 制品；自动测试只装载复制后的完整模板并生成确定性计划，不执行远端服务安装
+    acceptance_impact: v2 模板、共享资源路径、依赖闭包和计划动作有自动证据，但具体 Linux 镜像上的软件安装与服务健康仍需发布前环境验收
+  - id: concurrency-not-applicable
+    owner: sfo-deploy 维护者
+    reason: 配置装载和 buildPlan 均按已排序名称同步派生不可变结果，本变更没有新增并发、重入或共享可变状态
+    acceptance_impact: 确定性多机顺序由 DV 覆盖，不存在需要新增竞态用例的设计元素
+levels:
+  unit:
+    mode: enabled
+    summary: 覆盖 cluster schema v1/v2 的全部新增装载分支、放置边界、布局隔离、名称/资源路径、同机与跨机依赖，并复用磁盘历史 codec 和 rollback 回归
+    test_targets: [
+      "tests/unit/environment_placement.test.ts",
+      "tests/unit/history_regressions.test.ts",
+      "tests/fixtures/history/plan-v1.json",
+      "tests/fixtures/history/plan-v2.json",
+      "tests/fixtures/history/plan-v3.json",
+    ]
+    preconditions:
+      tools: ["deno>=2"]
+      env: []
+      services: []
+      notes: [
+        "全部配置在临时目录生成；负例逐一断言 ConfigurationError 的版本、映射、机器、布局、定义或资源路径上下文；历史回归只运行既有 codec/rollback 定向用例",
+      ]
+    steps:
+      - id: environment-placement-unit
+        name: 运行版本化 Environment 装载和严格配置分支单元测试
+        change_ids: ["CHG-environment-placement-config"]
+        run: [
+          "deno",
+          "test",
+          "--allow-read",
+          "--allow-write",
+          "tests/unit/environment_placement.test.ts",
+        ]
+      - id: environment-placement-history-codec-unit
+        name: 运行既有磁盘 v1/v2/v3 计划 codec 定向回归
+        change_ids: ["CHG-environment-placement-config"]
+        run: [
+          "deno",
+          "test",
+          "--allow-read",
+          "--allow-write",
+          "--filter",
+          "unit/history codec",
+          "tests/unit/history_regressions.test.ts",
+        ]
+      - id: environment-placement-history-rollback-unit
+        name: 运行既有完整 rollback 定向回归
+        change_ids: ["CHG-environment-placement-config"]
+        run: [
+          "deno",
+          "test",
+          "--allow-read",
+          "--allow-write",
+          "--filter",
+          "unit/history rollback",
+          "tests/unit/history_regressions.test.ts",
+        ]
+  dv:
+    mode: enabled
+    summary: 以真实 loadCluster/buildPlan 模块内装配验证多机稳定计划、同机/跨机依赖、机器/App/Environment 过滤、withDependencies 和失败关闭
+    test_targets: ["tests/integration/environment_placement.test.ts"]
+    preconditions:
+      tools: ["deno>=2"]
+      env: []
+      services: []
+      notes: [
+        "只使用临时集群，不连接 SSH；通过测试名称过滤仅执行该文件中的 dv/ 用例",
+      ]
+    steps:
+      - id: environment-placement-dv
+        name: 运行集中放置的多机规划、过滤、依赖闭包和失败流程 DV
+        change_ids: ["CHG-environment-placement-config"]
+        run: [
+          "deno",
+          "test",
+          "--allow-read",
+          "--allow-write",
+          "--filter",
+          "dv/environment placement",
+          "tests/integration/environment_placement.test.ts",
+        ]
+  integration:
+    mode: enabled
+    summary: 从公开 TypeScript API 对比 v1/v2 归一化行为，原样复制并严格装载 multipass v2 模板、断言完整计划且旧机器层布局失败，并证明归档 rollback 不回读当前 Environment 布局
+    test_targets: [
+      "tests/integration/environment_placement.test.ts",
+      "examples/eleph-server-multipass/cluster-template",
+    ]
+    preconditions:
+      tools: ["deno>=2"]
+      env: []
+      services: []
+      notes: [
+        "multipass 模板原样复制到临时目录，不预删除任何被测路径；只生成 machines.yaml 和私钥文件，App 的语法有效制品哨兵保持原样：框架 strict loader 接受其结构，项目 CLI 仍会在部署前拒绝未替换的哨兵；随后断言完整十四步计划并注入旧机器层目录证明失败；发布历史测试归档计划后删除当前 Environment/App 目录再读取 rollback",
+      ]
+    steps:
+      - id: environment-placement-integration
+        name: 运行公开配置/规划接口、multipass 模板和历史布局独立性集成测试
+        change_ids: ["CHG-environment-placement-config"]
+        run: [
+          "deno",
+          "test",
+          "--allow-read",
+          "--allow-write",
+          "--filter",
+          "integration/environment placement",
+          "tests/integration/environment_placement.test.ts",
+        ]

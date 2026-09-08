@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "stages": {
+    "acceptance": {
+      "inputs": {
+        "docs/versions/v0.1/modules/deployment-framework/040-independent-secret-files/acceptance-report.md": "648ca2dbce27462983dd05a6674b14e047d907bfdc666539977c1cbd0d64fa5e"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "4f6b9f6387e887af3612adbd52f3b110c895d684bfea1033e5b41926e00f7b72"
+    },
+    "design": {
+      "inputs": {
+        "docs/versions/v0.1/modules/deployment-framework/040-independent-secret-files/design.md": "c1eb195be55bd39c470471e8ccfbfee0c224992238b9641eb87642111933a398",
+        "docs/versions/v0.1/modules/deployment-framework/040-independent-secret-files/risk-profile.yaml": "ed4b63581bf43aeb10e6b9d2e36206e1c07be5a69ae79b004d9a7b8653fb12b9"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "4f6b9f6387e887af3612adbd52f3b110c895d684bfea1033e5b41926e00f7b72"
+    },
+    "implementation": {
+      "inputs": {},
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "4f6b9f6387e887af3612adbd52f3b110c895d684bfea1033e5b41926e00f7b72"
+    },
+    "proposal": {
+      "inputs": {
+        "docs/versions/v0.1/modules/deployment-framework/040-independent-secret-files/proposal.md": "89ccf44a02a628ad238b01eab66494254ad952bc7a1b12d513845a79dc82e20b"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "4f6b9f6387e887af3612adbd52f3b110c895d684bfea1033e5b41926e00f7b72"
+    },
+    "testing": {
+      "inputs": {
+        "docs/versions/v0.1/modules/deployment-framework/040-independent-secret-files/testing.md": "e9677453684f4ae80d2181f0e930f033d9c0499e922d076dd5cd870c6b3a2465",
+        "docs/versions/v0.1/modules/deployment-framework/040-independent-secret-files/testplan.yaml": "14282c1341bdc17e133c3edf4381d21ddcb5b371f6ff697a88d415af056d8f29"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "4f6b9f6387e887af3612adbd52f3b110c895d684bfea1033e5b41926e00f7b72",
+      "test_run": ".harness/test-results/test-runs/20260904T042359Z-deployment-framework+040-independent-secret-files-all.json",
+      "test_run_sha256": "d3b2f52dfa227625a811b8a86050a2b6adc2798428ae636911b205779d628dda"
+    }
+  },
+  "task_manifest": "task.yaml"
+}

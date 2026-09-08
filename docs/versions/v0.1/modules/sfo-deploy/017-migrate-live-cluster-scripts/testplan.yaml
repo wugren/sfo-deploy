@@ -1,0 +1,132 @@
+schema_version: 1
+task_manifest: task.yaml
+risk_profile: risk-profile.yaml
+api_impact:
+  public_api: none
+  crate_root_export_change: false
+  build_surface_change: true
+  documentation_examples_affected: true
+evidence_inputs: ["examples", "tests", "src/sfo_deploy/config.py", "src/sfo_deploy/planning.py"]
+contract_checks:
+  mode: enabled
+  steps:
+    - id: live-cluster-repository-compile-closure
+      kind: repository-compile-closure
+      assertion: repository-consumers-compile
+      name: 验证实时脚本模板字节闭包、当前生成入口和 21 个 TypeScript 脚本离线 Deno check
+      change_ids: ["CHG-live-cluster-ts-migration", "CHG-live-cluster-ts-regression"]
+      run: [
+        ".venv/bin/python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_live_cluster_typescript_contract.py::TestLiveClusterIntegration",
+        "tests/integration/test_deno_script_runtime.py::test_all_21_example_lifecycle_scripts_pass_offline_deno_check",
+        "examples/eleph-server-multipass/tests/test_prepare_multipass_sh.py::test_shell_bootstrap_first_create_and_trusted_rerun_publish_one_bundle",
+        "examples/eleph-server-multipass/tests/test_bootstrap.py::test_bootstrap_copies_direct_app_yaml_without_artifact_rewrite_logic",
+      ]
+    - id: live-cluster-documentation-examples
+      kind: documentation-examples
+      assertion: documentation-examples-compile
+      name: 验证 shell 与 PowerShell 示例生成路径继续直接消费当前 TypeScript 模板
+      change_ids: ["CHG-live-cluster-ts-migration", "CHG-live-cluster-ts-regression"]
+      run: [
+        ".venv/bin/python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_live_cluster_typescript_contract.py::TestLiveClusterIntegration",
+        "tests/integration/test_deno_script_runtime.py::test_all_21_example_lifecycle_scripts_pass_offline_deno_check",
+        "examples/eleph-server-multipass/tests/test_prepare_multipass_sh.py::test_shell_bootstrap_first_create_and_trusted_rerun_publish_one_bundle",
+        "examples/eleph-server-multipass/tests/test_bootstrap.py::test_bootstrap_copies_direct_app_yaml_without_artifact_rewrite_logic",
+      ]
+defaults:
+  workdir: .
+  timeout_sec: 600
+  env: {}
+manual_gaps:
+  - id: live-cluster-real-target-execution
+    owner: sfo-deploy 发布负责人和具备隔离 Multipass 目标机的运维人员
+    reason: 测试环境不安全执行现存实时实例上的 sudo、systemd、MySQL、Redis 或 JAR 发布；本任务复用真实 Deno 行为桩、严格配置/计划接口与生成器替身
+    acceptance_impact: 自动证据证明实时内容与已验证模板逐字节一致、权限和计划可解析、生成路径不回退，但不替代发布前隔离目标机冒烟验收
+levels:
+  unit:
+    mode: enabled
+    summary: 在最低层验证可移植模板守卫、可选 live/运行态摘要、21 个脚本字节配对、5 份权限 YAML、保护状态与代表性 TS 行为
+    test_targets: [
+      "tests/test_live_cluster_typescript_contract.py::TestLiveClusterUnit",
+      "examples/eleph-server-multipass/tests/test_lifecycle_scripts.py",
+      "examples/eleph-server-multipass/tests/test_environment_scripts.py",
+    ]
+    preconditions:
+      tools: ["deno>=2"]
+      env: []
+      services: []
+      notes: [
+        "扫描根固定为仓库 examples；无 live 且无 .harness 摘要的干净检出仍验证 tracked 模板和生成器；live 存在时摘要必需，只计算 SHA-256 且不输出文件内容",
+      ]
+    steps:
+      - id: live-cluster-contract-unit
+        name: 运行可移植防回退、模板/live 一致性、保护摘要和 TypeScript 行为测试
+        change_ids: ["CHG-live-cluster-ts-migration", "CHG-live-cluster-ts-regression"]
+        run: [
+          ".venv/bin/python",
+          "-m",
+          "pytest",
+          "-q",
+          "tests/test_live_cluster_typescript_contract.py::TestLiveClusterUnit",
+          "examples/eleph-server-multipass/tests/test_lifecycle_scripts.py",
+          "examples/eleph-server-multipass/tests/test_environment_scripts.py",
+        ]
+  dv:
+    mode: enabled
+    summary: 通过当前严格 loader 和 build_plan 串联验证 live 或 tracked 模板配置、Deno runtime、动作权限及 synthetic 旧 Python 引用失败关闭
+    test_targets: ["tests/test_live_cluster_typescript_contract.py::TestLiveClusterDv"]
+    preconditions:
+      tools: []
+      env: []
+      services: []
+      notes: [
+        "live 存在时复制其非秘密配置，否则使用 tracked 模板；统一写入测试专用假私钥，旧合同负例不依赖 live tree",
+      ]
+    steps:
+      - id: live-cluster-plan-dv
+        name: 运行实时集群严格装载、部署计划和旧脚本合同拒绝验证
+        change_ids: ["CHG-live-cluster-ts-migration", "CHG-live-cluster-ts-regression"]
+        run: [
+          ".venv/bin/python",
+          "-m",
+          "pytest",
+          "-q",
+          "tests/test_live_cluster_typescript_contract.py::TestLiveClusterDv",
+        ]
+  integration:
+    mode: enabled
+    summary: 验证 shell/PowerShell 生成边界与当前模板集成，并对 21 个模板等价 live 脚本执行离线 Deno check
+    test_targets: [
+      "tests/test_live_cluster_typescript_contract.py::TestLiveClusterIntegration",
+      "tests/integration/test_deno_script_runtime.py::test_all_21_example_lifecycle_scripts_pass_offline_deno_check",
+      "examples/eleph-server-multipass/tests/test_prepare_multipass_sh.py::test_shell_bootstrap_first_create_and_trusted_rerun_publish_one_bundle",
+      "examples/eleph-server-multipass/tests/test_bootstrap.py::test_bootstrap_copies_direct_app_yaml_without_artifact_rewrite_logic",
+    ]
+    preconditions:
+      tools: ["deno>=2", "bash", "ssh-keygen"]
+      env: []
+      services: []
+      notes: [
+        "Multipass 与 ssh-keyscan 使用现有测试替身；Deno check 禁止远程和 npm 依赖",
+      ]
+    steps:
+      - id: live-cluster-generation-integration
+        name: 运行生成路径、模板离线编译和新集群 TypeScript 输出集成测试
+        change_ids: ["CHG-live-cluster-ts-migration", "CHG-live-cluster-ts-regression"]
+        run: [
+          ".venv/bin/python",
+          "-m",
+          "pytest",
+          "-q",
+          "tests/test_live_cluster_typescript_contract.py::TestLiveClusterIntegration",
+          "tests/integration/test_deno_script_runtime.py::test_all_21_example_lifecycle_scripts_pass_offline_deno_check",
+          "examples/eleph-server-multipass/tests/test_prepare_multipass_sh.py::test_shell_bootstrap_first_create_and_trusted_rerun_publish_one_bundle",
+          "examples/eleph-server-multipass/tests/test_bootstrap.py::test_bootstrap_copies_direct_app_yaml_without_artifact_rewrite_logic",
+        ]

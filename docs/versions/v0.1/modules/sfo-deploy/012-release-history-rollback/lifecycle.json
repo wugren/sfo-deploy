@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "stages": {
+    "proposal": {
+      "inputs": {
+        "docs/versions/v0.1/modules/sfo-deploy/012-release-history-rollback/proposal.md": "6c410ffeea0a196dd0d04320be9f360a679cc0950545de02f5f0b1f8835041d0"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "bc3b3e46aed38b1798632dc6285e56ba8e0c2c88413bc81457efaa38e1d0dc32"
+    }
+  },
+  "task_manifest": "task.yaml"
+}

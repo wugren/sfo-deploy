@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "stages": {
+    "acceptance": {
+      "inputs": {
+        "docs/versions/v0.1/modules/sfo-deploy/027-old-version-cleanup/acceptance-report.md": "5b6e17d4eb2291344ac6279dad008a335066fc1132cfc8916bde6b568073cdbb"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "523b0bc8b2425a84001a63c270915a3404586f61ca5368deba2442da3010ca05"
+    },
+    "design": {
+      "inputs": {
+        "docs/versions/v0.1/modules/sfo-deploy/027-old-version-cleanup/design.md": "974a7eac0ea525aed626d6727fa68c1dcd3c7b96afcff71281af28ecbaf9f8f3",
+        "docs/versions/v0.1/modules/sfo-deploy/027-old-version-cleanup/risk-profile.yaml": "f83ccb03a7a00c99e6c0d0cdc42e460b2e7c25982696939b7ed94a0c9b5b9d06"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "523b0bc8b2425a84001a63c270915a3404586f61ca5368deba2442da3010ca05"
+    },
+    "implementation": {
+      "inputs": {},
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "523b0bc8b2425a84001a63c270915a3404586f61ca5368deba2442da3010ca05"
+    },
+    "proposal": {
+      "inputs": {
+        "docs/versions/v0.1/modules/sfo-deploy/027-old-version-cleanup/proposal.md": "53bf47868b9f6163d1f22bcb9cdea258208df31a69bb39d6bcd0855f73c7d8ab"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "523b0bc8b2425a84001a63c270915a3404586f61ca5368deba2442da3010ca05"
+    },
+    "testing": {
+      "inputs": {
+        "docs/versions/v0.1/modules/sfo-deploy/027-old-version-cleanup/testing.md": "189c87678b0c2f7c6718d91bb0f44d779c747f7f8ddeabc69d9d1a074ba2bb22",
+        "docs/versions/v0.1/modules/sfo-deploy/027-old-version-cleanup/testplan.yaml": "e97214d3d8d3fb4046a3ea9e33a17fd12ad6751fbaa172cf8b26ea838a1aa58f"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "523b0bc8b2425a84001a63c270915a3404586f61ca5368deba2442da3010ca05",
+      "test_run": ".harness/test-results/test-runs/20260902T074157Z-sfo-deploy+027-old-version-cleanup-all.json",
+      "test_run_sha256": "ce3305738fb86b2f6e2f2f9288970e628f2da990f1fd2a54da6b55507707e314"
+    }
+  },
+  "task_manifest": "task.yaml"
+}
