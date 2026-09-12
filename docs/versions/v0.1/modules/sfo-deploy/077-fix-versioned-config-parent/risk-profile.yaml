@@ -1,0 +1,60 @@
+schema_version: 1
+task_manifest: task.yaml
+change_ids: ["CHG-versioned-config-parent"]
+source_bindings:
+  proposal: proposal.md
+  design_source: design.md
+risks:
+  contract:
+    applies: true
+    evidence:
+      - docs/versions/v0.1/modules/sfo-deploy/077-fix-versioned-config-parent/proposal.md
+      - src/remote_deployment.ts
+      - src/transport.ts
+      - tests/integration/versioned_transport_boundary.test.ts
+    required_checks:
+      - versioned-config-parent-contract
+  data:
+    applies: true
+    evidence:
+      - docs/versions/v0.1/modules/sfo-deploy/077-fix-versioned-config-parent/proposal.md
+      - src/execution.ts
+      - src/transport.ts
+      - src/versioned_release_management.ts
+    required_checks:
+      - versioned-config-publication-contract
+  security:
+    applies: true
+    evidence:
+      - docs/versions/v0.1/modules/sfo-deploy/077-fix-versioned-config-parent/proposal.md
+      - src/transport.ts
+      - tests/integration/versioned_transport_boundary.test.ts
+    required_checks:
+      - managed-config-path-boundary
+  runtime:
+    applies: true
+    evidence:
+      - docs/versions/v0.1/modules/sfo-deploy/077-fix-versioned-config-parent/proposal.md
+      - src/execution.ts
+      - src/transport.ts
+      - examples/eleph-server-multipass/clusters/multipass/apps/jx-server/app.yaml
+    required_checks:
+      - versioned-stage-runtime-contract
+  build:
+    applies: true
+    evidence:
+      - README.md
+      - docs/guides/sfo-deploy-cluster-configuration.md
+      - docs/modules/sfo-deploy.md
+      - examples/eleph-server-multipass/README.md
+      - skills/sfo-deploy-cluster/references/app.md
+    required_checks:
+      - documentation-contract
+  ui:
+    applies: false
+    evidence: 不涉及用户界面、导航或无障碍变更。
+    required_checks: []
+  harness:
+    applies: false
+    evidence: 任务使用现有 Harness 流程，不改变流程或检查器行为。
+    required_checks: []

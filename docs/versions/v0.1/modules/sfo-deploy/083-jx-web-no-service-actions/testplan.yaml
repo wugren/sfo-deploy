@@ -1,0 +1,91 @@
+schema_version: 1
+task_manifest: task.yaml
+risk_profile: risk-profile.yaml
+api_impact:
+  public_api: backward-compatible
+  crate_root_export_change: false
+  build_surface_change: true
+  documentation_examples_affected: true
+evidence_inputs: ["src", "README.md", "docs/guides/sfo-deploy-cluster-configuration.md", "docs/modules/sfo-deploy.md", "skills/sfo-deploy-cluster/references/app.md", "examples/eleph-server-multipass", "tests", "tests/unit/app_management_config.test.ts", "tests/unit/history.test.ts", "tests/unit/managed_config_generation.test.ts", "tests/dv/versioned_deploy_order.test.ts", "tests/integration/config_updater.test.ts", "tests/contract/verify_app_management_contract.ts"]
+contract_checks:
+  mode: enabled
+  steps:
+    - id: C1
+      kind: repository-compile-closure
+      assertion: repository-consumers-compile
+      name: Nginx 格式仓库编译闭包
+      change_ids: ["CHG-jx-web-nginx-server-config"]
+      run: ["deno", "task", "check"]
+    - id: C2
+      kind: documentation-examples
+      assertion: documentation-examples-compile
+      name: Nginx 配置文档与示例契约
+      change_ids: ["CHG-jx-web-nginx-server-config"]
+      run: ["deno", "test", "--allow-read", "tests/contract/verify_app_management_contract.ts"]
+    - id: C3
+      kind: repository-compile-closure
+      assertion: repository-consumers-compile
+      name: 远端 config updater bundle 同步
+      change_ids: ["CHG-jx-web-nginx-server-config"]
+      run: ["bash", "-lc", "before=$(sha256sum src/remote_runtime/config_updater.bundle.js | cut -d' ' -f1); deno task bundle:remote-runtime; after=$(sha256sum src/remote_runtime/config_updater.bundle.js | cut -d' ' -f1); test \"$before\" = \"$after\""]
+defaults:
+  workdir: .
+  timeout_sec: 600
+  env: {}
+manual_gaps:
+  - "真实 Multipass 部署、nginx -t、latest 链接、页面和 /prod-api/ 请求在验收阶段执行，不作为本测试计划自动化证据。"
+levels:
+  unit:
+    mode: enabled
+    summary: 覆盖 nginx 格式装载、原文骨架、保留标记拒绝和计划快照往返
+    test_targets: ["tests/unit/app_management_config.test.ts", "tests/unit/history.test.ts", "tests/unit/managed_config_generation.test.ts"]
+    preconditions:
+      tools: ["deno>=2"]
+      env: []
+      services: []
+      notes: ["使用本地临时目录装载配置，不连接部署节点。"]
+    steps:
+      - id: U1
+        name: Nginx 配置装载与安全边界
+        change_ids: ["CHG-jx-web-nginx-server-config"]
+        run: ["deno", "test", "--allow-read", "--allow-write", "--allow-env", "--allow-net", "--allow-run", "tests/unit/app_management_config.test.ts"]
+      - id: U2
+        name: Nginx 原文骨架生成
+        change_ids: ["CHG-jx-web-nginx-server-config"]
+        run: ["deno", "test", "--allow-read", "--allow-write", "--allow-env", "--allow-net", "--allow-run", "tests/unit/managed_config_generation.test.ts"]
+      - id: U3
+        name: 计划快照 nginx format 往返
+        change_ids: ["CHG-jx-web-nginx-server-config"]
+        run: ["deno", "test", "--allow-read", "--allow-write", "--allow-env", "--allow-net", "--allow-run", "tests/unit/history.test.ts"]
+  dv:
+    mode: enabled
+    summary: 覆盖 stage 配置发布、latest 切换、reload 顺序和无 start/stop 语义
+    test_targets: ["tests/dv/versioned_deploy_order.test.ts"]
+    preconditions:
+      tools: ["deno>=2"]
+      env: []
+      services: ["local temporary path fixture"]
+      notes: ["使用本地真实文件命令模拟远端发布边界。"]
+    steps:
+      - id: D1
+        name: Nginx 配置 reload 与 versioned activate 顺序
+        change_ids: ["CHG-jx-web-nginx-server-config"]
+        run: ["deno", "test", "--allow-read", "--allow-write", "--allow-env", "--allow-net", "--allow-run", "tests/dv/versioned_deploy_order.test.ts"]
+  integration:
+    mode: enabled
+    summary: 覆盖远端 nginx updater、示例集群 validate 和 plan 契约
+    test_targets: ["tests/integration/config_updater.test.ts"]
+    preconditions:
+      tools: ["deno>=2"]
+      env: []
+      services: []
+      notes: ["validate/plan 只读本地集群，不执行 SSH。"]
+    steps:
+      - id: I1
+        name: 远端 Nginx 配置渲染器契约
+        change_ids: ["CHG-jx-web-nginx-server-config"]
+        run: ["deno", "test", "--allow-read", "--allow-write", "--allow-env", "--allow-net", "--allow-run", "tests/integration/config_updater.test.ts"]
+      - id: I2
+        name: Multipass jx-web validate 与 plan
+        change_ids: ["CHG-jx-web-nginx-server-config"]
+        run: ["deno", "task", "--config", "examples/eleph-server-multipass/deno.json", "eleph-deploy", "validate", "--cluster", "multipass", "--config-root", "./clusters"]

@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "stages": {
+    "acceptance": {
+      "inputs": {
+        "docs/versions/v0.1/modules/sfo-deploy/082-app-directory-variables/acceptance-report.md": "a0d4104cb09b59539ff1e13ab678303ebb97657eb1d896630dbf472d0614ab16"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "32126211bc83c97068602790abf1e24d34f3070702ad0aced3ba897e785f79d2"
+    },
+    "design": {
+      "inputs": {
+        "docs/versions/v0.1/modules/sfo-deploy/082-app-directory-variables/design.md": "f87c433c4f76ce9053ae6636858862d8c18e050d75efd31c95bdd144ec895edf",
+        "docs/versions/v0.1/modules/sfo-deploy/082-app-directory-variables/risk-profile.yaml": "605df778713e272f60c524a8770dad8cf3bc6528e4e1061555f1712a960412f4"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "32126211bc83c97068602790abf1e24d34f3070702ad0aced3ba897e785f79d2"
+    },
+    "implementation": {
+      "inputs": {},
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "32126211bc83c97068602790abf1e24d34f3070702ad0aced3ba897e785f79d2"
+    },
+    "proposal": {
+      "inputs": {
+        "docs/versions/v0.1/modules/sfo-deploy/082-app-directory-variables/proposal.md": "8702babb36268dcaf6626af05f27fdd3111e492809de405c6bf1157ba5efe7a7"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "32126211bc83c97068602790abf1e24d34f3070702ad0aced3ba897e785f79d2"
+    },
+    "testing": {
+      "inputs": {
+        "docs/versions/v0.1/modules/sfo-deploy/082-app-directory-variables/testing.md": "a1fe39cbb10f7552b380ec7eee28441a007487a93925fd359ac7210792cfcaf3",
+        "docs/versions/v0.1/modules/sfo-deploy/082-app-directory-variables/testplan.yaml": "9c418d768804705d5ba239bc5037263fe9dd42f9064a6e368ee5563c325534ff"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "32126211bc83c97068602790abf1e24d34f3070702ad0aced3ba897e785f79d2",
+      "test_run": ".harness/test-results/test-runs/20260911T103153Z-sfo-deploy+082-app-directory-variables-all.json",
+      "test_run_sha256": "d920729acb9ccf3c8e7ba6d90af3e3fe61f662465c5491e58fead90eac39927f"
+    }
+  },
+  "task_manifest": "task.yaml"
+}

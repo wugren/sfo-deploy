@@ -48,6 +48,11 @@ export class FakeSession implements RemoteSession {
     readonly packageInstallExitCode = 0,
     readonly installFixesTools = true,
     readonly privilegedError?: Error,
+    readonly environmentDpkgQueryExitCode = 0,
+    readonly environmentRpmExitCode = 0,
+    readonly environmentServiceActive = true,
+    readonly environmentServiceEnabled = true,
+    readonly environmentServiceActionExitCode = 0,
   ) {
     this.tools = [...tools];
   }
@@ -93,6 +98,15 @@ export class FakeSession implements RemoteSession {
         if (this.packageManager.length === 0) return Promise.resolve(commandResult(1));
         return Promise.resolve(commandResult(0, `${this.packageManager}\n`));
       }
+      if (script.includes("for path in /usr/bin/systemctl")) {
+        return Promise.resolve(commandResult(0, "/usr/bin/systemctl\n"));
+      }
+      if (script.includes("for path in /usr/bin/service")) {
+        return Promise.resolve(commandResult(0, "/usr/sbin/service\n"));
+      }
+      if (script.includes("for path in /usr/sbin/chkconfig")) {
+        return Promise.resolve(commandResult(0, "/usr/sbin/chkconfig\n"));
+      }
     }
     const binary = String(argv[0]).split("/").pop() ?? "";
     const packageManagers = ["apt-get", "apk", "dnf", "yum"];
@@ -120,6 +134,37 @@ export class FakeSession implements RemoteSession {
         }
         return Promise.resolve(commandResult(0));
       }
+    }
+    if (argv[0] === "/usr/bin/dpkg-query") {
+      const packages = argv.slice(argv.indexOf("--") + 1);
+      const missing = this.environmentDpkgQueryExitCode === 1
+        ? packages.map((item, index) => `rc\t${item}\tnot-installed\t${index}`)
+        : packages.map((item) => `ii\t${item}`);
+      return Promise.resolve(commandResult(
+        this.environmentDpkgQueryExitCode,
+        missing.join("\n"),
+      ));
+    }
+    if (argv[0] === "/usr/bin/rpm") {
+      return Promise.resolve(commandResult(this.environmentRpmExitCode, ""));
+    }
+    if (argv[0] === "/usr/bin/systemctl" || argv[0] === "/bin/systemctl") {
+      if (argv[1] === "is-active") {
+        return Promise.resolve(commandResult(this.environmentServiceActive ? 0 : 3));
+      }
+      if (argv[1] === "is-enabled") {
+        return Promise.resolve(commandResult(this.environmentServiceEnabled ? 0 : 1));
+      }
+      return Promise.resolve(commandResult(this.environmentServiceActionExitCode));
+    }
+    if (argv[0] === "service") {
+      if (argv[2] === "status") {
+        return Promise.resolve(commandResult(this.environmentServiceActive ? 0 : 3));
+      }
+      return Promise.resolve(commandResult(this.environmentServiceActionExitCode));
+    }
+    if (argv[0] === "/usr/sbin/chkconfig") {
+      return Promise.resolve(commandResult(this.environmentServiceActionExitCode));
     }
     if (joined.includes("--version")) {
       this.versionCalls++;

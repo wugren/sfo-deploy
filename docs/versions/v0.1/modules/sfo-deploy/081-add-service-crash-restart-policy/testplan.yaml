@@ -1,0 +1,65 @@
+schema_version: 1
+task_manifest: task.yaml
+risk_profile: risk-profile.yaml
+api_impact:
+  public_api: backward-compatible
+  crate_root_export_change: false
+  build_surface_change: false
+  documentation_examples_affected: true
+evidence_inputs: ["src/types.ts", "src/config.ts", "src/systemd_unit.ts", "src/history.ts", "tests/unit/app_management_config.test.ts", "tests/unit/systemd_unit.test.ts", "tests/unit/history.test.ts", "tests/contract/verify_app_management_contract.ts", "README.md", "docs/guides/sfo-deploy-cluster-configuration.md", "skills/sfo-deploy-cluster/assets/app-versioned/app.yaml", "skills/sfo-deploy-cluster/references/app.md", "examples/eleph-server-multipass/README.md", "examples/eleph-server-multipass/cluster-template/apps", "src/remote_runtime/versioned_release.ts"]
+contract_checks:
+  mode: enabled
+  steps:
+    - id: C1
+      kind: documentation-examples
+      assertion: documentation-examples-compile
+      name: App service 崩溃拉起模板与文档契约
+      change_ids: ["CHG-service-restart-policy-schema", "CHG-service-restart-policy-template-doc"]
+      run: ["deno", "run", "--frozen", "--allow-read", "tests/contract/verify_app_management_contract.ts"]
+defaults:
+  workdir: .
+  timeout_sec: 600
+  env: {}
+manual_gaps:
+  - "本环境不执行真实 Linux 主机 systemd 启动；测试证明受管 unit 文本和配置装载契约，不声称远端服务已实际重启。"
+levels:
+  unit:
+    mode: enabled
+    summary: 覆盖 unit_config 重启策略装载、非法值失败关闭、缺省渲染兼容和 systemd 指令输出
+    test_targets:
+      - tests/unit/app_management_config.test.ts
+      - tests/unit/systemd_unit.test.ts
+      - tests/unit/history.test.ts
+      - tests/contract/verify_app_management_contract.ts
+    preconditions:
+      tools: ["deno>=2"]
+      env: []
+      services: []
+      notes: ["使用本地临时目录装载 YAML，不连接部署节点。"]
+    steps:
+      - id: U1
+        name: App service restart policy 配置与渲染单元测试
+        change_ids: ["CHG-service-restart-policy-schema"]
+        run: ["deno", "test", "--allow-read", "--allow-write", "--allow-env", "--allow-net", "--allow-run", "tests/unit/app_management_config.test.ts", "tests/unit/systemd_unit.test.ts", "tests/unit/history.test.ts"]
+      - id: U2
+        name: App service 文档与模板契约单元检查
+        change_ids: ["CHG-service-restart-policy-template-doc"]
+        run: ["deno", "test", "--allow-read", "tests/contract/verify_app_management_contract.ts"]
+  dv:
+    mode: disabled
+    reason: 本次改动不新增模块生命周期或持久状态；装载和渲染契约已由 unit 层覆盖。
+    test_targets: []
+    preconditions:
+      tools: ["deno>=2"]
+      env: []
+      services: []
+      notes: []
+  integration:
+    mode: disabled
+    reason: 本次改动不新增跨模块运行时流程；文档/模板跨边界契约由 C1 覆盖。
+    test_targets: []
+    preconditions:
+      tools: ["deno>=2"]
+      env: []
+      services: []
+      notes: []

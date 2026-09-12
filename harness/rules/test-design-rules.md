@@ -1,6 +1,6 @@
 # Test Design Rules
 
-These full coverage contracts are the high-risk default. Trivial and standard tasks select the lowest-cost targeted verification that can expose the changed behavior; they upgrade to high-risk when discovered test scope reveals a high-risk boundary.
+These full post-implementation coverage contracts are the high-risk default. Standard tasks select the lowest-cost targeted verification that can expose the changed behavior; discovered high-risk boundaries follow the tier decision rules in `task-entry-gate-rules.md`. Proposal discussion uses the applicability guidance below without requiring completed coverage.
 
 ## Goal
 - Define how post-implementation test cases are designed and recorded.
@@ -10,6 +10,19 @@ These full coverage contracts are the high-risk default. Trivial and standard ta
 - Post-implementation test case design at `unit`, `dv`, and `integration` levels.
 - `testing.md` sections `## Unit Tests`, `## DV Tests`, `## Integration Tests`, `## Design Element Coverage`, and `## Case-Type Coverage`.
 - Acceptance audits that cite this rule.
+
+## Proposal Applicability
+- In any tier, proposal discussion of validation MUST use the unit/DV/integration responsibility boundaries and lowest-level placement principles below. Identify which behavior the proposed evidence can demonstrate, including whether it needs real module wiring, cross-module interaction, or an external environment; mocks do not establish behavior beyond their boundary.
+- Derive representative scenarios from proposal requirements, candidate interfaces, state transitions, failure paths, invariants, and concurrency risks using the relevant `Case Derivation` categories below. An approved design or delivered code is not required to discuss these scenarios; label assumptions and unresolved behavior explicitly.
+- Cover material success, failure, and boundary expectations needed to agree on acceptance. For proposed API/build changes, use `API and Repository Consumer Contracts` below to identify the kinds of future evidence needed. Record evidence feasibility, unavailable environments, and known gaps instead of promising unsupported coverage.
+- Full branch/interface coverage accounting, every derivation-category row, validation IDs, test files, `testing.md`, `testplan.yaml`, unified-entrypoint registration, and execution results remain post-implementation obligations according to the confirmed tier. Planned evidence and expected outcomes are not passing results.
+- Proposal content and handoff follow [Proposal Document Rules](proposal-doc-rules.md#design-and-testing-discussion). Later high-risk test-case design still derives from the approved design and delivered code under the contracts below.
+
+## Proposal Test Handoff
+- When `proposal.md` contains a test solution, the testing stage's primary goal is to inspect it for defects and complete it into implemented, runnable verification. Begin with those scenarios and evidence expectations, retain valid coverage, correct invalid cases or assertions, and fill gaps after inspecting the approved requirements, active design source, and delivered code. Proposal approval does not prove test adequacy.
+- Challenge whether the proposed cases can expose the named failures: check expected outcomes, missing success/failure/boundary paths, test-level placement, mock versus real-system boundaries, environment feasibility, and false-positive assertions. Apply the coverage contracts below to the final test suite rather than treating the proposal's case list as exhaustive.
+- Record material findings and refinements with references to proposal sections or item IDs in `testing.md` and `testplan.yaml`. Implement and run the completed cases through the unified entrypoint and record actual results and remaining gaps.
+- A partial test solution needs review plus missing case design; when no test solution exists, derive it from proposal, design, and delivered code. Requirement or acceptance-obligation defects return to proposal under `task-entry-gate-rules.md`; design and implementation defects return to their owning stages. Do not weaken agreed success evidence or alter expected behavior merely to make tests pass.
 
 ## Level Contracts
 
@@ -73,6 +86,5 @@ Test cases MUST derive from design artifacts. Each derivation source below gets 
 - Status vocabulary: `covered`, `gap`, `manual`, `disabled`, `not-applicable`; non-covered statuses need concrete reasons.
 
 ## Guardrails
-- When testing is before `auto_pipeline_start_stage`, it retains manual semantics: `doc-structure-check.py --docs testing` validates level tables, design element coverage, case-type `level`, and placeholder-only rows in `testing.md`, while `testing-coverage-check.py` validates its `testplan.yaml` mappings. Only automatic testing skips that document check and stores coverage/gaps in runtime state alongside `testplan.yaml`.
 - Acceptance MUST audit per-level depth, not only case-type row presence.
 - Unified-entrypoint registration and execution evidence are governed by `unified-test-entry-rules.md`.

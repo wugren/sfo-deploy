@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "stages": {
+    "acceptance": {
+      "inputs": {
+        "docs/versions/v0.1/modules/sfo-deploy/077-fix-versioned-config-parent/acceptance-report.md": "a123d241b8a4e691e7d0fd2fb594acef3955d14cebef2fc5dd7e0f2598a382e1"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "31354cde7b61cab93f2a9ab81126f9a8da018a3c3f8f6c9c3f0451d1385a074a"
+    },
+    "design": {
+      "inputs": {
+        "docs/versions/v0.1/modules/sfo-deploy/077-fix-versioned-config-parent/design.md": "911e5ddeeb1ee646cf3a3f3839c62aa2eb0fcb916927fb8a123ffe2aca4e4e95",
+        "docs/versions/v0.1/modules/sfo-deploy/077-fix-versioned-config-parent/risk-profile.yaml": "f47b3da8d3a63bef5e624c8220a30cf1ee8e3970f383217099f2824a56e87dde"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "31354cde7b61cab93f2a9ab81126f9a8da018a3c3f8f6c9c3f0451d1385a074a"
+    },
+    "implementation": {
+      "inputs": {},
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "31354cde7b61cab93f2a9ab81126f9a8da018a3c3f8f6c9c3f0451d1385a074a"
+    },
+    "proposal": {
+      "inputs": {
+        "docs/versions/v0.1/modules/sfo-deploy/077-fix-versioned-config-parent/proposal.md": "5f9717ac5c3d6595500a05ce8861b1cc43ff49cd94c25addb5d6f99e8bad5d26"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "31354cde7b61cab93f2a9ab81126f9a8da018a3c3f8f6c9c3f0451d1385a074a"
+    },
+    "testing": {
+      "inputs": {
+        "docs/versions/v0.1/modules/sfo-deploy/077-fix-versioned-config-parent/testing.md": "9dbd2004117956303d4ec969ee75d33210e475017fac93b92679a1295b76dd11",
+        "docs/versions/v0.1/modules/sfo-deploy/077-fix-versioned-config-parent/testplan.yaml": "8b36f97351097c8d0ec8dcf83d12747f8d1027f1bcaa186af4774e8add92bab5"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "31354cde7b61cab93f2a9ab81126f9a8da018a3c3f8f6c9c3f0451d1385a074a",
+      "test_run": ".harness/test-results/test-runs/20260910T043342Z-sfo-deploy+077-fix-versioned-config-parent-all.json",
+      "test_run_sha256": "07e4feb399e7b054c371f8493c0e5cd6f627285dc1dd46e5ccd4c680d2c066d7"
+    }
+  },
+  "task_manifest": "task.yaml"
+}

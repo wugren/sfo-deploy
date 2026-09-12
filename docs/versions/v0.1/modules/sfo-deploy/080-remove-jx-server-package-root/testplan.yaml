@@ -1,0 +1,74 @@
+schema_version: 1
+task_manifest: task.yaml
+risk_profile: risk-profile.yaml
+api_impact:
+  public_api: backward-compatible
+  crate_root_export_change: false
+  build_surface_change: false
+  documentation_examples_affected: true
+evidence_inputs: ["src/remote_runtime/versioned_release.ts", "tests/unit/app_management_config.test.ts", "tests/dv/versioned_deploy_order.test.ts", "tests/integration/versioned_release.test.ts", "tests/integration/remote_deployment.test.ts", "examples/eleph-server-multipass/cluster-template/apps/jx-server/app.yaml", "examples/eleph-server-multipass/clusters/multipass/apps/jx-server/app.yaml", "examples/eleph-server-multipass/clusters/multipass/apps/jx-web/app.yaml", "examples/eleph-server-multipass/README.md"]
+contract_checks:
+  mode: enabled
+  steps:
+    - id: C1
+      kind: repository-compile-closure
+      assertion: repository-consumers-compile
+      name: 仓库类型闭包
+      change_ids: ["CHG-remove-jx-server-package-root"]
+      run: ["deno", "task", "check"]
+    - id: C2
+      kind: documentation-examples
+      assertion: documentation-examples-compile
+      name: Multipass 配置与文档契约
+      change_ids: ["CHG-remove-jx-server-package-root"]
+      run: ["deno", "run", "--frozen", "--allow-read", "tests/contract/verify_app_management_contract.ts"]
+defaults:
+  workdir: .
+  timeout_sec: 600
+  env: {}
+manual_gaps:
+  - change_ids: ["CHG-remove-jx-server-package-root"]
+    reason: 真实 multipass 部署和远端 latest 目录复核作为任务运行证据记录，不纳入可重复的自动化测试计划。
+levels:
+  unit:
+    mode: enabled
+    summary: 覆盖 app 配置装载、安装目录变量解析和服务声明归一
+    test_targets: ["tests/unit/app_management_config.test.ts"]
+    preconditions:
+      tools: ["deno>=2"]
+      env: []
+      services: []
+      notes: ["使用本地临时集群目录，不连接真实节点。"]
+    steps:
+      - id: U1
+        name: app 配置与路径解析
+        change_ids: ["CHG-remove-jx-server-package-root"]
+        run: ["deno", "test", "--allow-read", "--allow-write", "--allow-env", "--allow-run", "tests/unit/app_management_config.test.ts"]
+  dv:
+    mode: enabled
+    summary: 覆盖 stage/activate 顺序与既有失败恢复事务
+    test_targets: ["tests/dv/versioned_deploy_order.test.ts"]
+    preconditions:
+      tools: ["deno>=2"]
+      env: []
+      services: []
+      notes: ["使用记录型远端会话，不连接真实节点。"]
+    steps:
+      - id: D1
+        name: versioned 部署顺序与恢复
+        change_ids: ["CHG-remove-jx-server-package-root"]
+        run: ["deno", "test", "--allow-read", "--allow-write", "--allow-env", "--allow-net", "--allow-run", "tests/dv/versioned_deploy_order.test.ts"]
+  integration:
+    mode: enabled
+    summary: 覆盖单顶层剥离、多顶层保留、平铺保留和 Multipass 配置契约
+    test_targets: ["tests/integration/versioned_release.test.ts", "tests/integration/remote_deployment.test.ts"]
+    preconditions:
+      tools: ["deno>=2"]
+      env: []
+      services: []
+      notes: ["使用本地 fixtures 和伪远端命令，不连接真实节点。"]
+    steps:
+      - id: I1
+        name: versioned 布局与 Multipass 契约
+        change_ids: ["CHG-remove-jx-server-package-root"]
+        run: ["deno", "test", "--allow-read", "--allow-write", "--allow-env", "--allow-net", "--allow-run", "tests/integration/versioned_release.test.ts", "tests/integration/remote_deployment.test.ts"]

@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "stages": {
+    "acceptance": {
+      "inputs": {
+        "docs/versions/v0.1/modules/sfo-deploy/076-remove-app-scripts-node/acceptance-report.md": "24acd9c673bc3f6a6d95229036f03bc26aa1db92fe290856f9b0c9d738ca7aa5"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "a279c057a8bb6f940f2780d64c95072889d23cf38f07145e1f0d7d50c4b43cb9"
+    },
+    "design": {
+      "inputs": {
+        "docs/versions/v0.1/modules/sfo-deploy/076-remove-app-scripts-node/design.md": "83f35f3e1d99962ad661f275774681448bfaf4ca303188b047c709ef91b79b7f",
+        "docs/versions/v0.1/modules/sfo-deploy/076-remove-app-scripts-node/risk-profile.yaml": "ab40589ff8c2e4fa3ad6d7f35d84abbf3a0921ff65f5a3393cb68f59b36c34fe"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "a279c057a8bb6f940f2780d64c95072889d23cf38f07145e1f0d7d50c4b43cb9"
+    },
+    "implementation": {
+      "inputs": {},
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "a279c057a8bb6f940f2780d64c95072889d23cf38f07145e1f0d7d50c4b43cb9"
+    },
+    "proposal": {
+      "inputs": {
+        "docs/versions/v0.1/modules/sfo-deploy/076-remove-app-scripts-node/proposal.md": "9b0df6946d9891b32232a648a22a8c3c76acd7d3787fa3d8e6ef3198d1951baa"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "a279c057a8bb6f940f2780d64c95072889d23cf38f07145e1f0d7d50c4b43cb9"
+    },
+    "testing": {
+      "inputs": {
+        "docs/versions/v0.1/modules/sfo-deploy/076-remove-app-scripts-node/testing.md": "acaa9a7bbcf4a2e999eb6f0353245656b6eed0614b361913d04300f267766608",
+        "docs/versions/v0.1/modules/sfo-deploy/076-remove-app-scripts-node/testplan.yaml": "f5585d2429c2f76ddc4d1d19dd5ecdc2ee0ec041f6ae6027c2381b3e32dd6e5a"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "a279c057a8bb6f940f2780d64c95072889d23cf38f07145e1f0d7d50c4b43cb9",
+      "test_run": ".harness/test-results/test-runs/20260909T184333Z-sfo-deploy+076-remove-app-scripts-node-all.json",
+      "test_run_sha256": "8b7e2a88d78c24e35b0e408b55e2b00f16df42c2440f7963eb64ec97e2bc9e28"
+    }
+  },
+  "task_manifest": "task.yaml"
+}

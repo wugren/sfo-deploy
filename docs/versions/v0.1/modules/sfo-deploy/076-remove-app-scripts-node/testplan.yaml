@@ -1,0 +1,120 @@
+schema_version: 1
+task_manifest: task.yaml
+risk_profile: risk-profile.yaml
+api_impact:
+  public_api: breaking
+  crate_root_export_change: false
+  build_surface_change: false
+  documentation_examples_affected: true
+evidence_inputs: ["src", "tests", "README.md", "docs/guides/sfo-deploy-cluster-configuration.md", "docs/modules/sfo-deploy.md", "examples/eleph-server-multipass", "skills/sfo-deploy-cluster"]
+contract_checks:
+  mode: enabled
+  steps:
+    - id: C1
+      kind: external-positive
+      assertion: new-path-compiles
+      name: App manager 新类型编译
+      change_ids: ["CHG-remove-app-scripts-node"]
+      run: ["deno", "check", "--frozen", "tests/contract/app_management_consumer.ts"]
+    - id: C2
+      kind: external-negative
+      assertion: old-path-rejected-for-removed-symbol
+      name: App 顶层 scripts 与旧 management 包装类型拒收
+      change_ids: ["CHG-remove-app-scripts-node"]
+      run: ["deno", "run", "--frozen", "--allow-read", "--allow-run=deno", "tests/contract/verify_app_schema1_removed_types.ts"]
+    - id: C3
+      kind: removed-symbol-scan
+      assertion: no-unallowlisted-old-symbol-references
+      name: App 顶层 scripts 与旧 management 包装闭包扫描
+      change_ids: ["CHG-remove-app-scripts-node"]
+      run: ["uv", "run", "--active", "python", "./harness/scripts/consumer-closure-check.py", "--version", "v0.1", "--module", "sfo-deploy", "--task-name", "076-remove-app-scripts-node"]
+    - id: C4
+      kind: repository-compile-closure
+      assertion: repository-consumers-compile
+      name: 仓库消费者编译闭包
+      change_ids: ["CHG-remove-app-scripts-node"]
+      run: ["deno", "task", "check"]
+    - id: C5
+      kind: documentation-examples
+      assertion: documentation-examples-compile
+      name: App 配置文档与示例契约
+      change_ids: ["CHG-remove-app-scripts-node"]
+      run: ["deno", "run", "--frozen", "--allow-read", "tests/contract/verify_app_management_contract.ts"]
+defaults:
+  workdir: .
+  timeout_sec: 600
+  env: {}
+manual_gaps:
+  - "本环境没有真实 Multipass/systemd 主机；service 和 script manager 只通过固定 argv 与会话替身验证。"
+levels:
+  unit:
+    mode: enabled
+    summary: 覆盖 management.kind 装载、旧契约拒收、历史归一和 App package 归属
+    test_targets:
+      - tests/unit/app_management_config.test.ts
+      - tests/unit/config_planning.test.ts
+      - tests/unit/history.test.ts
+      - tests/unit/history_regressions.test.ts
+    preconditions:
+      tools: ["deno>=2"]
+      env: []
+      services: []
+      notes: ["只使用本地临时目录。"]
+    steps:
+      - id: U1
+        name: management.kind 装载与拒收
+        change_ids: ["CHG-remove-app-scripts-node"]
+        run: ["deno", "test", "-A", "tests/unit/app_management_config.test.ts"]
+      - id: U2
+        name: 历史快照 manager 归一
+        change_ids: ["CHG-remove-app-scripts-node"]
+        run: ["deno", "test", "-A", "tests/unit/history.test.ts", "tests/unit/history_regressions.test.ts"]
+      - id: U3
+        name: packageless 计划与 App package 归属
+        change_ids: ["CHG-remove-app-scripts-node"]
+        run: ["deno", "test", "-A", "tests/unit/config_planning.test.ts"]
+  dv:
+    mode: enabled
+    summary: 覆盖 script/service 管理器执行和 versioned 部署顺序
+    test_targets:
+      - tests/dv/app_management_execution.test.ts
+      - tests/dv/versioned_deploy_order.test.ts
+    preconditions:
+      tools: ["deno>=2"]
+      env: []
+      services: []
+      notes: ["使用本地临时目录和伪远端会话，不连接部署节点。"]
+    steps:
+      - id: D1
+        name: App managed 执行
+        change_ids: ["CHG-remove-app-scripts-node"]
+        run: ["deno", "test", "-A", "tests/dv/app_management_execution.test.ts"]
+      - id: D2
+        name: versioned 部署顺序与恢复
+        change_ids: ["CHG-remove-app-scripts-node"]
+        run: ["deno", "test", "-A", "tests/dv/versioned_deploy_order.test.ts"]
+  integration:
+    mode: enabled
+    summary: 覆盖 lifecycle、placement、package cache 和文档契约
+    test_targets:
+      - tests/integration/env_prepare_cli.test.ts
+      - tests/integration/environment_placement.test.ts
+      - tests/integration/fetch_package.test.ts
+    preconditions:
+      tools: ["deno>=2"]
+      env: []
+      services: []
+      notes: ["使用本地临时目录和伪远端会话，不执行真实部署。"]
+    steps:
+      - id: I1
+        name: lifecycle control attempt
+        change_ids: ["CHG-remove-app-scripts-node"]
+        run: ["deno", "test", "-A", "tests/integration/env_prepare_cli.test.ts"]
+      - id: I2
+        name: placement 与旧快照回退
+        change_ids: ["CHG-remove-app-scripts-node"]
+        run: ["deno", "test", "-A", "tests/integration/environment_placement.test.ts"]
+      - id: I3
+        name: package cache 契约
+        change_ids: ["CHG-remove-app-scripts-node"]
+        run: ["deno", "test", "-A", "tests/integration/fetch_package.test.ts"]

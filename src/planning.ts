@@ -11,16 +11,16 @@ import type {
   AppDefinition,
   AppManagementDefinition,
   ClusterConfig,
+  EnvironmentDefinition,
   EnvironmentInstance,
   ExecutionPlan,
   PlanRequest,
   PlanStep,
   ResolvedMachine,
   ResourceKind,
-  ScriptDefinition,
   ScriptInvocation,
 } from "./types.ts";
-import { freezeArray, freezeRecord, immutableMap } from "./types.ts";
+import { freezeArray, freezeRecord } from "./types.ts";
 
 export function resolveMachine(
   cluster: ClusterConfig,
@@ -90,16 +90,19 @@ function materialize(values: Iterable<string> | undefined): string[] | undefined
   return values === undefined ? undefined : Array.from(values);
 }
 
-/** 汇总 App 在 app.yaml scripts 中声明的全部脚本调用（按相对路径去重），供重打包使用。 */
-function bundleScripts(
-  scripts: ScriptDefinition,
+/** 汇总 App 配置脚本、script manager 脚本和内置发布脚本，供重打包使用。 */
+function bundleAppScripts(
+  resource: AppDefinition,
   management?: AppManagementDefinition,
 ): readonly ScriptInvocation[] {
   const seen = new Set<string>();
   const result: ScriptInvocation[] = [];
   const groups: readonly (readonly ScriptInvocation[])[] = [
-    ...scripts.actions.values(),
-    ...(management === undefined ? [] : [...management.hooks.values()]),
+    ...(resource.deployment?.kind === "versioned" ? [builtinDeploymentScripts()] : []),
+    ...(management === undefined ? [] : [management.configScripts]),
+    ...(management?.manager?.kind === "script"
+      ? [[management.manager.start, management.manager.stop, management.manager.restart]]
+      : []),
   ];
   for (const invocations of groups) {
     for (const invocation of invocations) {
@@ -121,19 +124,14 @@ function builtinDeploymentScripts(): readonly ScriptInvocation[] {
   ]);
 }
 
-function effectiveAppScripts(resource: AppDefinition): ScriptDefinition {
-  if (resource.deployment?.kind !== "versioned" || resource.scripts.actions.has("deploy")) {
-    return resource.scripts;
-  }
-  return Object.freeze({
-    actions: immutableMap(
-      new Map([
-        ...resource.scripts.actions,
-        ["stage", builtinDeploymentScripts()] as const,
-        ["activate", builtinDeploymentScripts()] as const,
-      ]),
-    ),
-  });
+function appActionScripts(
+  resource: AppDefinition,
+): ReadonlyMap<string, readonly ScriptInvocation[]> {
+  if (resource.deployment?.kind !== "versioned") return new Map();
+  return new Map([
+    ["stage", builtinDeploymentScripts()] as const,
+    ["activate", builtinDeploymentScripts()] as const,
+  ]);
 }
 
 /** 方案 A：步骤秘密集合按机器范围推导——本机 cluster.yaml 声明的全部秘密。 */
@@ -159,29 +157,12 @@ function managedOwnsAction(
 ): boolean {
   if (action === "configure") {
     return (management?.configs.length ?? 0) > 0 ||
-      management?.service?.unitConfig !== undefined;
+      (management?.configScripts.length ?? 0) > 0 ||
+      (management?.manager?.kind === "service" &&
+        management.manager.unitConfig !== undefined);
   }
-  return management?.service !== undefined &&
+  return management !== undefined &&
     (action === "start" || action === "stop" || action === "restart");
-}
-
-function managedHooksForAction(
-  management: AppManagementDefinition | undefined,
-  action: string,
-  configures: boolean,
-): readonly ScriptInvocation[] {
-  if (management === undefined) return [];
-  const hooks: ScriptInvocation[] = [];
-  const before = `before_${action}`;
-  const after = `after_${action}`;
-  for (const [name, invocations] of management.hooks) {
-    if (name === before || name === after) hooks.push(...invocations);
-    if (
-      configures && action === "deploy" &&
-      (name === "before_configure" || name === "after_configure")
-    ) hooks.push(...invocations);
-  }
-  return hooks;
 }
 
 export function buildPlan(cluster: ClusterConfig, request: PlanRequest): ExecutionPlan;
@@ -212,7 +193,9 @@ export function buildPlan(
 
   const appValues = materialize(request.apps);
   const selectedApps = new Set<string>();
-  if (action !== "check" && action !== "install" && action !== "prepare") {
+  const stopEnvironmentOnly = action === "stop" &&
+    (materialize(request.environments)?.length ?? 0) > 0;
+  if (action !== "check" && action !== "install" && action !== "prepare" && !stopEnvironmentOnly) {
     for (const app of appValues && appValues.length > 0 ? appValues : cluster.apps.keys()) {
       selectedApps.add(app);
     }
@@ -311,8 +294,22 @@ export function buildPlan(
         version: resource.version,
         requires_privilege: resource.requiresPrivilege ?? definition.requiresPrivilege,
       });
+      const builtinEnvironment = definition.install !== undefined;
       if (checkOnlyEnvironmentNodes.has(node)) {
         actionSequence = ["check"];
+      } else if (builtinEnvironment) {
+        if (action === "prepare") {
+          const preparesService = definition.manager === undefined ||
+            definition.manager.kind !== "system" || definition.manager.startAfterInstall;
+          actionSequence = [
+            "install",
+            ...(definition.manager && preparesService ? ["start", "restart"] : []),
+          ];
+        } else if (action === "deploy" || action === "configure") {
+          actionSequence = ["install"];
+        } else {
+          actionSequence = [action];
+        }
       } else if (action === "deploy" || action === "configure") {
         actionSequence = [
           "check",
@@ -339,41 +336,89 @@ export function buildPlan(
       }
       resourceName = resource.name;
     } else {
-      const builtinPhased = action === "deploy" &&
-        resource.deployment?.kind === "versioned" &&
-        !resource.scripts.actions.has("deploy");
       parameters = resource.packageless
         ? freezeRecord({})
         : freezeRecord({ version: resource.version });
+      const configStep = (resource.management?.configScripts.length ?? 0) > 0;
+      const scriptRestart = resource.management?.manager?.kind === "script";
       actionSequence = action === "deploy"
-        ? resource.packageless ? ["check", "configure"] : builtinPhased
-          ? [
-            "stage",
-            "activate",
-            ...(resource.management?.service !== undefined ? ["restart"] : []),
-          ]
-          : [
-            ...(resource.scripts.actions.get("configure")?.length ? ["configure"] : []),
-            "deploy",
-          ]
+        ? resource.packageless ? ["configure"] : [
+          ...(configStep ? ["configure"] : []),
+          "stage",
+          "activate",
+          ...(scriptRestart ? ["restart"] : []),
+        ]
         : [action];
       resourceName = resource.name;
     }
-    const definition = kind === "environment"
+    const environmentDefinition = kind === "environment"
       ? cluster.environments.get(resource.definition)!
-      : resource;
-    const scriptDefinition = kind === "app" ? effectiveAppScripts(resource) : definition.scripts;
+      : undefined;
+    const appScripts = kind === "app" ? appActionScripts(resource) : undefined;
+    const environmentScripts = kind === "environment" ? environmentDefinition!.scripts : undefined;
     const management = kind === "app" ? resource.management : undefined;
-    const allAppScripts = kind === "app" ? bundleScripts(scriptDefinition, management) : undefined;
+    const allAppScripts = kind === "app" ? bundleAppScripts(resource, management) : undefined;
     const nodeStepIds = stepIdsByNode.get(node) ?? [];
     stepIdsByNode.set(node, nodeStepIds);
     for (const currentAction of actionSequence) {
       const packageValue = kind === "app" &&
           (currentAction === "activate" || currentAction === "restart")
         ? undefined
-        : definition.package;
-      const stepManagement = kind === "app" && currentAction === "stage" ? undefined : management;
-      const invocations = scriptDefinition.actions.get(currentAction) ?? [];
+        : kind === "app"
+        ? resource.package
+        : environmentDefinition?.package;
+      const stepManagement = management;
+      let invocations = appScripts?.get(currentAction) ??
+        environmentScripts?.actions.get(currentAction) ?? [];
+      const environmentInstallValue = kind === "environment" &&
+          currentAction === "install" &&
+          environmentDefinition?.install !== undefined
+        ? environmentDefinition.install
+        : undefined;
+      const environmentManagerValue = kind === "environment" &&
+          environmentDefinition?.manager !== undefined &&
+          (currentAction === "start" || currentAction === "restart" ||
+            (currentAction === "stop" && environmentDefinition.manager.kind === "script"))
+        ? environmentDefinition.manager
+        : undefined;
+      if (environmentInstallValue?.kind === "script") {
+        invocations = [environmentInstallValue.invocation];
+      }
+      if (environmentManagerValue?.kind === "script") {
+        const invocation = currentAction === "start"
+          ? environmentManagerValue.start
+          : currentAction === "stop"
+          ? environmentManagerValue.stop
+          : environmentManagerValue.restart;
+        if (!invocation) {
+          throw new PlanningError(
+            `${node} 的环境 script manager 快照缺少 ${currentAction} 调用`,
+          );
+        }
+        invocations = [invocation];
+      }
+      if (
+        kind === "app" && currentAction !== "configure" &&
+        ["start", "stop", "restart"].includes(currentAction) &&
+        stepManagement?.manager?.kind === "script"
+      ) {
+        invocations = currentAction === "start"
+          ? [stepManagement.manager.start]
+          : currentAction === "stop"
+          ? [stepManagement.manager.stop]
+          : [stepManagement.manager.restart];
+      }
+      if (kind === "app" && currentAction === "configure" && invocations.length === 0) {
+        invocations = stepManagement?.configScripts ?? [];
+      }
+      if (
+        kind === "environment" && environmentDefinition?.install !== undefined &&
+        currentAction === "check"
+      ) {
+        throw new PlanningError(
+          `${node} 使用 install/manager 生命周期，不支持 check 步骤`,
+        );
+      }
       if (invocations.length === 0) {
         if (
           kind === "environment" && currentAction === "check" &&
@@ -381,7 +426,10 @@ export function buildPlan(
         ) {
           continue;
         }
-        if (!managedOwnsAction(stepManagement, currentAction)) {
+        if (
+          environmentInstallValue === undefined && environmentManagerValue === undefined &&
+          !managedOwnsAction(stepManagement, currentAction)
+        ) {
           throw new PlanningError(`${node} 未定义动作脚本: ${currentAction}`);
         }
       }
@@ -393,27 +441,30 @@ export function buildPlan(
       });
       const configuring = currentAction === "configure";
       const appDeploy = kind === "app" &&
-        (currentAction === "deploy" || currentAction === "activate");
+        (currentAction === "deploy" || currentAction === "activate" || currentAction === "stage");
       const builtinPhasedStep = kind === "app" &&
         resource.deployment?.kind === "versioned" &&
         (currentAction === "stage" || currentAction === "activate");
       const managedConfiguring = kind === "app" && (configuring || appDeploy) &&
         ((stepManagement?.configs.length ?? 0) > 0 ||
-          stepManagement?.service?.unitConfig !== undefined);
-      const managedHookActions = kind === "app"
-        ? managedHooksForAction(management, currentAction, managedConfiguring)
-        : [];
+          (stepManagement?.manager?.kind === "service" &&
+            stepManagement.manager.unitConfig !== undefined));
+      const configScriptRuns = kind === "app" && configuring &&
+        (stepManagement?.configScripts.length ?? 0) > 0;
+      const appScriptManagerAction = kind === "app" &&
+        ["start", "stop", "restart"].includes(currentAction) &&
+        stepManagement?.manager?.kind === "script";
       const builtinAppDeploy = appDeploy && resource.deployment?.kind === "versioned";
       const exposesScriptSecrets = configuring ||
+        configScriptRuns ||
         (appDeploy && !builtinAppDeploy) ||
-        (!builtinAppDeploy && !builtinPhasedStep && invocations.length > 0) ||
-        managedHookActions.length > 0;
+        (!builtinAppDeploy && !builtinPhasedStep && invocations.length > 0);
       const stepSecrets = exposesScriptSecrets || managedConfiguring
         ? machineScopedSecrets(cluster, machineName)
         : Object.freeze({ values: freezeArray([]), files: freezeArray([]) });
       const deliveryInputs = kind === "app" &&
-          (appDeploy || builtinPhasedStep || managedConfiguring ||
-            (stepManagement?.hooks.size ?? 0) > 0)
+          (appDeploy || builtinPhasedStep || managedConfiguring || configScriptRuns ||
+            appScriptManagerAction)
         ? Object.freeze({
           scripts: allAppScripts!,
           files: freezeArray([]),
@@ -441,10 +492,15 @@ export function buildPlan(
           ? resource.installDirectory
           : undefined,
         runAs: kind === "app" ? resource.management?.runAs : undefined,
-        deployment: kind === "app" && currentAction !== "restart" ? resource.deployment : undefined,
+        deployment: kind === "app" &&
+            ["deploy", "stage", "activate"].includes(currentAction)
+          ? resource.deployment
+          : undefined,
         management: stepManagement,
         deliveryInputs,
         bundleScripts: appDeploy || builtinPhasedStep ? allAppScripts : undefined,
+        environmentInstall: environmentInstallValue,
+        environmentManager: environmentManagerValue,
         dependsOn: freezeArray([...new Set([...prior, ...dependencySteps])].sort()),
       }));
       nodeStepIds.push(stepId);
@@ -456,39 +512,29 @@ export function buildPlan(
       step.deployment?.kind === "versioned"
     ).map((step) => step.id),
   );
-  const phasedActivateIds = new Set(
-    steps.filter((step) =>
-      step.kind === "app" && step.action === "activate" &&
-      step.deployment?.kind === "versioned"
-    ).map((step) => step.id),
-  );
+  const isStage = (step: PlanStep) => phasedStageIds.has(step.id);
+  const isActivate = (step: PlanStep) =>
+    step.kind === "app" &&
+    step.action === "activate" && step.deployment?.kind === "versioned";
+  const byId = new Map(steps.map((step) => [step.id, step]));
+  const preparedDependency = (id: string): string => {
+    const dependency = byId.get(id);
+    return dependency !== undefined && isActivate(dependency)
+      ? `${id.slice(0, id.lastIndexOf(":"))}:stage`
+      : id;
+  };
   const phasedSteps = [
-    ...steps.filter((step) =>
-      step.kind === "app" && step.action === "stage" && step.deployment?.kind === "versioned"
+    ...steps.filter(isStage).map((step) =>
+      Object.freeze({
+        ...step,
+        dependsOn: freezeArray([...new Set(step.dependsOn.map(preparedDependency))].sort()),
+      })
     ),
-    ...steps.filter((step) =>
-      !(step.kind === "app" &&
-        (step.action === "stage" || step.action === "activate" ||
-          (step.action === "restart" && step.management?.service !== undefined)))
-    ),
-    ...steps.filter((step) =>
-      step.kind === "app" && step.action === "activate" &&
-      step.deployment?.kind === "versioned"
-    ).map((step) =>
+    ...steps.filter((step) => !isStage(step) && !isActivate(step)),
+    ...steps.filter(isActivate).map((step) =>
       Object.freeze({
         ...step,
         dependsOn: freezeArray([...new Set([...step.dependsOn, ...phasedStageIds])].sort()),
-      })
-    ),
-    ...steps.filter((step) =>
-      step.kind === "app" && step.action === "restart" &&
-      step.management?.service !== undefined
-    ).map((step) =>
-      Object.freeze({
-        ...step,
-        dependsOn: freezeArray([
-          ...new Set([...step.dependsOn, ...phasedActivateIds]),
-        ].sort()),
       })
     ),
   ];
@@ -496,6 +542,11 @@ export function buildPlan(
     schemaVersion: 4,
     cluster: cluster.name,
     requestedAction: action,
-    steps: freezeArray(phasedSteps),
+    steps: freezeArray(
+      topological(
+        phasedSteps.map((step) => step.id),
+        new Map(phasedSteps.map((step) => [step.id, step.dependsOn])),
+      ).map((id) => phasedSteps.find((step) => step.id === id)!),
+    ),
   });
 }

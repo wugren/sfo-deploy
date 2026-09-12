@@ -196,7 +196,10 @@ export type {
   AddressKind,
   AppDefinition,
   AppManagementDefinition,
-  AppManagementHook,
+  AppManagerDefinition,
+  AppScriptManagement,
+  AppServiceManagement,
+  AppServiceTool,
   ClusterConfig,
   ClusterDefinition,
   ConfigTemplate,
@@ -236,6 +239,5 @@ export type {
   SecretDeclaration,
   SecretKind,
   SystemdDeployAction,
-  SystemdServiceManagement,
   SystemdUnitConfig,
 } from "./types.ts";

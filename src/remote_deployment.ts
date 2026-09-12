@@ -110,6 +110,8 @@ export interface RemoteConfigCandidate {
 export interface ManagedConfigPublishRequest {
   readonly candidate: RemoteConfigCandidate;
   readonly target: string;
+  /** 内置版本部署映射目标的真实路径边界。 */
+  readonly releaseRoot?: string;
   readonly mode: number;
   readonly owner?: string;
   readonly group?: string;
@@ -134,6 +136,21 @@ export interface ManagedConfigPublication {
   readonly originalMode?: string;
   readonly originalOwner?: string;
   readonly originalGroup?: string;
+}
+
+/** 发布失败且内部补偿失败时，向执行器交还仍需恢复的事务。 */
+export class ManagedConfigPublicationError extends TransportError {
+  readonly publications: readonly ManagedConfigPublication[];
+  readonly recoveryFailed = true;
+
+  constructor(
+    message: string,
+    publications: readonly ManagedConfigPublication[],
+    options?: ErrorOptions,
+  ) {
+    super(message, options);
+    this.publications = Object.freeze([...publications]);
+  }
 }
 
 export interface ExtractAppPackageRequest {

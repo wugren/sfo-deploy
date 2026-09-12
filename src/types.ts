@@ -64,13 +64,16 @@ export interface ScriptDefinition {
   readonly actions: ReadonlyMap<string, readonly ScriptInvocation[]>;
 }
 
-/** app.yaml v3 内置配置管理支持的结构化格式。 */
-export type ManagedConfigFormat = "yaml" | "json" | "toml" | "ini";
+/** App managed file config 支持的结构化格式和 Nginx 原生纯文本格式。 */
+export type ManagedConfigFormat = "yaml" | "json" | "toml" | "ini" | "nginx";
 /** 内部受管文件格式；systemd 只由框架生成的 service unit 候选使用。 */
 export type ManagedFileFormat = ManagedConfigFormat | "systemd";
 export type ManagedConfigChangeAction = "none" | "reload" | "restart";
 export type ManagedConfigValueType = "string" | "integer" | "number" | "boolean";
 export type ManagedConfigPathSegment = string | number;
+
+/** 受管 config target 的变量根；absolute 是无变量旧绝对路径。 */
+export type ManagedConfigTargetRoot = "absolute" | "install" | "current" | "latest";
 
 /** YAML/JSON/TOML 使用的无歧义字段路径。 */
 export interface ManagedConfigPathSelector {
@@ -114,6 +117,8 @@ export interface ManagedConfigFile {
   readonly relativePath: string;
   readonly source: string;
   readonly target: string;
+  /** target 中目录变量的语义；absolute 表示无变量绝对路径。 */
+  readonly targetRoot: ManagedConfigTargetRoot;
   readonly owner?: string;
   readonly group?: string;
   readonly mode: number;
@@ -126,6 +131,16 @@ export interface ManagedConfigFile {
 }
 
 export type SystemdDeployAction = "none" | "start" | "reload" | "restart";
+
+/** systemd 支持的 Restart 策略；配置装载期已收敛为白名单值。 */
+export type SystemdRestartPolicy =
+  | "no"
+  | "on-success"
+  | "on-failure"
+  | "on-abnormal"
+  | "on-watchdog"
+  | "on-abort"
+  | "always";
 
 /** v4 内置发布方式；首版只支持版本目录发布。 */
 export type DeploymentKind = "versioned";
@@ -140,11 +155,18 @@ export interface SystemdUnitConfig {
   readonly workingDirectory: string;
   readonly command: string;
   readonly args: readonly string[];
+  readonly restartPolicy?: SystemdRestartPolicy;
+  readonly restartSec?: number;
+  readonly startLimitIntervalSec?: number;
+  readonly startLimitBurst?: number;
 }
 
-export interface SystemdServiceManagement {
-  readonly kind: "systemd";
+/** App management.kind: service 的归一声明；unit 来自 YAML 的 name。 */
+export interface AppServiceManagement {
+  readonly kind: "service";
   readonly unit: string;
+  /** auto 探测 systemctl/service；显式工具不回退。 */
+  readonly tool: "auto" | "systemctl" | "service";
   /** undefined 表示保留目标节点当前 enable 状态。 */
   readonly enabled?: boolean;
   readonly daemonReload: boolean;
@@ -153,30 +175,70 @@ export interface SystemdServiceManagement {
   readonly unitConfig?: SystemdUnitConfig;
 }
 
-export type AppManagementHook =
-  | "before_install"
-  | "after_install"
-  | "before_configure"
-  | "after_configure"
-  | "before_deploy"
-  | "after_deploy"
-  | "before_start"
-  | "after_start"
-  | "before_stop"
-  | "after_stop"
-  | "before_restart"
-  | "after_restart";
+export type EnvironmentInstallKind = "package" | "script";
+export type EnvironmentPackageManagerKind = "auto" | "apt-get" | "yum";
+export type EnvironmentServiceManagerKind = "system" | "script";
+export type EnvironmentServiceTool = "auto" | "systemctl" | "service";
 
-/** app.yaml v3 的显式内置管理声明。缺省时完整保持 legacy 脚本行为。 */
+export interface EnvironmentPackageInstall {
+  readonly kind: "package";
+  readonly manager: EnvironmentPackageManagerKind;
+  readonly packages: readonly string[];
+  readonly updateCache: boolean;
+}
+
+export interface EnvironmentScriptInstall {
+  readonly kind: "script";
+  readonly invocation: ScriptInvocation;
+}
+
+export type EnvironmentInstallDefinition =
+  | EnvironmentPackageInstall
+  | EnvironmentScriptInstall;
+
+export interface EnvironmentSystemManager {
+  readonly kind: "system";
+  readonly name: string;
+  readonly tool: EnvironmentServiceTool;
+  readonly enabled?: boolean;
+  readonly startAfterInstall: boolean;
+  readonly timeoutMs: number;
+}
+
+export interface EnvironmentScriptManager {
+  readonly kind: "script";
+  readonly start: ScriptInvocation;
+  /** 新配置必需；旧 plan-v4 快照解码后可缺失。 */
+  readonly stop?: ScriptInvocation;
+  readonly restart: ScriptInvocation;
+}
+
+export type EnvironmentManagerDefinition =
+  | EnvironmentSystemManager
+  | EnvironmentScriptManager;
+
+export type AppConfigKind = "script" | "file";
+export type AppServiceTool = EnvironmentServiceTool;
+
+export interface AppScriptManagement {
+  readonly kind: "script";
+  readonly start: ScriptInvocation;
+  readonly stop: ScriptInvocation;
+  readonly restart: ScriptInvocation;
+}
+
+export type AppManagerDefinition = AppScriptManagement | AppServiceManagement;
+
+/** App schema 1 的顶层 configs/management 归一声明。 */
 export interface AppManagementDefinition {
-  /**
-   * 运行 App updater/hook 的目标节点非 root Linux 用户。
-   * app.yaml v3 的 management 装载时必填；可选性仅供旧 plan-v4 快照在 I-5 迁移前解码。
-   */
+  /** 运行 App 配置脚本和 script manager 的目标节点非 root Linux 用户。 */
   readonly runAs?: string;
+  /** 缺省表示只交付受管配置，不由框架管理系统服务。 */
+  readonly manager?: AppManagerDefinition;
+  /** 内部归一表示：顶层 configs 的 file 条目。 */
   readonly configs: readonly ManagedConfigFile[];
-  readonly service?: SystemdServiceManagement;
-  readonly hooks: ReadonlyMap<AppManagementHook, readonly ScriptInvocation[]>;
+  /** 内部归一表示：顶层 configs 的 script 条目。 */
+  readonly configScripts: readonly ScriptInvocation[];
 }
 
 export interface EnvironmentInstance {
@@ -210,6 +272,8 @@ export interface EnvironmentDefinition {
   readonly defaults: Readonly<Record<string, unknown>>;
   readonly package?: PackageSpec;
   readonly requiresPrivilege: boolean;
+  readonly install?: EnvironmentInstallDefinition;
+  readonly manager?: EnvironmentManagerDefinition;
 }
 
 export interface AppDefinition {
@@ -222,7 +286,6 @@ export interface AppDefinition {
   readonly packageless: boolean;
   /** v4 内置版本化发布；自定义 scripts.deploy 时保持 undefined。 */
   readonly deployment?: DeploymentDefinition;
-  readonly scripts: ScriptDefinition;
   readonly dependsOn: readonly string[];
   readonly management?: AppManagementDefinition;
 }
@@ -279,6 +342,10 @@ export interface PlanStep {
   readonly deliveryInputs?: PlanDeliveryInputs;
   /** @deprecated plan-v3 兼容字段；新执行器优先使用 deliveryInputs.scripts。 */
   readonly bundleScripts?: readonly ScriptInvocation[];
+  /** Environment 新生命周期的声明式安装定义；旧脚本和 App 步骤缺省。 */
+  readonly environmentInstall?: EnvironmentInstallDefinition;
+  /** Environment 可选服务管理声明；旧脚本和 App 步骤缺省。 */
+  readonly environmentManager?: EnvironmentManagerDefinition;
 }
 
 export interface PlanDeliveryInputs {

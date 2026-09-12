@@ -7,6 +7,7 @@
 
 const VERSION_RE = /^[A-Za-z0-9][A-Za-z0-9._+-]*$/;
 const APP_NAME_RE = /^[A-Za-z][A-Za-z0-9_.-]*$/;
+const PAYLOAD_ROOT_RE = /^[A-Za-z0-9_@%+=,.-]+$/u;
 const MAX_KEEP_VERSIONS = 100;
 
 type JsonObject = Record<string, unknown>;
@@ -80,6 +81,20 @@ async function requireReleaseDirectory(path: string): Promise<void> {
   ) {
     throw new Error(`版本目录不是安全的普通目录: ${path}`);
   }
+}
+
+/** 单顶层目录包缺省剥离包装层；平铺或多顶层包保持原布局。 */
+async function resolveSingleRootPayload(packageInput: string): Promise<string> {
+  const entries: Deno.DirEntry[] = [];
+  for await (const entry of Deno.readDir(packageInput)) entries.push(entry);
+  if (entries.length !== 1) return packageInput;
+  const entry = entries[0];
+  if (!entry.isDirectory || entry.isSymlink) return packageInput;
+  if (!PAYLOAD_ROOT_RE.test(entry.name)) {
+    throw new Error(`validated package 包含不安全的顶层目录名: ${entry.name}`);
+  }
+  console.log(`App 包存在唯一顶层目录 ${entry.name}，发布时剥离该层`);
+  return `${packageInput}/${entry.name}`;
 }
 
 async function listVersionDirectories(
@@ -163,6 +178,7 @@ async function stageRelease(metadata: JsonObject): Promise<void> {
   const stagePath = `${installDirectory}/.sfo-deploy-${metadata
     .resource as string}-${nextVersion}-${nonce}`;
   const versionFileName = `sfo-version-${nonce}`;
+  const payloadRoot = await resolveSingleRootPayload(packageInput);
   try {
     if ((await run("/usr/bin/test", ["-e", releasePath], false)).success) {
       const latestTarget = await run("/usr/bin/readlink", ["-f", latestPath], false);
@@ -177,7 +193,7 @@ async function stageRelease(metadata: JsonObject): Promise<void> {
       await run("/usr/bin/rm", ["-rf", "--", releasePath]);
     }
     await run("/usr/bin/install", ["-d", "-m", "0750", "--", stagePath]);
-    await run("/usr/bin/cp", ["-a", "--", `${packageInput}/.`, `${stagePath}/`]);
+    await run("/usr/bin/cp", ["-a", "--", `${payloadRoot}/.`, `${stagePath}/`]);
     await Deno.writeTextFile(versionFileName, `${nextVersion}\n`, { mode: 0o600 });
     await run("/usr/bin/install", [
       "-m",

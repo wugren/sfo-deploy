@@ -303,10 +303,9 @@ Deno.test("unit/environment placement v1: legacy per-machine layout and inline a
       join(v1App, "apps", "demo", "app.yaml"),
       'schema_version: 1\nname: demo\nversion: "1.0.0"\npackage:\n  provider: http\n  source: {url: "https://example.invalid/app.bin"}\n  hash: {algorithm: sha256, value: "' +
         "00".repeat(32) +
-        '"}\ndepends_on: []\nscripts:\n  configure: [{path: scripts/action.ts, permissions: {run: [], net: []}}]\n  deploy: [{path: scripts/action.ts, permissions: {run: [], net: []}}]\n',
+        '"}\ndepends_on: []\nmanagement:\n  run_as: deploy\n  kind: service\n  name: demo.service\n  tool: systemctl\n',
     );
     const error = await assertRejects(() => loadCluster(v1App), ConfigurationError);
-    assertStringIncludes(error.message, "app[demo].schema_version 只支持 2、3 或 4");
-    assertStringIncludes(error.message, "v1 内联版本/包已移除");
+    assertStringIncludes(error.message, "app[demo] 包含未知字段: package, version");
   });
 });

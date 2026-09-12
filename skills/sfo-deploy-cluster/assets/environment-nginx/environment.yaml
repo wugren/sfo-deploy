@@ -1,0 +1,16 @@
+schema_version: 1
+name: nginx
+version: "1.24"
+depends_on: []
+requires_privilege: true
+scripts:
+  check:
+    - path: scripts/check.ts
+      permissions:
+        run: [/usr/bin/test]
+        net: []
+  install:
+    - path: scripts/install.ts
+      permissions:
+        run: [/usr/bin/apt-get]
+        net: []

@@ -59,18 +59,31 @@ async function writeEnvironment(
 }
 
 async function writeApp(directory: string, app: AppFixture): Promise<void> {
-  await Deno.mkdir(join(directory, "scripts"), { recursive: true });
-  await Deno.writeTextFile(join(directory, "scripts", "action.ts"), "Deno.exit(0);\n");
+  await Deno.mkdir(directory, { recursive: true });
+  await Deno.mkdir(join(directory, "templates"), { recursive: true });
+  await Deno.writeTextFile(
+    join(directory, "templates", "application.json"),
+    "{}\n",
+  );
   await Deno.writeTextFile(
     join(directory, "app.yaml"),
     [
-      "schema_version: 2",
+      "schema_version: 1",
       `name: ${app.name}`,
       "install_directory: /srv/demo",
       `depends_on: ${yamlList(app.dependsOn ?? [])}`,
-      "scripts:",
-      "  configure: [{path: scripts/action.ts, permissions: {run: [], net: []}}]",
-      "  deploy: [{path: scripts/action.ts, permissions: {run: [], net: []}}]",
+      "configs:",
+      "  - kind: file",
+      "    source: templates/application.json",
+      "    target: /etc/demo/application.json",
+      "    format: json",
+      "deployment:",
+      "  kind: versioned",
+      "management:",
+      "  run_as: deploy",
+      "  kind: service",
+      "  name: demo.service",
+      "  tool: systemctl",
       "",
     ].join("\n"),
   );

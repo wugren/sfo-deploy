@@ -1,14 +1,15 @@
 import { assertEquals } from "../_support/assert.ts";
 import { PreflightError } from "../../src/errors.ts";
 import { generateSystemdUnitSkeleton, serviceUnitManagedConfig } from "../../src/systemd_unit.ts";
-import type { SystemdServiceManagement } from "../../src/types.ts";
+import type { AppServiceManagement } from "../../src/types.ts";
 
 function service(
-  overrides: Partial<SystemdServiceManagement> = {},
-): SystemdServiceManagement {
+  overrides: Partial<AppServiceManagement> = {},
+): AppServiceManagement {
   return Object.freeze({
-    kind: "systemd",
+    kind: "service",
     unit: "demo.service",
+    tool: "auto",
     enabled: true,
     daemonReload: true,
     onDeploy: "restart",
@@ -63,6 +64,55 @@ WantedBy=multi-user.target
   );
   assertEquals(skeleton.format, "systemd");
   assertEquals(skeleton.secretBindings, []);
+});
+
+Deno.test("unit/systemd-unit: renders optional restart policy directives", () => {
+  const unitConfig = {
+    ...service().unitConfig!,
+    restartPolicy: "on-failure" as const,
+    restartSec: 5,
+    startLimitIntervalSec: 30,
+    startLimitBurst: 5,
+  };
+  const config = serviceUnitManagedConfig(service({ unitConfig }))!;
+  const skeleton = generateSystemdUnitSkeleton(config, service({ unitConfig }), "deploy");
+  const text = new TextDecoder().decode(skeleton.content);
+  assertEquals(text.includes("StartLimitIntervalSec=30s"), true);
+  assertEquals(text.includes("StartLimitBurst=5"), true);
+  assertEquals(text.includes("Restart=on-failure"), true);
+  assertEquals(text.includes("RestartSec=5s"), true);
+  const unitIndex = text.indexOf("[Unit]");
+  const serviceIndex = text.indexOf("[Service]");
+  assertEquals(
+    text.indexOf("StartLimitIntervalSec") > unitIndex &&
+      text.indexOf("StartLimitIntervalSec") < serviceIndex,
+    true,
+  );
+  assertEquals(text.indexOf("Restart=on-failure") > serviceIndex, true);
+});
+
+Deno.test("unit/systemd-unit: explicit no and zero restart directives are preserved", () => {
+  const unitConfig = {
+    ...service().unitConfig!,
+    restartPolicy: "no" as const,
+    restartSec: 0,
+    startLimitIntervalSec: 0,
+    startLimitBurst: 0,
+  };
+  const config = serviceUnitManagedConfig(service({ unitConfig }))!;
+  const skeleton = generateSystemdUnitSkeleton(config, service({ unitConfig }), "deploy");
+  const text = new TextDecoder().decode(skeleton.content);
+  assertEquals(text.includes("Restart=no"), true);
+  assertEquals(text.includes("RestartSec=0s"), true);
+  assertEquals(text.includes("StartLimitIntervalSec=0s"), true);
+  assertEquals(text.includes("StartLimitBurst=0"), true);
+});
+
+Deno.test("unit/systemd-unit: omitted restart policy fields preserve legacy output", () => {
+  const config = serviceUnitManagedConfig(service())!;
+  const skeleton = generateSystemdUnitSkeleton(config, service(), "deploy");
+  const text = new TextDecoder().decode(skeleton.content);
+  assertEquals(/^(Restart|RestartSec|StartLimit)/m.test(text), false);
 });
 
 Deno.test("unit/systemd-unit: quotes arguments and rejects systemd metacharacters", () => {

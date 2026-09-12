@@ -1,0 +1,35 @@
+schema_version: 1
+task_manifest: task.yaml
+change_ids: ["CHG-configure-before-switch"]
+source_bindings:
+  proposal: proposal.md
+  design_source: pipeline/plan.md
+risks:
+  contract:
+    applies: true
+    evidence: ["docs/versions/v0.1/modules/sfo-deploy/069-switch-latest-before-restart/pipeline/plan.md", "src/execution.ts", "src/planning.ts", "src/service_management.ts", "src/transport.ts"]
+    required_checks: ["deployment-plan-consumer-contract"]
+  data:
+    applies: true
+    evidence: ["docs/versions/v0.1/modules/sfo-deploy/069-switch-latest-before-restart/pipeline/plan.md", "src/execution.ts", "src/planning.ts", "src/service_management.ts", "src/transport.ts"]
+    required_checks: ["release-state-recovery-contract"]
+  security:
+    applies: true
+    evidence: ["docs/versions/v0.1/modules/sfo-deploy/069-switch-latest-before-restart/pipeline/plan.md", "src/execution.ts", "src/planning.ts", "src/service_management.ts", "src/transport.ts"]
+    required_checks: ["release-config-containment-contract"]
+  runtime:
+    applies: true
+    evidence: ["docs/versions/v0.1/modules/sfo-deploy/069-switch-latest-before-restart/pipeline/plan.md", "src/execution.ts", "src/planning.ts", "src/service_management.ts", "src/transport.ts"]
+    required_checks: ["activation-service-adjacency-contract"]
+  build:
+    applies: true
+    evidence: ["docs/versions/v0.1/modules/sfo-deploy/069-switch-latest-before-restart/pipeline/plan.md", "src/execution.ts", "src/planning.ts", "src/service_management.ts", "src/transport.ts"]
+    required_checks: ["release-compatibility-contract"]
+  ui:
+    applies: false
+    evidence: 不涉及用户界面、导航或无障碍变更。
+    required_checks: []
+  harness:
+    applies: false
+    evidence: 任务工件使用现有 Harness，不改变流程或检查器行为。
+    required_checks: []

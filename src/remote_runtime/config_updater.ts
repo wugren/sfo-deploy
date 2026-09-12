@@ -12,7 +12,7 @@ const RESERVED_MARKER = "__SFO_SECRET_";
 const decoder = new TextDecoder("utf-8", { fatal: true });
 const encoder = new TextEncoder();
 
-type ConfigFormat = "yaml" | "json" | "toml" | "ini";
+type ConfigFormat = "yaml" | "json" | "toml" | "ini" | "nginx";
 type ValueType = "string" | "integer" | "number" | "boolean";
 
 interface Binding {
@@ -58,6 +58,23 @@ export async function updateConfig(options: UpdateConfigOptions): Promise<void> 
     decodeUtf8(await readRegularFile(bindingsPath, MAX_BINDINGS_BYTES, "绑定清单"), "绑定清单"),
     options.format,
   );
+  if (options.format === "nginx") {
+    if (manifest.bindings.length > 0) {
+      throw new Error("NGINX 配置不支持秘密绑定");
+    }
+    if (skeleton.includes(RESERVED_MARKER)) {
+      throw new Error("NGINX 配置包含框架保留占位符");
+    }
+    const invalid = /\$\{([^{}]*)\}/.exec(skeleton);
+    if (invalid !== null) {
+      throw new Error(`NGINX 配置不支持占位符: \${${invalid?.[1] ?? ""}}`);
+    }
+    const content = encoder.encode(skeleton);
+    if (content.byteLength > MAX_CONFIG_BYTES) throw new Error("配置候选超过大小限制");
+    await Deno.writeFile(output, content, { createNew: true, mode: 0o600 });
+    await Deno.chmod(output, 0o600);
+    return;
+  }
   const parsed = parseStructured(skeleton, options.format);
   for (const binding of manifest.bindings) {
     const raw = await bindingValue(binding, secretDir, secretRoot);
@@ -342,7 +359,10 @@ export function parseArgs(args: readonly string[]): {
     throw new Error("配置更新器参数不合法");
   }
   const format = values.get("--format");
-  if (format !== "yaml" && format !== "json" && format !== "toml" && format !== "ini") {
+  if (
+    format !== "yaml" && format !== "json" && format !== "toml" && format !== "ini" &&
+    format !== "nginx"
+  ) {
     throw new Error("配置更新器参数不合法");
   }
   return {

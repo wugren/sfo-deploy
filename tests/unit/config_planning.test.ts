@@ -41,11 +41,11 @@ Deno.test("unit/config: app_versions.yaml merges version/package into v2 app def
   });
 });
 
-Deno.test("unit/config: v1 inline app is rejected without app_versions.yaml", async () => {
+Deno.test("unit/config: app without app_versions.yaml fails closed", async () => {
   await withTempDir(async (root) => {
     const directory = await writeCluster(root, { appV1Inline: true });
     const error = await assertRejects(() => loadCluster(directory), ConfigurationError);
-    assertStringIncludes(error.message, "app[demo].schema_version 只支持 2、3 或 4");
+    assertStringIncludes(error.message, "App demo 使用 schema 1，但集群缺少 app_versions.yaml");
   });
 });
 
@@ -56,10 +56,10 @@ Deno.test("unit/config: app_versions.yaml and install_directory are fail-closed"
       `${directory}/apps/demo/app.yaml`,
       `schema_version: 1\nname: demo\nversion: "1.0.0"\npackage:\n  provider: http\n  source: {url: "https://example.invalid/demo.bin"}\n  hash: {algorithm: sha256, value: "${
         "00".repeat(32)
-      }"}\ndepends_on: [base]\nscripts:\n  configure: [{path: scripts/action.ts, permissions: {run: [], net: []}}]\n  deploy: [{path: scripts/action.ts, permissions: {run: [], net: []}}]\n`,
+      }"}\ndepends_on: [base]\nmanagement:\n  run_as: deploy\n  kind: service\n  name: demo.service\n  tool: systemctl\n`,
     );
     const mixing = await assertRejects(() => loadCluster(directory), ConfigurationError);
-    assertStringIncludes(mixing.message, "app[demo].schema_version 只支持 2、3 或 4");
+    assertStringIncludes(mixing.message, "app[demo] 包含未知字段: package, version");
 
     await Deno.remove(directory, { recursive: true });
     const missingEntry = await writeCluster(root);
@@ -106,20 +106,16 @@ async function replaceInFile(path: string, from: string, to: string): Promise<vo
   await Deno.writeTextFile(path, (await Deno.readTextFile(path)).replace(from, to));
 }
 
-async function addPackagelessApp(directory: string, scripts = ["check", "configure"]) {
+async function addPackagelessApp(directory: string) {
   const appName = "config";
-  await Deno.mkdir(join(directory, "apps", appName, "scripts"), { recursive: true });
+  await Deno.mkdir(join(directory, "apps", appName, "templates"), { recursive: true });
   await Deno.writeTextFile(
-    join(directory, "apps", appName, "scripts", "action.ts"),
-    "Deno.exit(0);\n",
+    join(directory, "apps", appName, "templates", "settings.json"),
+    "{}\n",
   );
   await Deno.writeTextFile(
     join(directory, "apps", appName, "app.yaml"),
-    `schema_version: 2\nname: ${appName}\npackageless: true\nscripts:\n${
-      scripts.map((action) =>
-        `  ${action}: [{path: scripts/action.ts, permissions: {run: [], net: []}}]\n`
-      ).join("")
-    }`,
+    `schema_version: 1\nname: ${appName}\npackageless: true\nconfigs:\n  - kind: file\n    source: templates/settings.json\n    target: /etc/${appName}/settings.json\n    format: json\nmanagement:\n  run_as: deploy\n  kind: service\n  name: ${appName}.service\n  tool: systemctl\n`,
   );
   await replaceInFile(
     join(directory, "cluster.yaml"),
@@ -129,7 +125,7 @@ async function addPackagelessApp(directory: string, scripts = ["check", "configu
   return directory;
 }
 
-Deno.test("unit/config: packageless app loads without version or package and plans check/configure", async () => {
+Deno.test("unit/config: packageless app loads without version or package and plans configure", async () => {
   await withTempDir(async (root) => {
     const directory = await addPackagelessApp(await writeCluster(root));
     const cluster = await loadCluster(directory);
@@ -140,25 +136,14 @@ Deno.test("unit/config: packageless app loads without version or package and pla
     assertEquals(app?.installDirectory, undefined);
     const plan = buildPlan(cluster, { action: "deploy", apps: ["config"] });
     assertEquals(plan.steps.map((step) => step.id), [
-      "app:node-a/config:check",
       "app:node-a/config:configure",
     ]);
-    assertEquals(plan.steps.map((step) => step.package), [undefined, undefined]);
+    assertEquals(plan.steps.map((step) => step.package), [undefined]);
     assertEquals({ ...plan.steps[0].parameters }, {});
-    assertEquals(plan.steps[1].dependsOn, ["app:node-a/config:check"]);
   });
 });
 
 Deno.test("unit/config: packageless app constraints fail closed", async () => {
-  const badScripts = [["configure"], ["check"], ["check", "configure", "deploy"]] as const;
-  for (const scripts of badScripts) {
-    await withTempDir(async (root) => {
-      const directory = await addPackagelessApp(await writeCluster(root), [...scripts]);
-      const error = await assertRejects(() => loadCluster(directory), ConfigurationError);
-      assertStringIncludes(error.message, "packageless App config");
-    });
-  }
-
   await withTempDir(async (root) => {
     const directory = await addPackagelessApp(await writeCluster(root));
     await replaceInFile(
@@ -186,7 +171,7 @@ Deno.test("unit/config: duplicate YAML keys and resource path escape fail closed
     const escaped = await writeCluster(root);
     const appPath = `${escaped}/apps/demo/app.yaml`;
     const app = await Deno.readTextFile(appPath);
-    await Deno.writeTextFile(appPath, app.replace("scripts/action.ts", "../outside.ts"));
+    await Deno.writeTextFile(appPath, app.replace("templates/application.json", "../outside.json"));
     const error = await assertRejects(() => loadCluster(escaped), ConfigurationError);
     assertStringIncludes(error.message, "资源目录内");
   });
@@ -225,8 +210,8 @@ Deno.test("unit/planning: filters reject unknown and excluded dependencies", asy
     });
     const directed = buildPlan(cluster, { action: "deploy", apps: ["demo"] });
     assertEquals(directed.steps.map((step) => `${step.kind}:${step.action}`), [
-      "app:configure",
-      "app:deploy",
+      "app:stage",
+      "app:activate",
     ]);
   });
 });
@@ -244,7 +229,10 @@ Deno.test("unit/planning: deploy plans apps only and omits environment dependenc
       apps: ["demo"],
       withDependencies: true,
     });
-    assertEquals(plan.steps.map((step) => step.id), ["app:node-a/demo:deploy"]);
-    assertEquals(plan.steps.at(-1)?.dependsOn, []);
+    assertEquals(plan.steps.map((step) => step.id), [
+      "app:node-a/demo:stage",
+      "app:node-a/demo:activate",
+    ]);
+    assertEquals(plan.steps.at(-1)?.dependsOn, ["app:node-a/demo:stage"]);
   });
 });

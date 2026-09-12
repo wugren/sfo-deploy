@@ -23,6 +23,13 @@
 - `## Success Criteria` describing the visible result, required evidence, and explicit non-goals.
 - `## Risks` for material requirement, boundary, security, migration, or shared-contract risk.
 
+## Design and Testing Discussion
+- When discussing design, read and apply [Design Document Rules — Proposal Applicability](design-doc-rules.md#proposal-applicability). When discussing testing, read and apply [Test Design Rules — Proposal Applicability](test-design-rules.md#proposal-applicability). These topic-specific references apply even when the stage router does not select the downstream rule file.
+- Keep the relevant discussion in `## Requirement Review`, `## Proposal Items`, `## Success Criteria`, or `## Risks`; add a focused subsection only when useful. Distinguish candidate approaches and unresolved assumptions from chosen requirement constraints and acceptance obligations.
+- Discussion depth follows the decision being made. It does not require a complete design, exhaustive cases, downstream artifacts, test implementation, or execution evidence before proposal approval, and does not by itself change the workflow tier or stage.
+- After approval, downstream work carries forward agreed constraints and success evidence; tentative approaches remain revisable within that baseline. Requirement revisions follow `harness/rules/task-entry-gate-rules.md`.
+- When the proposal already contains a solution, downstream work starts by reviewing and completing it: follow [Proposal Design Handoff](design-doc-rules.md#proposal-design-handoff) for design and [Proposal Test Handoff](test-design-rules.md#proposal-test-handoff) for testing.
+
 ## Guardrails
 - Proposal is the requirement baseline for later work.
 - Proposal-stage work MUST discuss the problem with the user, evaluate whether requirements are reasonable, surface risks/tradeoffs, and propose a better approach when it better satisfies the goal.

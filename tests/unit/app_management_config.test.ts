@@ -1,6 +1,5 @@
 import { join } from "jsr:@std/path@1.1.6";
 import {
-  assert,
   assertEquals,
   assertRejects,
   assertStringIncludes,
@@ -8,488 +7,704 @@ import {
 } from "../_support/assert.ts";
 import { writeCluster } from "../_support/fixtures.ts";
 import { loadCluster } from "../../src/config.ts";
-import { ConfigurationError, PreflightError } from "../../src/errors.ts";
-import { loadClusterSecretSource } from "../../src/secrets.ts";
+import { ConfigurationError } from "../../src/errors.ts";
+import { PreflightError } from "../../src/errors.ts";
 import { buildPlan } from "../../src/planning.ts";
+import { generateSystemdUnitSkeleton, serviceUnitManagedConfig } from "../../src/systemd_unit.ts";
 
-type Format = "yaml" | "json" | "toml" | "ini";
-
-function sourceFor(format: Format, variableMarker: string): string {
-  if (format === "yaml") {
-    return `database:\n  password: \${DB_PASSWORD}\nserver:\n  port: ${variableMarker}\n`;
-  }
-  if (format === "json") {
-    return `{"database":{"password":"\${DB_PASSWORD}"},"server":{"port":"${variableMarker}"}}\n`;
-  }
-  if (format === "toml") {
-    return `[database]\npassword = "\${DB_PASSWORD}"\n[server]\nport = "${variableMarker}"\n`;
-  }
-  return `[database]\npassword=\${DB_PASSWORD}\n[server]\nport=${variableMarker}\n`;
+async function addFile(
+  directory: string,
+  relativePath: string,
+  content: string,
+): Promise<void> {
+  const path = join(directory, relativePath);
+  await Deno.mkdir(join(path, ".."), { recursive: true });
+  await Deno.writeTextFile(path, content);
 }
 
-async function managedCluster(
+async function schemaApp(
   root: string,
-  format: Format,
-  options: {
-    readonly updater?: boolean;
-    readonly source?: string;
-    readonly secretType?: string;
-    readonly variables?: boolean;
-  } = {},
+  appBody: string,
+  files: { readonly path: string; readonly content: string }[] = [],
+  appName = "demo",
 ): Promise<string> {
   const directory = await writeCluster(root, { appConfigure: false });
-  const appDirectory = join(directory, "apps", "demo");
-  const source = options.source ?? sourceFor(format, "__SFO_CONFIG_VAR_V1_APP_VERSION__");
-  await Deno.mkdir(join(appDirectory, "templates"), { recursive: true });
-  await Deno.writeTextFile(join(appDirectory, "templates", "application.conf"), source);
-  const secretType = options.secretType === undefined ? "" : `    type: ${options.secretType}\n`;
-  await Deno.writeTextFile(
-    join(directory, "cluster.yaml"),
-    (await Deno.readTextFile(join(directory, "cluster.yaml"))) +
-      `secrets:\n  DB_PASSWORD:\n    kind: value\n${secretType}    machines: [node-a]\n`,
-  );
-  await Deno.writeTextFile(
-    join(appDirectory, "app.yaml"),
-    `schema_version: 3
-name: demo
-install_directory: /srv/demo
-depends_on: [base]
-scripts:
-  deploy: [{path: scripts/action.ts, permissions: {run: [], net: []}}]
-management:
-  run_as: deploy
-  configs:
-    - name: application
-      source: templates/application.conf
-      target: /etc/demo/application.conf
-      owner: deploy
-      group: deploy
-      mode: "0600"
-      format: ${format}
-${options.updater ? "      updater: {type: script, path: scripts/action.ts, secrets: []}\n" : ""}${
-      options.variables === false
-        ? ""
-        : `      variables:\n        - {name: APP_VERSION, path: [version], type: integer}\n`
-    }
-      validator:
-        argv: [/usr/bin/test, -s, "{candidate}"]
-        timeout_ms: 1000
-      on_change: restart
-  service:
-    type: systemd
-    unit: demo.service
-    enabled: true
-    daemon_reload: true
-    on_deploy: reload
-    timeout_ms: 2000
-`,
-  );
-  return directory;
-}
-
-Deno.test("unit/app-v3: 四种格式解析占位符并生成 managed 计划", async () => {
-  for (const format of ["yaml", "json", "toml", "ini"] as const) {
-    await withTempDir(async (root) => {
-      const cluster = await loadCluster(await managedCluster(root, format));
-      const app = cluster.apps.get("demo")!;
-      const config = app.management?.configs[0];
-      assertEquals(config?.format, format);
-      assertEquals(config?.secretReferences.get("DB_PASSWORD"), {
-        kind: "value",
-        valueType: "string",
-      });
-      assertEquals(config?.mode, 0o600);
-      const plan = buildPlan(cluster, { action: "deploy", apps: ["demo"] });
-      const step = plan.steps.find((item) => item.kind === "app" && item.action === "deploy")!;
-      assertEquals(plan.schemaVersion, 4);
-      assertEquals(step.runAs, "deploy");
-      assertEquals(step.secretValues, ["DB_PASSWORD"]);
-      assertEquals(step.deliveryInputs?.scripts.map((item) => item.relativePath), [
-        "scripts/action.ts",
-      ]);
-    });
-  }
-});
-
-Deno.test("unit/app-v3: value 秘密类型由 cluster.yaml 决定并校验实际值", async () => {
-  await withTempDir(async (root) => {
-    const cluster = await loadCluster(
-      await managedCluster(root, "json", {
-        secretType: "integer",
-      }),
-    );
-    assertEquals(
-      cluster.apps.get("demo")!.management?.configs[0].secretReferences.get("DB_PASSWORD"),
-      { kind: "value", valueType: "integer" },
-    );
-  });
-  await withTempDir(async (root) => {
-    const directory = await managedCluster(root, "json", {
-      secretType: "integer",
-      variables: false,
-    });
-    await Deno.writeTextFile(join(directory, "secrets.yaml"), 'DB_PASSWORD: "abc"\n', {
-      mode: 0o600,
-    });
-    const cluster = await loadCluster(directory);
-    const error = await assertRejects(
-      () => loadClusterSecretSource(cluster, directory),
-      ConfigurationError,
-    );
-    assertStringIncludes(error.message, "不符合 integer 类型");
-  });
-});
-
-Deno.test("unit/app-v3: 未知、非法和已移除 updater 声明失败关闭", async () => {
-  await withTempDir(async (root) => {
-    const directory = await managedCluster(root, "json", {
-      source: `{"password":"\${UNDECLARED}"}`,
-      variables: false,
-    });
-    const error = await assertRejects(() => loadCluster(directory), ConfigurationError);
-    assertStringIncludes(error.message, "未在 cluster.yaml.secrets 声明");
-  });
-  await withTempDir(async (root) => {
-    const directory = await managedCluster(root, "yaml", { updater: true });
-    const error = await assertRejects(() => loadCluster(directory), ConfigurationError);
-    assertStringIncludes(error.message, "updater 已移除");
-  });
-  await withTempDir(async (root) => {
-    const directory = await managedCluster(root, "yaml", {
-      source: "database:\n  password: ${lower}\n",
-      variables: false,
-    });
-    const error = await assertRejects(() => loadCluster(directory), PreflightError);
-    assertStringIncludes(error.message, "占位符名称不合法");
-  });
-});
-
-Deno.test("unit/app-v3: 未放置秘密在 App 放置校验时失败", async () => {
-  await withTempDir(async (root) => {
-    const directory = await managedCluster(root, "yaml");
-    const path = join(directory, "cluster.yaml");
-    await Deno.writeTextFile(
-      path,
-      (await Deno.readTextFile(path)).replace("machines: [node-a]", "machines: [node-b]"),
-    );
-    const error = await assertRejects(() => loadCluster(directory), ConfigurationError);
-    assertStringIncludes(error.message, "引用未知机器");
-  });
-});
-
-Deno.test("unit/app-v3: schema v2/v3 不声明 management 时保持 legacy 行为", async () => {
-  await withTempDir(async (root) => {
-    const v2 = await loadCluster(await writeCluster(root));
-    assertEquals(v2.apps.get("demo")?.management, undefined);
-    assertEquals(
-      buildPlan(v2, { action: "deploy", apps: ["demo"] }).steps.map((step) => step.action),
-      ["configure", "deploy"],
-    );
-  });
-});
-
-Deno.test("unit/app: 顶层 templates 仍定向拒收", async () => {
-  await withTempDir(async (root) => {
-    const directory = await writeCluster(root);
-    const path = join(directory, "apps", "demo", "app.yaml");
-    await Deno.writeTextFile(
-      path,
-      (await Deno.readTextFile(path)).replace("scripts:\n", "templates: [x.tpl]\nscripts:\n"),
-    );
-    const error = await assertRejects(() => loadCluster(directory), ConfigurationError);
-    assertStringIncludes(error.message, "顶层 templates 已移除");
-  });
-});
-
-async function writeV4App(root: string, management: string, scripts = "deploy"): Promise<string> {
-  const directory = await writeCluster(root, { appConfigure: false });
-  const appDirectory = join(directory, "apps", "demo");
-  await Deno.mkdir(join(appDirectory, "templates"), { recursive: true });
-  await Deno.writeTextFile(
-    join(appDirectory, "templates", "application.json"),
-    '{"listen":"127.0.0.1:8080"}\n',
-  );
-  await Deno.writeTextFile(
-    join(appDirectory, "app.yaml"),
-    `schema_version: 4
-name: demo
-install_directory: /srv/demo
-depends_on: [base]
-scripts:
-  ${scripts}: [{path: scripts/action.ts, permissions: {run: [], net: []}}]
-${management}
-`,
-  );
-  return directory;
-}
-
-const V4_CONFIG_AND_SERVICE = `management:
-  run_as: deploy
-  actions:
-    - kind: config
-      name: application
-      source: templates/application.json
-      target: /etc/demo/application.json
-      owner: deploy
-      group: deploy
-      mode: "0600"
-      format: json
-      on_change: restart
-    - kind: service
-      type: systemd
-      unit: demo.service
-      enabled: true
-      daemon_reload: true
-      on_deploy: restart
-      timeout_ms: 2000
-      unit_config:
-        working_directory: current
-        command: bin/server
-        args: ["--config", "config/application.ini"]
-`;
-
-Deno.test("unit/app-v4: actions 归一 config/service 并解析 working directory", async () => {
-  await withTempDir(async (root) => {
-    const directory = await writeV4App(root, V4_CONFIG_AND_SERVICE);
-    const cluster = await loadCluster(directory);
-    const app = cluster.apps.get("demo")!;
-    assertEquals(app.management?.runAs, "deploy");
-    assertEquals(app.management?.configs[0]?.name, "application");
-    assertEquals(app.management?.service?.unitConfig, {
-      target: "/etc/systemd/system/demo.service",
-      workingDirectory: "/srv/demo/current",
-      command: "/srv/demo/current/bin/server",
-      args: ["--config", "config/application.ini"],
-    });
-    const plan = buildPlan(cluster, { action: "deploy", apps: ["demo"] });
-    assertEquals(
-      plan.steps.filter((step) => step.kind === "app").map((step) => step.action),
-      ["deploy"],
-    );
-    const configurePlan = buildPlan(cluster, { action: "configure", apps: ["demo"] });
-    assertEquals(
-      configurePlan.steps.filter((step) => step.kind === "app").map((step) => step.action),
-      ["configure"],
-    );
-    assertEquals(
-      plan.steps.at(-1)?.management?.service?.unitConfig?.workingDirectory,
-      "/srv/demo/current",
-    );
-  });
-});
-
-Deno.test("unit/app-v4: service 可只控制已有 unit 且 target 可显式声明", async () => {
-  await withTempDir(async (root) => {
-    const directory = await writeV4App(
-      root,
-      `management:
-  run_as: deploy
-  actions:
-    - kind: service
-      type: systemd
-      unit: demo.service
-      daemon_reload: true
-      on_deploy: restart
-      timeout_ms: 2000
-      unit_config:
-        target: /etc/systemd/system/demo.service
-        working_directory: /srv/demo/current
-        command: /srv/demo/current/bin/server
-        args: []
-`,
-    );
-    const cluster = await loadCluster(directory);
-    assertEquals(cluster.apps.get("demo")?.management?.configs.length, 0);
-    assertEquals(
-      cluster.apps.get("demo")?.management?.service?.unitConfig?.target,
-      "/etc/systemd/system/demo.service",
-    );
-  });
-});
-
-Deno.test("unit/app-v4: builtin versioned deployment defaults, plans and conflicts", async () => {
-  await withTempDir(async (root) => {
-    const directory = await writeV4App(
-      root,
-      "management:\n  run_as: deploy\n  actions: []\n",
-      "check",
-    );
-    const cluster = await loadCluster(directory);
-    assertEquals(cluster.apps.get("demo")?.deployment, { kind: "versioned" });
-    const step = buildPlan(cluster, { action: "deploy", apps: ["demo"] }).steps.at(-1)!;
-    assertEquals(step.deployment, { kind: "versioned" });
-    assertEquals(step.scripts[0]?.relativePath, "sfo-versioned-release.ts");
-    assertEquals(step.secretValues.length, 0);
-
-    const appPath = join(directory, "apps", "demo", "app.yaml");
-    await Deno.writeTextFile(
-      appPath,
-      `schema_version: 4
-name: demo
-install_directory: /srv/demo
-depends_on: [base]
-deployment:
-  kind: versioned
-scripts:
-  deploy: [{path: scripts/action.ts, permissions: {run: [], net: []}}]
-management:
-  run_as: deploy
-  actions: []
-`,
-    );
-    const conflict = await assertRejects(() => loadCluster(directory), ConfigurationError);
-    assertStringIncludes(conflict.message, "deployment 与 scripts.deploy");
-
-    await Deno.writeTextFile(
-      appPath,
-      `schema_version: 4
-name: demo
-install_directory: /srv/demo
-depends_on: [base]
-deployment:
-  kind: versioned
-scripts: {}
-management:
-  run_as: deploy
-  actions: []
-`,
-    );
-    const loaded = await loadCluster(directory);
-    assertEquals(loaded.apps.get("demo")?.deployment, { kind: "versioned" });
-  });
-});
-
-Deno.test("unit/app-v4: builtin versioned deploy stages all apps before any activation", async () => {
-  await withTempDir(async (root) => {
-    const directory = await writeV4App(
-      root,
-      `management:
-  run_as: deploy
-  actions:
-    - kind: service
-      type: systemd
-      unit: demo.service
-      daemon_reload: true
-      on_deploy: restart
-      timeout_ms: 2000
-`,
-      "check",
-    );
-    const alphaDirectory = join(directory, "apps", "alpha");
-    await Deno.mkdir(alphaDirectory, { recursive: true });
-    await Deno.writeTextFile(
-      join(alphaDirectory, "app.yaml"),
-      `schema_version: 4
-name: alpha
-install_directory: /srv/alpha
-deployment:
-  kind: versioned
-scripts: {}
-management:
-  run_as: deploy
-  actions: []
-`,
-    );
+  const appDirectory = join(directory, "apps", appName);
+  for (const file of files) await addFile(appDirectory, file.path, file.content);
+  await Deno.writeTextFile(join(appDirectory, "app.yaml"), appBody);
+  if (appName !== "demo") {
     await Deno.writeTextFile(
       join(directory, "app_versions.yaml"),
-      `schema_version: 1
-apps:
-  alpha:
-    version: "1.0.0"
-    package:
-      provider: http
-      source: {url: "https://example.invalid/alpha.bin"}
-      hash: {algorithm: sha256, value: "${"00".repeat(32)}"}
-  demo:
-    version: "1.0.0"
-    package:
-      provider: http
-      source: {url: "https://example.invalid/demo.bin"}
-      hash: {algorithm: sha256, value: "${"00".repeat(32)}"}
-`,
+      `schema_version: 1\napps: {}\n`,
     );
     await Deno.writeTextFile(
       join(directory, "cluster.yaml"),
       (await Deno.readTextFile(join(directory, "cluster.yaml"))).replace(
         "apps:\n  demo: [node-a]",
-        "apps:\n  demo: [node-a]\n  alpha: [node-b]",
+        `apps:\n  demo: [node-a]\n  ${appName}: [node-a]`,
       ),
     );
-    await Deno.writeTextFile(
-      join(directory, "machines.yaml"),
-      (await Deno.readTextFile(join(directory, "machines.yaml"))).replace(
-        "    deno: /usr/bin/deno\n",
-        "    deno: /usr/bin/deno\n  - name: node-b\n    private_ip: [10.0.0.3]\n    public_ip: 203.0.113.11\n    region: local\n    ssh_user: deploy\n    ssh_port: 22\n    deno: /usr/bin/deno\n",
-      ),
-    );
+  }
+  return directory;
+}
+
+const fileConfig = `schema_version: 1
+name: demo
+install_directory: /srv/demo
+depends_on: [base]
+deployment:
+  kind: versioned
+configs:
+  - kind: file
+    source: templates/application.json
+    target: /etc/demo/application.json
+    owner: deploy
+    group: deploy
+    mode: "0600"
+    format: json
+    on_change: restart
+management:
+  run_as: deploy
+  kind: service
+  name: demo.service
+  tool: auto
+  enabled: true
+  daemon_reload: true
+  on_deploy: restart
+  timeout_ms: 2000
+`;
+
+Deno.test("unit/app schema 1: file config and system service normalize without entry name", async () => {
+  await withTempDir(async (root) => {
+    const directory = await schemaApp(root, fileConfig, [{
+      path: "templates/application.json",
+      content: '{"listen":"127.0.0.1:8080"}\n',
+    }]);
     const cluster = await loadCluster(directory);
-    const plan = buildPlan(cluster, { action: "deploy" });
-    assertEquals(plan.steps.map((step) => step.id), [
-      "app:node-a/demo:stage",
-      "app:node-b/alpha:stage",
-      "app:node-a/demo:activate",
-      "app:node-b/alpha:activate",
-      "app:node-a/demo:restart",
-    ]);
-    const stageIds = new Set(["app:node-a/demo:stage", "app:node-b/alpha:stage"]);
-    for (const step of plan.steps.filter((step) => step.action === "activate")) {
-      assertEquals(new Set(step.dependsOn), stageIds);
-    }
-    assert(plan.steps[0].package !== undefined);
-    assert(plan.steps[1].package !== undefined);
-    assertEquals(plan.steps[2].package, undefined);
-    assertEquals(plan.steps[3].package, undefined);
-    assertEquals(plan.steps[0].management, undefined);
-    assertEquals(plan.steps[2].management?.runAs, "deploy");
-    assertEquals(plan.steps[4].management?.service?.onDeploy, "restart");
-    assertEquals(plan.steps[4].deployment, undefined);
-    assertEquals(plan.steps[4].package, undefined);
+    const app = cluster.apps.get("demo")!;
+    assertEquals(app.management?.configs.length, 1);
+    assertEquals(app.management?.configScripts.length, 0);
+    assertEquals(app.management?.manager?.kind, "service");
+    const plan = buildPlan(cluster, { action: "deploy", apps: ["demo"] });
+    assertEquals(plan.steps.map((step) => step.action), ["stage", "activate"]);
+    assertEquals(plan.steps[0].management?.configs[0]?.name, "file-0");
   });
 });
 
-Deno.test("unit/app-v4: 未知字段、kind、所有权和路径冲突失败关闭", async () => {
+Deno.test("unit/app schema 1: nginx file config loads as raw text and rejects bindings", async () => {
+  const nginxBody = `schema_version: 1
+name: demo
+install_directory: /srv/demo
+deployment:
+  kind: versioned
+configs:
+  - kind: file
+    source: templates/jx-web.conf
+    target: /etc/nginx/conf.d/jx-web.conf
+    owner: root
+    group: root
+    mode: "0644"
+    format: nginx
+    on_change: reload
+management:
+  run_as: deploy
+  kind: service
+  name: nginx.service
+  tool: systemctl
+  daemon_reload: false
+  on_deploy: none
+`;
+  await withTempDir(async (root) => {
+    const directory = await schemaApp(root, nginxBody, [{
+      path: "templates/jx-web.conf",
+      content: "server { listen 80; root /srv/demo/latest; }\n",
+    }]);
+    const cluster = await loadCluster(directory);
+    const config = cluster.apps.get("demo")!.management?.configs[0];
+    assertEquals(config?.format, "nginx");
+    assertEquals(config?.onChange, "reload");
+    assertEquals(config?.secretReferences.size, 0);
+    assertEquals(config?.variables, []);
+  });
+
+  await withTempDir(async (root) => {
+    const directory = await schemaApp(root, nginxBody, [{
+      path: "templates/jx-web.conf",
+      content: "server { error_log /tmp/${DB_PASSWORD}; }\n",
+    }]);
+    const error = await assertRejects(() => loadCluster(directory), PreflightError);
+    assertStringIncludes(error.message, "不支持占位符");
+  });
+
+  await withTempDir(async (root) => {
+    const variableBody = nginxBody.replace(
+      "format: nginx",
+      `format: nginx
+    variables:
+      - name: SERVER_NAME
+        path: [server_name]
+        type: string`,
+    );
+    const directory = await schemaApp(root, variableBody, [{
+      path: "templates/jx-web.conf",
+      content: "server { listen 80; }\n",
+    }]);
+    const error = await assertRejects(() => loadCluster(directory), ConfigurationError);
+    assertStringIncludes(error.message, "variables 与 format: nginx 不兼容");
+  });
+});
+
+Deno.test("unit/app schema 1: script and file configs plan configure then versioned staging", async () => {
+  await withTempDir(async (root) => {
+    const body = `schema_version: 1
+name: demo
+install_directory: /srv/demo
+deployment:
+  kind: versioned
+configs:
+  - kind: script
+    path: scripts/configure.ts
+    permissions:
+      run: [/usr/bin/test]
+      net: []
+  - kind: file
+    source: templates/application.json
+    target: /etc/demo/application.json
+    format: json
+management:
+  run_as: deploy
+  kind: service
+  name: demo.service
+  tool: systemctl
+  daemon_reload: true
+`;
+    const directory = await schemaApp(root, body, [{
+      path: "templates/application.json",
+      content: '{"listen":"127.0.0.1:8080"}\n',
+    }, {
+      path: "scripts/configure.ts",
+      content: "Deno.exit(0);\n",
+    }]);
+    const cluster = await loadCluster(directory);
+    const app = cluster.apps.get("demo")!;
+    assertEquals(app.management?.configScripts.length, 1);
+    const plan = buildPlan(cluster, { action: "deploy", apps: ["demo"] });
+    assertEquals(plan.steps.map((step) => step.action), [
+      "configure",
+      "stage",
+      "activate",
+    ]);
+    assertEquals(plan.steps[0].scripts[0]?.relativePath, "scripts/configure.ts");
+  });
+});
+
+Deno.test("unit/app schema 1: directory variables bind managed config targets", async () => {
+  await withTempDir(async (root) => {
+    const body = `schema_version: 1
+name: demo
+install_directory: /srv/demo
+deployment:
+  kind: versioned
+configs:
+  - kind: file
+    source: templates/application.json
+    target: ${"${INSTALL_DIRECTORY}/shared/application.json"}
+    format: json
+  - kind: file
+    source: templates/application.current.json
+    target: ${"${CURRENT_VERSION_DIRECTORY}/resources/application.json"}
+    format: json
+  - kind: file
+    source: templates/application.latest.json
+    target: ${"${LATEST_DIRECTORY}/resources/application-latest.json"}
+    format: json
+management:
+  run_as: deploy
+  kind: service
+  name: demo.service
+  tool: systemctl
+  daemon_reload: true
+`;
+    const directory = await schemaApp(root, body, [{
+      path: "templates/application.json",
+      content: "{}\n",
+    }, {
+      path: "templates/application.current.json",
+      content: "{}\n",
+    }, {
+      path: "templates/application.latest.json",
+      content: "{}\n",
+    }]);
+    const cluster = await loadCluster(directory);
+    const configs = cluster.apps.get("demo")!.management?.configs ?? [];
+    assertEquals(configs.map((config) => [config.target, config.targetRoot]), [
+      ["/srv/demo/shared/application.json", "install"],
+      ["/srv/demo/latest/resources/application.json", "current"],
+      ["/srv/demo/latest/resources/application-latest.json", "latest"],
+    ]);
+  });
+});
+
+Deno.test("unit/app schema 1: install directory variable requires install_directory", async () => {
+  await withTempDir(async (root) => {
+    const body = `schema_version: 1
+name: demo
+packageless: true
+configs:
+  - kind: file
+    source: templates/application.json
+    target: ${"${INSTALL_DIRECTORY}/resources/application.json"}
+    format: json
+management:
+  run_as: deploy
+  kind: service
+  name: demo.service
+  tool: systemctl
+`;
+    const directory = await schemaApp(root, body, [{
+      path: "templates/application.json",
+      content: "{}\n",
+    }]);
+    await Deno.writeTextFile(join(directory, "app_versions.yaml"), "schema_version: 1\napps: {}\n");
+    const error = await assertRejects(() => loadCluster(directory), ConfigurationError);
+    assertStringIncludes(
+      error.message,
+      "app[demo].configs.file[0].target 使用安装目录变量，但 App 缺少 install_directory",
+    );
+  });
+});
+
+Deno.test("unit/app schema 1: directory variables are single prefix values", async () => {
+  await withTempDir(async (root) => {
+    const body = `schema_version: 1
+name: demo
+install_directory: /srv/demo
+deployment:
+  kind: versioned
+configs:
+  - kind: file
+    source: templates/application.json
+    target: ${"${INSTALL_DIRECTORY}/x/${LATEST_DIRECTORY}/app.json"}
+    format: json
+management:
+  run_as: deploy
+  kind: service
+  name: demo.service
+  tool: systemctl
+  daemon_reload: true
+`;
+    const directory = await schemaApp(root, body, [{
+      path: "templates/application.json",
+      content: "{}\n",
+    }]);
+    const error = await assertRejects(() => loadCluster(directory), ConfigurationError);
+    assertStringIncludes(error.message, "只能包含一个目录变量");
+  });
+});
+
+Deno.test("unit/app schema 1: script service supplies lifecycle commands and deploy restarts", async () => {
+  await withTempDir(async (root) => {
+    const body = `schema_version: 1
+name: demo
+install_directory: /srv/demo
+deployment:
+  kind: versioned
+management:
+  run_as: deploy
+  kind: script
+  start: {path: scripts/start.ts, permissions: {run: [], net: []}}
+  stop: {path: scripts/stop.ts, permissions: {run: [], net: []}}
+  restart: {path: scripts/restart.ts, permissions: {run: [], net: []}}
+`;
+    const files = ["start", "stop", "restart"].map((name) => ({
+      path: `scripts/${name}.ts`,
+      content: "Deno.exit(0);\n",
+    }));
+    const cluster = await loadCluster(await schemaApp(root, body, files));
+    const deploy = buildPlan(cluster, { action: "deploy", apps: ["demo"] });
+    assertEquals(deploy.steps.map((step) => step.action), ["stage", "activate", "restart"]);
+    assertEquals(deploy.steps.at(-1)?.scripts[0]?.relativePath, "scripts/restart.ts");
+    const restart = buildPlan(cluster, { action: "restart", apps: ["demo"] });
+    assertEquals(restart.steps[0].scripts[0]?.relativePath, "scripts/restart.ts");
+  });
+});
+
+Deno.test("unit/app schema 1: unit_config resolves latest paths", async () => {
+  await withTempDir(async (root) => {
+    const body = `schema_version: 1
+name: demo
+install_directory: /srv/demo
+deployment:
+  kind: versioned
+configs:
+  - kind: file
+    source: templates/application.json
+    target: /etc/demo/application.json
+    format: json
+management:
+  run_as: deploy
+  kind: service
+  name: demo.service
+  tool: systemctl
+  daemon_reload: true
+  unit_config:
+    working_directory: latest
+    command: bin/server
+    args: []
+`;
+    const directory = await schemaApp(root, body, [{
+      path: "templates/application.json",
+      content: "{}\n",
+    }]);
+    const cluster = await loadCluster(directory);
+    const service = cluster.apps.get("demo")!.management?.manager;
+    assertEquals(
+      service?.kind === "service" ? service.unitConfig?.workingDirectory : "",
+      "/srv/demo/latest",
+    );
+  });
+});
+
+Deno.test("unit/app schema 1: unit_config resolves directory variables in working_directory", async () => {
   const cases: readonly [string, string][] = [
-    ["旧 configs 字段", `management:\n  run_as: deploy\n  configs: []\n  actions: []\n`],
-    ["未知 kind", `management:\n  run_as: deploy\n  actions:\n    - kind: hook\n`],
-    [
-      "config 冲突",
-      `management:\n  run_as: deploy\n  actions:\n    - kind: config\n      name: application\n      source: templates/application.json\n      target: /etc/demo/application.json\n      format: json\n`,
-    ],
-    [
-      "service 冲突",
-      `management:\n  run_as: deploy\n  actions:\n    - kind: service\n      type: systemd\n      unit: demo.service\n      daemon_reload: true\n`,
-    ],
-    [
-      "相对路径越界",
-      `management:\n  run_as: deploy\n  actions:\n    - kind: service\n      type: systemd\n      unit: demo.service\n      daemon_reload: true\n      unit_config:\n        working_directory: ../outside\n        command: bin/server\n`,
-    ],
-    [
-      "daemon_reload 缺失",
-      `management:\n  run_as: deploy\n  actions:\n    - kind: service\n      type: systemd\n      unit: demo.service\n      daemon_reload: false\n      unit_config:\n        working_directory: current\n        command: bin/server\n`,
-    ],
-    [
-      "重复 service",
-      `management:\n  run_as: deploy\n  actions:\n    - kind: service\n      type: systemd\n      unit: demo.service\n      daemon_reload: true\n    - kind: service\n      type: systemd\n      unit: demo.service\n      daemon_reload: true\n`,
-    ],
-    [
-      "unit target 冲突",
-      `management:\n  run_as: deploy\n  actions:\n    - kind: config\n      name: unit\n      source: templates/application.json\n      target: /etc/systemd/system/demo.service\n      format: json\n    - kind: service\n      type: systemd\n      unit: demo.service\n      daemon_reload: true\n      unit_config:\n        working_directory: current\n        command: bin/server\n`,
-    ],
-    [
-      "target 文件名不匹配",
-      `management:\n  run_as: deploy\n  actions:\n    - kind: service\n      type: systemd\n      unit: demo.service\n      daemon_reload: true\n      unit_config:\n        target: /etc/systemd/system/other.service\n        working_directory: current\n        command: bin/server\n`,
-    ],
+    [`working_directory: ${"${LATEST_DIRECTORY}"}`, "/srv/demo/latest"],
+    [`working_directory: ${"${CURRENT_VERSION_DIRECTORY}"}`, "/srv/demo/latest"],
+    [`working_directory: ${"${INSTALL_DIRECTORY}"}`, "/srv/demo"],
+    [`working_directory: ${"${LATEST_DIRECTORY}/resources"}`, "/srv/demo/latest/resources"],
+    [`working_directory: ${"${INSTALL_DIRECTORY}/lib"}`, "/srv/demo/lib"],
   ];
-  for (const [label, management] of cases) {
+  for (const [workingDirectory, expected] of cases) {
     await withTempDir(async (root) => {
-      const scripts = label === "config 冲突"
-        ? "configure"
-        : label === "service 冲突"
-        ? "start"
-        : "deploy";
-      const directory = await writeV4App(root, management, scripts);
-      const error = await assertRejects(() => loadCluster(directory), ConfigurationError);
-      assertStringIncludes(error.message, "app[demo].management");
+      const body = `schema_version: 1
+name: demo
+install_directory: /srv/demo
+deployment:
+  kind: versioned
+management:
+  run_as: deploy
+  kind: service
+  name: demo.service
+  tool: systemctl
+  daemon_reload: true
+  unit_config:
+    ${workingDirectory}
+    command: bin/server
+    args: []
+`;
+      const directory = await schemaApp(root, body);
+      const cluster = await loadCluster(directory);
+      const manager = cluster.apps.get("demo")!.management?.manager;
+      assertEquals(
+        manager?.kind === "service" ? manager.unitConfig?.workingDirectory : "",
+        expected,
+      );
     });
   }
+});
+
+Deno.test("unit/app schema 1: unit_config rejects invalid working_directory variables", async () => {
+  const cases: readonly { readonly workingDirectory: string; readonly message: string }[] = [
+    {
+      workingDirectory: `${"${LATEST_DIRECTORY}/${INSTALL_DIRECTORY}"}`,
+      message: "只能包含一个目录变量",
+    },
+    {
+      workingDirectory: `x/${"${LATEST_DIRECTORY}"}`,
+      message: "只支持以",
+    },
+    {
+      workingDirectory: `${"${LATEST_DIRECTORY}/../x"}`,
+      message: "目录变量后必须是规范相对路径",
+    },
+    {
+      workingDirectory: `${"${LATEST_DIRECTORY}/"}`,
+      message: "目录变量后必须是规范相对路径",
+    },
+    {
+      workingDirectory: `${"${LATEST_DIRECTORY}/a/./b"}`,
+      message: "目录变量后必须是规范相对路径",
+    },
+    {
+      workingDirectory: `${"${UNKNOWN}"}`,
+      message: "只支持",
+    },
+    {
+      workingDirectory: `${"${LATEST_DIRECTORY}/x${MORE}"}`,
+      message: "目录变量后必须是规范相对路径",
+    },
+  ];
+  for (const { workingDirectory, message } of cases) {
+    await withTempDir(async (root) => {
+      const body = `schema_version: 1
+name: demo
+install_directory: /srv/demo
+deployment:
+  kind: versioned
+management:
+  run_as: deploy
+  kind: service
+  name: demo.service
+  tool: systemctl
+  daemon_reload: true
+  unit_config:
+    working_directory: ${workingDirectory}
+    command: bin/server
+    args: []
+`;
+      const error = await assertRejects(
+        async () => await loadCluster(await schemaApp(root, body)),
+        ConfigurationError,
+      );
+      assertStringIncludes(error.message, message);
+    });
+  }
+});
+
+Deno.test("unit/app schema 1: unit_config directory variable renders systemd unit", async () => {
+  await withTempDir(async (root) => {
+    const body = `schema_version: 1
+name: demo
+install_directory: /srv/demo
+deployment:
+  kind: versioned
+management:
+  run_as: deploy
+  kind: service
+  name: demo.service
+  tool: systemctl
+  daemon_reload: true
+  unit_config:
+    working_directory: ${"${LATEST_DIRECTORY}"}
+    command: bin/server
+    args: []
+`;
+    const directory = await schemaApp(root, body);
+    const cluster = await loadCluster(directory);
+    const manager = cluster.apps.get("demo")!.management?.manager;
+    if (manager?.kind !== "service" || manager.unitConfig === undefined) {
+      throw new Error("expected service management with unit_config");
+    }
+    const skeleton = generateSystemdUnitSkeleton(
+      serviceUnitManagedConfig(manager)!,
+      manager,
+      "deploy",
+    );
+    const text = new TextDecoder().decode(skeleton.content);
+    assertStringIncludes(text, "WorkingDirectory=/srv/demo/latest");
+  });
+});
+
+Deno.test("unit/app schema 1: unit_config directory variable requires install_directory", async () => {
+  await withTempDir(async (root) => {
+    const body = `schema_version: 1
+name: demo
+packageless: true
+management:
+  run_as: deploy
+  kind: service
+  name: demo.service
+  tool: systemctl
+  daemon_reload: true
+  unit_config:
+    working_directory: ${"${LATEST_DIRECTORY}"}
+    command: bin/server
+    args: []
+`;
+    const directory = await schemaApp(root, body);
+    await Deno.writeTextFile(join(directory, "app_versions.yaml"), "schema_version: 1\napps: {}\n");
+    const error = await assertRejects(
+      async () => await loadCluster(directory),
+      ConfigurationError,
+    );
+    assertStringIncludes(error.message, "缺少 install_directory");
+  });
+});
+
+Deno.test("unit/app schema 1: unit_config normalizes restart policy fields", async () => {
+  await withTempDir(async (root) => {
+    const body = `schema_version: 1
+name: demo
+install_directory: /srv/demo
+deployment:
+  kind: versioned
+management:
+  run_as: deploy
+  kind: service
+  name: demo.service
+  tool: systemctl
+  daemon_reload: true
+  unit_config:
+    working_directory: latest
+    command: bin/server
+    args: []
+    restart_policy: on-failure
+    restart_sec: 5
+    start_limit_interval_sec: 0
+    start_limit_burst: 5
+`;
+    const cluster = await loadCluster(await schemaApp(root, body));
+    const service = cluster.apps.get("demo")!.management?.manager;
+    const unitConfig = service?.kind === "service" ? service.unitConfig : undefined;
+    assertEquals(unitConfig?.restartPolicy, "on-failure");
+    assertEquals(unitConfig?.restartSec, 5);
+    assertEquals(unitConfig?.startLimitIntervalSec, 0);
+    assertEquals(unitConfig?.startLimitBurst, 5);
+  });
+});
+
+Deno.test("unit/app schema 1: restart policy values and bounds fail closed", async () => {
+  const base = `schema_version: 1
+name: demo
+install_directory: /srv/demo
+deployment:
+  kind: versioned
+management:
+  run_as: deploy
+  kind: service
+  name: demo.service
+  tool: systemctl
+  daemon_reload: true
+  unit_config:
+    working_directory: latest
+    command: bin/server
+    args: []
+`;
+  const cases = [
+    ["restart_policy", "sometimes", "restart_policy"],
+    ["restart_sec", "-1", "restart_sec"],
+    ["restart_sec", "86401", "restart_sec"],
+    ["start_limit_interval_sec", "-1", "start_limit_interval_sec"],
+    ["start_limit_interval_sec", "86401", "start_limit_interval_sec"],
+    ["start_limit_burst", "-1", "start_limit_burst"],
+    ["start_limit_burst", "10001", "start_limit_burst"],
+  ] as const;
+  for (const [field, value, label] of cases) {
+    await withTempDir(async (root) => {
+      const body = `${base}    ${field}: ${value}\n`;
+      const error = await assertRejects(
+        async () => await loadCluster(await schemaApp(root, body)),
+        ConfigurationError,
+      );
+      assertStringIncludes(error.message, `unit_config.${label}`);
+    });
+  }
+});
+
+Deno.test("unit/app schema 1: old app schemas are rejected", async () => {
+  await withTempDir(async (root) => {
+    const directory = await schemaApp(root, fileConfig, [{
+      path: "templates/application.json",
+      content: "{}\n",
+    }]);
+    for (const version of [2, 3, 4]) {
+      const path = join(directory, "apps", "demo", "app.yaml");
+      await Deno.writeTextFile(
+        path,
+        (await Deno.readTextFile(path)).replace("schema_version: 1", `schema_version: ${version}`),
+      );
+      const error = await assertRejects(() => loadCluster(directory), ConfigurationError);
+      assertStringIncludes(error.message, "app[demo].schema_version 只支持 1");
+    }
+  });
+});
+
+Deno.test("unit/app schema 1: top-level scripts are rejected", async () => {
+  await withTempDir(async (root) => {
+    const body = `schema_version: 1
+name: demo
+install_directory: /srv/demo
+deployment:
+  kind: versioned
+scripts:
+  check: [{path: scripts/check.ts, permissions: {run: [], net: []}}]
+management:
+  run_as: deploy
+  kind: service
+  name: demo.service
+  tool: systemctl
+`;
+    const directory = await schemaApp(root, body);
+    const error = await assertRejects(() => loadCluster(directory), ConfigurationError);
+    assertStringIncludes(error.message, "顶层 scripts 已移除");
+  });
+});
+
+Deno.test("unit/app schema 1: old management.service wrapper is rejected", async () => {
+  await withTempDir(async (root) => {
+    const body = `schema_version: 1
+name: demo
+install_directory: /srv/demo
+deployment:
+  kind: versioned
+management:
+  run_as: deploy
+  service:
+    kind: system
+    name: demo.service
+    tool: systemctl
+`;
+    const directory = await schemaApp(root, body);
+    const error = await assertRejects(() => loadCluster(directory), ConfigurationError);
+    assertStringIncludes(error.message, "app[demo].management 包含未知字段: service");
+  });
+});
+
+Deno.test("unit/app schema 1: ownership, duplicate and invalid service rules fail closed", async () => {
+  const cases: readonly [string, string][] = [
+    [
+      "name",
+      `configs:\n  - kind: file\n    name: application\n    source: templates/a.json\n    target: /etc/a.json\n    format: json\n`,
+    ],
+    [
+      "kind",
+      `configs:\n  - name: application\n    source: templates/a.json\n    target: /etc/a.json\n    format: json\n`,
+    ],
+    ["unknown-kind", `configs:\n  - kind: directory\n`],
+    [
+      "service-tool",
+      `management:\n  run_as: deploy\n  kind: service\n  name: demo.service\n  tool: rc-service\n`,
+    ],
+    [
+      "service-unit-tool",
+      `management:\n  run_as: deploy\n  kind: service\n  name: demo.service\n  tool: service\n  unit_config:\n    working_directory: latest\n    command: bin/server\n`,
+    ],
+  ];
+  for (const [label, extra] of cases) {
+    await withTempDir(async (root) => {
+      const body = `schema_version: 1\nname: demo\ninstall_directory: /srv/demo\n${extra}`;
+      const directory = await schemaApp(root, body);
+      const error = await assertRejects(() => loadCluster(directory), ConfigurationError);
+      assertStringIncludes(error.message, "app[demo]");
+    });
+  }
+});
+
+Deno.test("unit/app schema 1: duplicate file targets and scripts are rejected", async () => {
+  await withTempDir(async (root) => {
+    const body = `schema_version: 1
+name: demo
+install_directory: /srv/demo
+configs:
+  - kind: file
+    source: templates/a.json
+    target: /etc/a.json
+    format: json
+  - kind: file
+    source: templates/b.json
+    target: /etc/a.json
+    format: json
+management:
+  run_as: deploy
+  kind: service
+  name: demo.service
+  tool: systemctl
+`;
+    const directory = await schemaApp(root, body, [
+      { path: "templates/a.json", content: "{}\n" },
+      { path: "templates/b.json", content: "{}\n" },
+      { path: "scripts/check.ts", content: "Deno.exit(0);\n" },
+    ]);
+    const error = await assertRejects(() => loadCluster(directory), ConfigurationError);
+    assertStringIncludes(error.message, "重复目标路径");
+  });
 });

@@ -1,0 +1,35 @@
+schema_version: 1
+task_manifest: task.yaml
+change_ids: ["CHG-jx-web-nginx-server-config"]
+source_bindings:
+  proposal: proposal.md
+  design_source: design.md
+risks:
+  contract:
+    applies: true
+    evidence: ["src/types.ts", "src/config.ts", "src/config_generation.ts", "src/remote_runtime/config_updater.ts", "src/history.ts", "README.md", "docs/guides/sfo-deploy-cluster-configuration.md", "docs/modules/sfo-deploy.md", "skills/sfo-deploy-cluster/references/app.md"]
+    required_checks: ["nginx-config-format-contract"]
+  data:
+    applies: true
+    evidence: ["src/history.ts", "tests/unit/history.test.ts"]
+    required_checks: ["nginx-plan-snapshot-compatibility"]
+  security:
+    applies: true
+    evidence: ["src/config.ts", "src/config_generation.ts", "src/remote_runtime/config_updater.ts", "src/transport.ts"]
+    required_checks: ["nginx-text-security-boundary"]
+  runtime:
+    applies: true
+    evidence: ["src/execution.ts", "src/service_management.ts", "src/remote_runtime/versioned_release.ts", "examples/eleph-server-multipass/clusters/multipass/apps/jx-web/app.yaml"]
+    required_checks: ["jx-web-nginx-deploy-runtime"]
+  build:
+    applies: true
+    evidence: ["src/remote_runtime/config_updater.ts", "src/remote_runtime/config_updater.bundle.js", "deno.json"]
+    required_checks: ["remote-runtime-bundle-sync"]
+  ui:
+    applies: false
+    evidence: 不改变应用 UI；HTTP 页面仅作为部署验收信号。
+    required_checks: []
+  harness:
+    applies: false
+    evidence: 使用现有 Harness 流程，不修改规则或检查器。
+    required_checks: []

@@ -16,6 +16,7 @@ function config(
     relativePath: `${format}.tpl`,
     source,
     target: `/etc/demo/app.${format}`,
+    targetRoot: "absolute",
     mode: 0o600,
     variables: Object.freeze([Object.freeze({
       name: "PORT",
@@ -43,6 +44,7 @@ const sources: Readonly<Record<ManagedConfigFormat, string>> = Object.freeze({
     configVariableMarker("PORT")
   }"\n`,
   ini: `[database]\npassword=\${DB_PASSWORD}\n[server]\nport=${configVariableMarker("PORT")}\n`,
+  nginx: "server {\n  listen 80;\n}\n",
 });
 
 Deno.test("unit/config-generation: 四格式占位符转换为确定性 marker", async () => {
@@ -175,6 +177,53 @@ Deno.test("unit/config-generation: 骨架 SHA-256 与内容一致", async () => 
     assertEquals(
       createHash("sha256").update(skeleton.content).digest("hex"),
       skeleton.sha256,
+    );
+  });
+});
+
+Deno.test("unit/config-generation: nginx raw skeleton preserves UTF-8 and rejects bindings", async () => {
+  await withTempDir(async (root) => {
+    const source = join(root, "jx-web.conf");
+    const nginx = "server {\n  charset utf-8;\n}\n";
+    await Deno.writeTextFile(source, nginx);
+    const skeleton = await generateConfigSkeleton({
+      name: "jx-web",
+      relativePath: "jx-web.conf",
+      source,
+      target: "/etc/nginx/conf.d/jx-web.conf",
+      targetRoot: "absolute",
+      mode: 0o644,
+      variables: Object.freeze([]),
+      format: "nginx",
+      secretReferences: Object.freeze(new Map()),
+      onChange: "reload",
+      validator: undefined,
+    }, {});
+    assertEquals(new TextDecoder().decode(skeleton.content), nginx);
+    assertEquals(skeleton.secretBindings, []);
+    assertEquals(skeleton.format, "nginx");
+  });
+
+  await withTempDir(async (root) => {
+    const source = join(root, "reserved.conf");
+    await Deno.writeTextFile(source, "server { __SFO_CONFIG_VAR_V1_NAME__ }\n");
+    await assertRejects(
+      () =>
+        generateConfigSkeleton({
+          name: "jx-web",
+          relativePath: "reserved.conf",
+          source,
+          target: "/etc/nginx/conf.d/jx-web.conf",
+          targetRoot: "absolute",
+          mode: 0o644,
+          variables: Object.freeze([]),
+          format: "nginx",
+          secretReferences: Object.freeze(new Map()),
+          onChange: "reload",
+          validator: undefined,
+        }, {}),
+      PreflightError,
+      "框架保留占位符",
     );
   });
 });

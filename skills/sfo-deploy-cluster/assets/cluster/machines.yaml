@@ -1,0 +1,8 @@
+schema_version: 1
+machines:
+  - name: app-01
+    region: cn-east
+    # 文档示例地址，实际使用前替换。
+    private_ip: 192.0.2.10
+    ssh_user: deploy
+    ssh_port: 22

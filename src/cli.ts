@@ -857,22 +857,32 @@ function serializeManagement(
         type: reference.valueType,
       })),
     })),
-    service: management.service === undefined ? null : {
-      kind: management.service.kind,
-      unit: management.service.unit,
-      enabled: management.service.enabled ?? null,
-      daemon_reload: management.service.daemonReload,
-      on_deploy: management.service.onDeploy,
-      ...(management.service.unitConfig === undefined ? {} : {
-        unit_config: {
-          target: management.service.unitConfig.target,
-          working_directory: management.service.unitConfig.workingDirectory,
-          command: management.service.unitConfig.command,
-          args: [...management.service.unitConfig.args],
-        },
-      }),
+    config_scripts: management.configScripts.map((script) => script.relativePath),
+    manager: management.manager === undefined ? null : {
+      ...(management.manager.kind === "service"
+        ? {
+          kind: management.manager.kind,
+          unit: management.manager.unit,
+          tool: management.manager.tool,
+          enabled: management.manager.enabled ?? null,
+          daemon_reload: management.manager.daemonReload,
+          on_deploy: management.manager.onDeploy,
+          ...(management.manager.unitConfig === undefined ? {} : {
+            unit_config: {
+              target: management.manager.unitConfig.target,
+              working_directory: management.manager.unitConfig.workingDirectory,
+              command: management.manager.unitConfig.command,
+              args: [...management.manager.unitConfig.args],
+            },
+          }),
+        }
+        : {
+          kind: management.manager.kind,
+          start: management.manager.start.relativePath,
+          stop: management.manager.stop.relativePath,
+          restart: management.manager.restart.relativePath,
+        }),
     },
-    hooks: [...management.hooks.keys()].sort(),
   };
 }
 

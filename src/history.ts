@@ -13,14 +13,23 @@ import {
 import { ConfigurationError, ExecutionError } from "./errors.ts";
 import type {
   AppManagementDefinition,
-  AppManagementHook,
+  AppManagerDefinition,
   ConfigTemplate,
   DeploymentDefinition,
+  EnvironmentInstallDefinition,
   EnvironmentInstance,
+  EnvironmentManagerDefinition,
+  EnvironmentPackageInstall,
+  EnvironmentPackageManagerKind,
+  EnvironmentScriptInstall,
+  EnvironmentScriptManager,
+  EnvironmentServiceTool,
+  EnvironmentSystemManager,
   ExecutionPlan,
   Machine,
   ManagedConfigFile,
   ManagedConfigPathSegment,
+  ManagedConfigTargetRoot,
   ManagedConfigVariableBinding,
   ManagedSecretReference,
   PackageSpec,
@@ -29,6 +38,7 @@ import type {
   ResolvedMachine,
   ScriptInvocation,
   ScriptRuntime,
+  SystemdRestartPolicy,
 } from "./types.ts";
 import { freezeArray, freezeRecord } from "./types.ts";
 import { immutableMap } from "./types.ts";
@@ -57,6 +67,15 @@ const RELEASE_ID_RE = /^r\d{8}T\d{12}Z-[0-9a-f]{16}$/;
 const SOURCE_SCHEMA_RE = /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/;
 const SHA256_RE = /^[0-9a-f]{64}$/;
 const APP_RUN_AS_RE = /^[a-z_][a-z0-9_-]{0,31}\$?$/;
+const SYSTEMD_RESTART_POLICIES = new Set([
+  "no",
+  "on-success",
+  "on-failure",
+  "on-abnormal",
+  "on-watchdog",
+  "on-abort",
+  "always",
+]);
 const RELEASE_OPERATIONS = new Set([
   "configure",
   "deploy",
@@ -75,6 +94,7 @@ export type ReleaseOperation =
 const PLAN_ACTIONS = new Set([
   "check",
   "install",
+  "prepare",
   "configure",
   "deploy",
   "start",
@@ -98,6 +118,10 @@ const PLAN_STEP_ACTIONS: Readonly<Record<string, Readonly<Record<string, Readonl
   Object.freeze({
     check: { environment: new Set(["check"]), app: new Set<string>() },
     install: { environment: new Set(["install"]), app: new Set<string>() },
+    prepare: {
+      environment: new Set(["check", "install", "configure", "start", "restart"]),
+      app: new Set([]),
+    },
     configure: {
       environment: new Set(["check", "install", "configure"]),
       app: new Set(["configure"]),
@@ -1083,7 +1107,8 @@ async function encodeStep(
   }
   const declaredRunAs = step.management?.runAs;
   const runAs = step.runAs ?? declaredRunAs;
-  const isVersionedStage = step.kind === "app" && step.action === "stage" &&
+  const isVersionedStage = step.kind === "app" &&
+    (step.action === "stage" || step.action === "activate") &&
     step.deployment?.kind === "versioned";
   if (step.management !== undefined) {
     if (runAs === undefined) throw new ConfigurationError("managed plan-v4 步骤缺少 run_as");
@@ -1205,6 +1230,12 @@ async function encodeStep(
         delivery_inputs: step.deliveryInputs === undefined
           ? null
           : await encodeDeliveryInputs(step.deliveryInputs, archive),
+        environment_install: step.environmentInstall === undefined
+          ? null
+          : await encodeEnvironmentInstall(step.environmentInstall, archive),
+        environment_manager: step.environmentManager === undefined
+          ? null
+          : await encodeEnvironmentManager(step.environmentManager, archive),
       }
       : {}),
     depends_on: step.dependsOn,
@@ -1243,6 +1274,7 @@ async function encodeManagement(
     relative_path: safeRelative(config.relativePath),
     source: await archive.add(config.source),
     target: config.target,
+    target_root: config.targetRoot,
     owner: config.owner ?? null,
     group: config.group ?? null,
     mode: config.mode,
@@ -1262,33 +1294,51 @@ async function encodeManagement(
       : { argv: config.validator.argv, timeout_ms: config.validator.timeoutMs },
     on_change: config.onChange,
   })));
-  const hooks = await Promise.all(
-    [...management.hooks.entries()].sort(([left], [right]) => left.localeCompare(right)).map(
-      async ([hook, scripts]) => ({
-        hook,
-        scripts: await Promise.all(scripts.map((script) => encodeInvocation(script, archive))),
-      }),
-    ),
+  const configScripts = await Promise.all(
+    management.configScripts.map((script) => encodeInvocation(script, archive)),
   );
-  return {
-    configs,
-    service: management.service === undefined ? null : {
-      kind: management.service.kind,
-      unit: management.service.unit,
-      enabled: management.service.enabled ?? null,
-      daemon_reload: management.service.daemonReload,
-      on_deploy: management.service.onDeploy,
-      timeout_ms: management.service.timeoutMs,
-      ...(management.service.unitConfig === undefined ? {} : {
+  const manager = management.manager === undefined
+    ? null
+    : management.manager.kind === "service"
+    ? {
+      kind: management.manager.kind,
+      unit: management.manager.unit,
+      tool: management.manager.tool,
+      enabled: management.manager.enabled ?? null,
+      daemon_reload: management.manager.daemonReload,
+      on_deploy: management.manager.onDeploy,
+      timeout_ms: management.manager.timeoutMs,
+      ...(management.manager.unitConfig === undefined ? {} : {
         unit_config: {
-          target: management.service.unitConfig.target,
-          working_directory: management.service.unitConfig.workingDirectory,
-          command: management.service.unitConfig.command,
-          args: management.service.unitConfig.args,
+          target: management.manager.unitConfig.target,
+          working_directory: management.manager.unitConfig.workingDirectory,
+          command: management.manager.unitConfig.command,
+          args: management.manager.unitConfig.args,
+          ...(management.manager.unitConfig.restartPolicy === undefined
+            ? {}
+            : { restart_policy: management.manager.unitConfig.restartPolicy }),
+          ...(management.manager.unitConfig.restartSec === undefined
+            ? {}
+            : { restart_sec: management.manager.unitConfig.restartSec }),
+          ...(management.manager.unitConfig.startLimitIntervalSec === undefined
+            ? {}
+            : { start_limit_interval_sec: management.manager.unitConfig.startLimitIntervalSec }),
+          ...(management.manager.unitConfig.startLimitBurst === undefined
+            ? {}
+            : { start_limit_burst: management.manager.unitConfig.startLimitBurst }),
         },
       }),
-    },
-    hooks,
+    }
+    : {
+      kind: management.manager.kind,
+      start: await encodeInvocation(management.manager.start, archive),
+      stop: await encodeInvocation(management.manager.stop, archive),
+      restart: await encodeInvocation(management.manager.restart, archive),
+    };
+  return {
+    configs,
+    config_scripts: configScripts,
+    manager,
   };
 }
 
@@ -1332,7 +1382,7 @@ async function decodeManagement(
 ): Promise<AppManagementDefinition | undefined> {
   if (raw === null || raw === undefined) return undefined;
   const value = objectValue(raw, "management");
-  expectKeys(value, ["configs", "service", "hooks"], "management");
+  expectKeys(value, ["configs", "config_scripts", "manager"], "management");
   if (!Array.isArray(value.configs) || value.configs.length > MAX_JSON_ITEMS) {
     throw new ConfigurationError("management.configs 必须是有界列表");
   }
@@ -1344,20 +1394,25 @@ async function decodeManagement(
           "旧发布快照包含 managed config.updater，请先在旧版本完成回滚；新契约只支持 format/secret_references",
         );
       }
-      expectKeys(config, [
-        "name",
-        "relative_path",
-        "source",
-        "target",
-        "owner",
-        "group",
-        "mode",
-        "variables",
-        "format",
-        "secret_references",
-        "validator",
-        "on_change",
-      ], "managed config");
+      expectKeysOptional(
+        config,
+        [
+          "name",
+          "relative_path",
+          "source",
+          "target",
+          "owner",
+          "group",
+          "mode",
+          "variables",
+          "format",
+          "secret_references",
+          "validator",
+          "on_change",
+        ],
+        ["target_root"],
+        "managed config",
+      );
       if (!Array.isArray(config.variables) || config.variables.length > MAX_JSON_ITEMS) {
         throw new ConfigurationError("managed config variables 必须是有界列表");
       }
@@ -1377,12 +1432,18 @@ async function decodeManagement(
       if (!isAbsolute(target) || /[\0\r\n]/u.test(target)) {
         throw new ConfigurationError("managed config.target 必须是安全绝对路径");
       }
+      const targetRoot = config.target_root === undefined
+        ? "absolute"
+        : configTargetRoot(config.target_root);
       const onChange = requiredString(config.on_change, "managed config.on_change");
       if (onChange !== "none" && onChange !== "reload" && onChange !== "restart") {
         throw new ConfigurationError("managed config.on_change 非法");
       }
       const format = requiredString(config.format, "managed config.format");
-      if (format !== "yaml" && format !== "json" && format !== "toml" && format !== "ini") {
+      if (
+        format !== "yaml" && format !== "json" && format !== "toml" && format !== "ini" &&
+        format !== "nginx"
+      ) {
         throw new ConfigurationError("managed config.format 非法");
       }
       if (
@@ -1419,6 +1480,7 @@ async function decodeManagement(
         ),
         source: await snapshotFile(snapshot, config.source),
         target,
+        targetRoot,
         owner: optionalString(config.owner, "managed config.owner"),
         group: optionalString(config.group, "managed config.group"),
         mode: boundedInteger(config.mode, "managed config.mode", 0, 0o777),
@@ -1430,78 +1492,77 @@ async function decodeManagement(
       });
     })),
   );
-  let service: AppManagementDefinition["service"];
-  if (value.service !== null && value.service !== undefined) {
-    const rawService = objectValue(value.service, "management.service");
-    expectKeysOptional(
-      rawService,
-      [
-        "kind",
-        "unit",
-        "enabled",
-        "daemon_reload",
-        "on_deploy",
-        "timeout_ms",
-      ],
-      ["unit_config"],
-      "management.service",
-    );
-    if (rawService.kind !== "systemd") throw new ConfigurationError("service.kind 非法");
-    const enabled = rawService.enabled === null
-      ? undefined
-      : booleanValue(rawService.enabled, "service.enabled");
-    const onDeploy = requiredString(rawService.on_deploy, "service.on_deploy");
-    if (!["none", "start", "reload", "restart"].includes(onDeploy)) {
-      throw new ConfigurationError("service.on_deploy 非法");
-    }
-    service = Object.freeze({
-      kind: "systemd",
-      unit: requiredString(rawService.unit, "service.unit"),
-      enabled,
-      daemonReload: booleanValue(rawService.daemon_reload, "service.daemon_reload"),
-      onDeploy: onDeploy as "none" | "start" | "reload" | "restart",
-      timeoutMs: boundedInteger(rawService.timeout_ms, "service.timeout_ms", 1, 86_400_000),
-      ...(rawService.unit_config === undefined ? {} : {
-        unitConfig: decodeSystemdUnitConfig(
-          rawService.unit_config,
-          requiredString(rawService.unit, "service.unit"),
-          "management.service.unit_config",
-        ),
-      }),
-    });
+  if (!Array.isArray(value.config_scripts) || value.config_scripts.length > MAX_JSON_ITEMS) {
+    throw new ConfigurationError("management.config_scripts 必须是有界列表");
   }
-  if (!Array.isArray(value.hooks) || value.hooks.length > MAX_JSON_ITEMS) {
-    throw new ConfigurationError("management.hooks 必须是有界列表");
-  }
-  const hookNames = new Set<string>();
-  const hooks: Array<readonly [AppManagementHook, readonly ScriptInvocation[]]> = [];
-  for (const rawHook of value.hooks) {
-    const item = objectValue(rawHook, "management hook");
-    expectKeys(item, ["hook", "scripts"], "management hook");
-    const hook = managementHook(item.hook);
-    if (hookNames.has(hook)) throw new ConfigurationError(`management hook 重复: ${hook}`);
-    hookNames.add(hook);
-    if (!Array.isArray(item.scripts) || item.scripts.length > MAX_JSON_ITEMS) {
-      throw new ConfigurationError("management hook scripts 必须是有界列表");
-    }
-    hooks.push([
-      hook,
-      freezeArray(
-        await Promise.all(
-          item.scripts.map((script) =>
-            decodeInvocation(script, snapshot, "management hook script")
-          ),
-        ),
+  const configScripts = freezeArray(
+    await Promise.all(
+      value.config_scripts.map((script) =>
+        decodeInvocation(script, snapshot, "management.config_scripts")
       ),
-    ]);
+    ),
+  );
+  let manager: AppManagerDefinition | undefined;
+  if (value.manager !== null && value.manager !== undefined) {
+    const rawManager = objectValue(value.manager, "management.manager");
+    if (rawManager.kind === "script") {
+      expectKeys(rawManager, ["kind", "start", "stop", "restart"], "management.manager");
+      manager = Object.freeze({
+        kind: "script",
+        start: await decodeInvocation(rawManager.start, snapshot, "management.manager.start"),
+        stop: await decodeInvocation(rawManager.stop, snapshot, "management.manager.stop"),
+        restart: await decodeInvocation(rawManager.restart, snapshot, "management.manager.restart"),
+      });
+    } else {
+      if (rawManager.kind !== "service") throw new ConfigurationError("manager.kind 非法");
+      expectKeysOptional(
+        rawManager,
+        ["kind", "unit", "tool", "enabled", "daemon_reload", "on_deploy", "timeout_ms"],
+        ["unit_config"],
+        "management.manager",
+      );
+      const enabled = rawManager.enabled === null
+        ? undefined
+        : booleanValue(rawManager.enabled, "manager.enabled");
+      const onDeploy = requiredString(rawManager.on_deploy, "manager.on_deploy");
+      const tool = requiredString(rawManager.tool, "manager.tool");
+      if (!["none", "start", "reload", "restart"].includes(onDeploy)) {
+        throw new ConfigurationError("manager.on_deploy 非法");
+      }
+      if (!["auto", "systemctl", "service"].includes(tool)) {
+        throw new ConfigurationError("manager.tool 非法");
+      }
+      manager = Object.freeze({
+        kind: "service",
+        unit: requiredString(rawManager.unit, "manager.unit"),
+        tool: tool as "auto" | "systemctl" | "service",
+        enabled,
+        daemonReload: booleanValue(rawManager.daemon_reload, "manager.daemon_reload"),
+        onDeploy: onDeploy as "none" | "start" | "reload" | "restart",
+        timeoutMs: boundedInteger(rawManager.timeout_ms, "manager.timeout_ms", 1, 86_400_000),
+        ...(rawManager.unit_config === undefined ? {} : {
+          unitConfig: decodeSystemdUnitConfig(
+            rawManager.unit_config,
+            requiredString(rawManager.unit, "manager.unit"),
+            "management.manager.unit_config",
+          ),
+        }),
+      });
+    }
   }
   if (
-    configs.length === 0 && service === undefined && hooks.length === 0 &&
+    configs.length === 0 && configScripts.length === 0 &&
+    manager === undefined &&
     !(runAs !== undefined && deployment?.kind === "versioned")
   ) {
     throw new ConfigurationError("management 声明不能为空");
   }
-  return Object.freeze({ runAs, configs, service, hooks: immutableMap(hooks) });
+  return Object.freeze({
+    runAs,
+    configs,
+    configScripts,
+    manager,
+  });
 }
 
 function decodeSystemdUnitConfig(
@@ -1510,7 +1571,12 @@ function decodeSystemdUnitConfig(
   label: string,
 ) {
   const value = objectValue(raw, label);
-  expectKeys(value, ["target", "working_directory", "command", "args"], label);
+  expectKeysOptional(
+    value,
+    ["target", "working_directory", "command", "args"],
+    ["restart_policy", "restart_sec", "start_limit_interval_sec", "start_limit_burst"],
+    label,
+  );
   const target = safeAbsoluteRemotePath(value.target, `${label}.target`);
   if (basename(target) !== unit) {
     throw new ConfigurationError(`${label}.target 文件名必须与 service.unit 一致`);
@@ -1530,6 +1596,20 @@ function decodeSystemdUnitConfig(
         return argument;
       }),
     ),
+    restartPolicy: optionalRestartPolicy(value.restart_policy, `${label}.restart_policy`),
+    restartSec: optionalBoundedInteger(value.restart_sec, 0, 86_400, `${label}.restart_sec`),
+    startLimitIntervalSec: optionalBoundedInteger(
+      value.start_limit_interval_sec,
+      0,
+      86_400,
+      `${label}.start_limit_interval_sec`,
+    ),
+    startLimitBurst: optionalBoundedInteger(
+      value.start_limit_burst,
+      0,
+      10_000,
+      `${label}.start_limit_burst`,
+    ),
   });
 }
 
@@ -1542,6 +1622,25 @@ function safeAbsoluteRemotePath(raw: unknown, label: string): string {
     throw new ConfigurationError(`${label} 必须是安全远端绝对路径`);
   }
   return text;
+}
+
+function optionalRestartPolicy(value: unknown, label: string): SystemdRestartPolicy | undefined {
+  if (value === null || value === undefined) return undefined;
+  const text = requiredString(value, label);
+  if (!SYSTEMD_RESTART_POLICIES.has(text)) {
+    throw new ConfigurationError(`${label} 使用不支持的值`);
+  }
+  return text as SystemdRestartPolicy;
+}
+
+function optionalBoundedInteger(
+  value: unknown,
+  minimum: number,
+  maximum: number,
+  label: string,
+): number | undefined {
+  if (value === null || value === undefined) return undefined;
+  return boundedInteger(value, label, minimum, maximum);
 }
 
 async function decodeDeliveryInputs(
@@ -1613,6 +1712,14 @@ function configValueType(raw: unknown): "string" | "integer" | "number" | "boole
   return value as "string" | "integer" | "number" | "boolean";
 }
 
+function configTargetRoot(raw: unknown): ManagedConfigTargetRoot {
+  const value = requiredString(raw, "managed config target_root");
+  if (!["absolute", "install", "current", "latest"].includes(value)) {
+    throw new ConfigurationError("managed config target_root 非法");
+  }
+  return value as ManagedConfigTargetRoot;
+}
+
 function secretKind(raw: unknown): "value" | "file" {
   const value = requiredString(raw, "secret_kind");
   if (value !== "value" && value !== "file") throw new ConfigurationError("secret_kind 非法");
@@ -1622,26 +1729,6 @@ function secretKind(raw: unknown): "value" | "file" {
 function booleanValue(raw: unknown, label: string): boolean {
   if (typeof raw !== "boolean") throw new ConfigurationError(`${label} 必须是布尔值`);
   return raw;
-}
-
-function managementHook(raw: unknown): AppManagementHook {
-  const value = requiredString(raw, "management hook");
-  const allowed = new Set<string>([
-    "before_install",
-    "after_install",
-    "before_configure",
-    "after_configure",
-    "before_deploy",
-    "after_deploy",
-    "before_start",
-    "after_start",
-    "before_stop",
-    "after_stop",
-    "before_restart",
-    "after_restart",
-  ]);
-  if (!allowed.has(value)) throw new ConfigurationError(`management hook 非法: ${value}`);
-  return value as AppManagementHook;
 }
 
 async function decodePlan(
@@ -1701,6 +1788,7 @@ async function decodeStep(
       ...(schema === 4
         ? ["run_as", "lifecycle_secret_values", "lifecycle_secret_files", "deployment"]
         : []),
+      ...(schema === 4 ? ["environment_install", "environment_manager"] : []),
       "templates",
       "install_directory",
       "bundle_scripts",
@@ -1950,7 +2038,16 @@ async function decodeStep(
   const deliveryInputs = schema === 4
     ? await decodeDeliveryInputs(value.delivery_inputs, snapshot)
     : undefined;
-  if (!scripts.length && management === undefined) {
+  const environmentInstall = schema === 4
+    ? await decodeEnvironmentInstall(value.environment_install, snapshot)
+    : undefined;
+  const environmentManager = schema === 4
+    ? await decodeEnvironmentManager(value.environment_manager, snapshot, action)
+    : undefined;
+  if (
+    !scripts.length && management === undefined &&
+    environmentInstall === undefined && environmentManager === undefined
+  ) {
     throw new ConfigurationError("无脚本步骤必须包含 managed 声明");
   }
   if (deployment !== undefined) {
@@ -1958,9 +2055,6 @@ async function decodeStep(
       throw new ConfigurationError(
         "只有 App deploy/stage/activate 步骤可以声明 versioned deployment",
       );
-    }
-    if (action !== "stage" && management === undefined) {
-      throw new ConfigurationError("versioned deployment 步骤必须包含 managed 声明");
     }
     if (runAs === undefined) {
       throw new ConfigurationError("versioned deployment 步骤缺少 run_as");
@@ -1972,7 +2066,7 @@ async function decodeStep(
   if (currentV4 && management !== undefined && runAs === undefined) {
     throw new ConfigurationError("managed plan-v4 步骤缺少 run_as");
   }
-  const isVersionedStage = kind === "app" && action === "stage" &&
+  const isVersionedStage = kind === "app" && (action === "stage" || action === "activate") &&
     deployment?.kind === "versioned";
   if (currentV4 && management === undefined && runAs !== undefined && !isVersionedStage) {
     throw new ConfigurationError("非 managed plan-v4 步骤不能声明 run_as");
@@ -2010,7 +2104,148 @@ async function decodeStep(
     management,
     deliveryInputs,
     bundleScripts,
+    environmentInstall,
+    environmentManager,
   });
+}
+
+async function encodeEnvironmentInstall(
+  install: EnvironmentInstallDefinition,
+  archive: ArchiveWriter,
+): Promise<JsonObject> {
+  if (install.kind === "package") {
+    return {
+      kind: install.kind,
+      manager: install.manager,
+      packages: [...install.packages],
+      update_cache: install.updateCache,
+    };
+  }
+  return { kind: install.kind, invocation: await encodeInvocation(install.invocation, archive) };
+}
+
+async function decodeEnvironmentInstall(
+  raw: unknown,
+  snapshot: string,
+): Promise<EnvironmentInstallDefinition | undefined> {
+  if (raw === null || raw === undefined) return undefined;
+  const value = objectValue(raw, "environment_install");
+  const kind = requiredString(value.kind, "environment_install.kind");
+  if (kind === "package") {
+    expectKeys(value, ["kind", "manager", "packages", "update_cache"], "environment_install");
+    const packages = freezeArray(
+      Array.isArray(value.packages)
+        ? value.packages.map((item) => requiredString(item, "environment_install.packages[]"))
+        : [],
+    );
+    if (packages.length === 0) {
+      throw new ConfigurationError("environment_install.packages 不能为空");
+    }
+    const manager = requiredString(value.manager, "environment_install.manager");
+    if (!["auto", "apt-get", "yum"].includes(manager)) {
+      throw new ConfigurationError("environment_install.manager 非法");
+    }
+    return Object.freeze({
+      kind: "package",
+      manager: manager as EnvironmentPackageManagerKind,
+      packages,
+      updateCache: booleanValue(value.update_cache, "environment_install.update_cache"),
+    }) as EnvironmentPackageInstall;
+  }
+  if (kind === "script") {
+    expectKeys(value, ["kind", "invocation"], "environment_install");
+    const result: EnvironmentScriptInstall = Object.freeze({
+      kind: "script",
+      invocation: await decodeInvocation(
+        value.invocation,
+        snapshot,
+        "environment_install.invocation",
+      ),
+    });
+    return result;
+  }
+  throw new ConfigurationError("environment_install.kind 非法");
+}
+
+async function encodeEnvironmentManager(
+  manager: EnvironmentManagerDefinition,
+  archive: ArchiveWriter,
+): Promise<JsonObject> {
+  if (manager.kind === "system") {
+    return {
+      kind: manager.kind,
+      name: manager.name,
+      tool: manager.tool,
+      enabled: manager.enabled ?? null,
+      start_after_install: manager.startAfterInstall,
+      timeout_ms: manager.timeoutMs,
+    };
+  }
+  return {
+    kind: manager.kind,
+    start: await encodeInvocation(manager.start, archive),
+    stop: manager.stop === undefined ? null : await encodeInvocation(manager.stop, archive),
+    restart: await encodeInvocation(manager.restart, archive),
+  };
+}
+
+async function decodeEnvironmentManager(
+  raw: unknown,
+  snapshot: string,
+  action: string,
+): Promise<EnvironmentManagerDefinition | undefined> {
+  if (raw === null || raw === undefined) return undefined;
+  const value = objectValue(raw, "environment_manager");
+  const kind = requiredString(value.kind, "environment_manager.kind");
+  if (kind === "system") {
+    expectKeys(
+      value,
+      ["kind", "name", "tool", "enabled", "start_after_install", "timeout_ms"],
+      "environment_manager",
+    );
+    const tool = requiredString(value.tool, "environment_manager.tool");
+    if (!["auto", "systemctl", "service"].includes(tool)) {
+      throw new ConfigurationError("environment_manager.tool 非法");
+    }
+    const enabled = value.enabled === null
+      ? undefined
+      : booleanValue(value.enabled, "environment_manager.enabled");
+    return Object.freeze({
+      kind: "system",
+      name: requiredString(value.name, "environment_manager.name"),
+      tool: tool as EnvironmentServiceTool,
+      enabled,
+      startAfterInstall: booleanValue(
+        value.start_after_install,
+        "environment_manager.start_after_install",
+      ),
+      timeoutMs: boundedInteger(value.timeout_ms, "environment_manager.timeout_ms", 1, 86_400_000),
+    }) as EnvironmentSystemManager;
+  }
+  if (kind === "script") {
+    if (action === "stop") {
+      expectKeys(value, ["kind", "start", "stop", "restart"], "environment_manager");
+    } else {
+      expectKeysOptional(
+        value,
+        ["kind", "start", "restart"],
+        ["stop"],
+        "environment_manager",
+      );
+    }
+    const start = await decodeInvocation(value.start, snapshot, "environment_manager.start");
+    const stop = value.stop === null || value.stop === undefined
+      ? undefined
+      : await decodeInvocation(value.stop, snapshot, "environment_manager.stop");
+    const restart = await decodeInvocation(value.restart, snapshot, "environment_manager.restart");
+    const result: EnvironmentScriptManager = Object.freeze(
+      stop === undefined
+        ? { kind: "script", start, restart }
+        : { kind: "script", start, stop, restart },
+    );
+    return result;
+  }
+  throw new ConfigurationError("environment_manager.kind 非法");
 }
 
 function validatePersistedManagementStep(
@@ -2046,9 +2281,20 @@ function validatePersistedManagementStep(
       }
     }
   }
-  for (const scripts of management.hooks.values()) requiredScripts.push(...scripts);
+  requiredScripts.push(...management.configScripts);
+  if (management.manager?.kind === "script") {
+    requiredScripts.push(
+      management.manager.start,
+      management.manager.stop,
+      management.manager.restart,
+    );
+  }
   if (
-    ((action === "configure" || action === "deploy") && management.configs.length > 0) ||
+    ((action === "configure" || action === "deploy" || action === "stage" ||
+      action === "activate") && management.configs.length > 0) ||
+    (action === "configure" && management.configScripts.length > 0) ||
+    (["start", "stop", "restart"].includes(action) &&
+      management.manager?.kind === "script") ||
     requiredScripts.length > 0
   ) {
     if (deliveryInputs === undefined) {
@@ -2232,7 +2478,13 @@ function executionSummaryFromData(raw: unknown): ReleaseExecutionSummary | undef
         (exitCode === undefined || errorCategory !== undefined || skipReason !== undefined)
       ) throw new ConfigurationError("成功步骤必须包含退出码且不能含错误或跳过原因");
       const expectedReasons: Record<string, ReadonlySet<string>> = {
-        skipped: new Set(["check-satisfied", "target-fail-fast"]),
+        skipped: new Set([
+          "check-satisfied",
+          "target-fail-fast",
+          "using-start",
+          "using-restart",
+          "up-to-date",
+        ]),
         blocked: new Set(["dependency-failed"]),
         cancelled: new Set(["cancelled"]),
       };

@@ -1,0 +1,52 @@
+schema_version: 1
+task_manifest: task.yaml
+change_ids: ["CHG-sync-multipass-app-config"]
+source_bindings:
+  proposal: proposal.md
+  design_source: design.md
+risks:
+  contract:
+    applies: true
+    evidence:
+      - docs/versions/v0.1/modules/sfo-deploy/075-sync-multipass-app-config/proposal.md
+      - src/config.ts
+      - examples/eleph-server-multipass/clusters/multipass/apps/jx-server/app.yaml
+    required_checks:
+      - schema1-install-directory-target-binding
+  data:
+    applies: true
+    evidence:
+      - src/config.ts
+      - src/versioned_release_management.ts
+      - examples/eleph-server-multipass/clusters/multipass/apps/jx-server/app.yaml
+    required_checks:
+      - versioned-config-publication-contract
+  security:
+    applies: true
+    evidence:
+      - src/config.ts
+      - examples/eleph-server-multipass/clusters/multipass/apps/jx-server/application.yml
+      - examples/eleph-server-multipass/clusters/multipass/cluster.yaml
+    required_checks:
+      - managed-config-path-boundary
+      - cluster-secret-reference-contract
+  runtime:
+    applies: true
+    evidence:
+      - src/config.ts
+      - src/planning.ts
+      - examples/eleph-server-multipass/clusters/multipass/apps/jx-server/app.yaml
+    required_checks:
+      - multipass-cluster-validate-plan
+  build:
+    applies: false
+    evidence: 本次不修改构建图、发布产物、公共导出或文档示例。
+    required_checks: []
+  ui:
+    applies: false
+    evidence: 本次不涉及用户界面、导航或无障碍变更。
+    required_checks: []
+  harness:
+    applies: false
+    evidence: 本次使用现有 Harness 流程，不修改规则或检查器行为。
+    required_checks: []

@@ -94,6 +94,7 @@ export async function writeCluster(
     .join("\n  ");
   await Deno.mkdir(join(environmentDirectory, "scripts"), { recursive: true });
   await Deno.mkdir(join(cluster, "apps", "demo", "scripts"), { recursive: true });
+  await Deno.mkdir(join(cluster, "apps", "demo", "templates"), { recursive: true });
   await Deno.writeTextFile(
     join(cluster, "cluster.yaml"),
     `schema_version: 2\nname: demo\nexecutor_region: local\nenvironments:\n  base: [node-a]\napps:\n  demo: [node-a]\n${
@@ -115,11 +116,10 @@ export async function writeCluster(
     "Deno.exit(0);\n",
   );
   const demoHash = "00".repeat(32);
-  const appConfigure = options.appConfigure ?? true;
   if (options.appV1Inline) {
     await Deno.writeTextFile(
       join(cluster, "apps", "demo", "app.yaml"),
-      `schema_version: 1\nname: demo\nversion: "1.0.0"\npackage:\n  provider: http\n  source: {url: "https://example.invalid/demo.bin"}\n  hash: {algorithm: sha256, value: "${demoHash}"}\ndepends_on: [base]\nscripts:\n  configure: [{path: scripts/action.ts, permissions: {run: [], net: []}}]\n  deploy: [{path: scripts/action.ts, permissions: {run: [], net: []}}]\n`,
+      `schema_version: 1\nname: demo\nversion: "1.0.0"\npackage:\n  provider: http\n  source: {url: "https://example.invalid/demo.bin"}\n  hash: {algorithm: sha256, value: "${demoHash}"}\ndepends_on: [base]\nmanagement:\n  run_as: deploy\n  kind: service\n  name: demo.service\n  tool: systemctl\n`,
     );
   } else {
     await Deno.writeTextFile(
@@ -128,11 +128,11 @@ export async function writeCluster(
     );
     await Deno.writeTextFile(
       join(cluster, "apps", "demo", "app.yaml"),
-      `schema_version: 2\nname: demo\ninstall_directory: /srv/demo\ndepends_on: [base]\nscripts:\n${
-        appConfigure
-          ? "  configure: [{path: scripts/action.ts, permissions: {run: [], net: []}}]\n"
-          : ""
-      }  deploy: [{path: scripts/action.ts, permissions: {run: [], net: []}}]\n`,
+      `schema_version: 1\nname: demo\ninstall_directory: /srv/demo\ndepends_on: [base]\nconfigs:\n  - kind: file\n    source: templates/application.json\n    target: /etc/demo/application.json\n    format: json\nmanagement:\n  run_as: deploy\n  kind: service\n  name: demo.service\n  tool: systemctl\n`,
+    );
+    await Deno.writeTextFile(
+      join(cluster, "apps", "demo", "templates", "application.json"),
+      "{}\n",
     );
   }
   await Deno.writeTextFile(

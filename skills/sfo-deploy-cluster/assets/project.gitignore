@@ -1,0 +1,5 @@
+# 集群本地秘密与运行产物
+**/secrets.yaml
+**/secrets/
+**/secret-files/
+**/.sfo-deploy/

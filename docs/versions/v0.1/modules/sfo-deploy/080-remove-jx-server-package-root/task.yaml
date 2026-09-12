@@ -1,0 +1,31 @@
+schema_version: 1
+
+# 用户已确认提案并选择 high-risk。
+workflow_tier: high-risk
+
+version: v0.1
+packet_module: sfo-deploy
+task_name: 080-remove-jx-server-package-root
+stage: acceptance
+mode: manual
+auto_pipeline_start_stage:
+
+proposal: proposal.md
+completion_report: completion-report.md
+change_record: docs/changes/080-remove-jx-server-package-root.md
+design: design.md
+testing: testing.md
+testplan: testplan.yaml
+acceptance_report: acceptance-report.md
+pipeline_plan:
+risk_profile: risk-profile.yaml
+lifecycle_state:
+
+changed_paths_file: .harness/evidence/v0.1/stage-scope/080-remove-jx-server-package-root.paths
+baseline_manifest:
+
+changes:
+  - id: CHG-remove-jx-server-package-root
+    target_module: sfo-deploy
+    scope_paths: ["src/remote_runtime/versioned_release.ts", "tests/**", "examples/eleph-server-multipass/cluster-template/apps/jx-server/app.yaml", "examples/eleph-server-multipass/clusters/multipass/apps/jx-server/app.yaml", "examples/eleph-server-multipass/clusters/multipass/apps/jx-web/app.yaml", "examples/eleph-server-multipass/README.md"]
+    changed_paths_file:

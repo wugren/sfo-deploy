@@ -1,0 +1,51 @@
+schema_version: 1
+task_manifest: task.yaml
+change_ids: ["CHG-declarative-environment-install", "CHG-declarative-environment-service", "CHG-declarative-environment-conflicts", "CHG-declarative-environment-docs"]
+source_bindings:
+  proposal: proposal.md
+  design_source: design.md
+risks:
+  contract:
+    applies: true
+    evidence:
+      - "proposal.md Scope 扩展 environment.yaml schema v1；新增顶层 install/manager 字段、kind/tool 枚举和旧 scripts 兼容边界"
+    required_checks:
+      - "tests/unit/environment_placement.test.ts 覆盖新字段装载、互斥、缺省 manager 与旧 scripts 兼容"
+      - "tests/unit/environment_management_planning.test.ts 覆盖 prepare/install/start/restart 计划形状"
+  data:
+    applies: true
+    evidence:
+      - "proposal.md Risks 记录历史计划回放；执行计划 v4 需要持久化新环境生命周期声明"
+    required_checks:
+      - "tests/integration/environment_management_history.test.ts 覆盖 plan v4 往返与脚本快照"
+  security:
+    applies: true
+    evidence:
+      - "proposal.md Risks 记录提权包管理器、服务管理器、固定命令模板和包名白名单"
+    required_checks:
+      - "tests/unit/environment_management.test.ts 覆盖固定 argv、包名校验、缺失工具失败关闭与提权标记"
+  runtime:
+    applies: true
+    evidence:
+      - "proposal.md Risks 记录多发行版状态语义、安装幂等性、失败路径和 prepare/start/restart 行为"
+    required_checks:
+      - "tests/unit/environment_management.test.ts 覆盖 package/script 安装与 system/script 服务命令序列"
+      - "tests/unit/environment_management_planning.test.ts 覆盖缺省 manager 与步骤顺序"
+  build:
+    applies: true
+    evidence:
+      - "proposal.md Scope 改变公共配置契约和部署执行面；影响 Deno 模块编译和文档示例"
+    required_checks:
+      - "deno check src/main.ts"
+      - "task test-run all"
+  ui:
+    applies: false
+    evidence: "本任务不改变图形界面、导航或本地化；CLI 帮助仅在必要时同步现有环境语义。"
+    required_checks: []
+  harness:
+    applies: true
+    evidence:
+      - "本任务使用 high-risk staged lifecycle、unified test entry 和 acceptance 缺陷发现门"
+    required_checks:
+      - "harness/scripts/lifecycle-check.py 阶段链"
+      - "UV_CACHE_DIR=.harness/uv-cache uv run --active python ./harness/scripts/test-run.py sfo-deploy/071-declarative-environment-install all"

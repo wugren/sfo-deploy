@@ -272,15 +272,16 @@ Deno.test("unit/history codec: phased deploy accepts managed restart", async () 
       management: Object.freeze({
         runAs: "deploy",
         configs: Object.freeze([]),
-        service: Object.freeze({
-          kind: "systemd" as const,
+        configScripts: Object.freeze([]),
+        manager: Object.freeze({
+          kind: "service" as const,
+          tool: "systemctl" as const,
           unit: "demo.service",
           enabled: true,
           daemonReload: true,
           onDeploy: "restart" as const,
           timeoutMs: 30_000,
         }),
-        hooks: new Map(),
       }),
       dependsOn: Object.freeze([activate.id]),
     });
@@ -300,7 +301,9 @@ Deno.test("unit/history codec: phased deploy accepts managed restart", async () 
     );
     assertEquals(decoded.requestedAction, "deploy");
     assertEquals(decoded.steps.map((step) => step.action), ["stage", "activate", "restart"]);
-    assertEquals(decoded.steps[2].management?.service?.onDeploy, "restart");
+    const service = decoded.steps[2].management?.manager;
+    assert(service?.kind === "service");
+    assertEquals(service.onDeploy, "restart");
     await pending.closeIncomplete();
   });
 });
@@ -413,8 +416,8 @@ Deno.test("unit/history codec: versioned activate accepts empty management run-a
     const emptyManagement: AppManagementDefinition = Object.freeze({
       runAs: "deploy",
       configs: Object.freeze([]),
-      service: undefined,
-      hooks: new Map(),
+      configScripts: Object.freeze([]),
+      manager: undefined,
     });
     const activate = Object.freeze({
       ...deployed,
@@ -445,14 +448,14 @@ Deno.test("unit/history codec: versioned activate accepts empty management run-a
     const decoded = await store.verifySnapshot(snapshot, pending.releaseId);
     assertEquals(decoded.steps[0].runAs, "deploy");
     assertEquals(decoded.steps[0].management?.configs.length, 0);
-    assertEquals(decoded.steps[0].management?.service, undefined);
+    assertEquals(decoded.steps[0].management?.manager, undefined);
     const persisted = JSON.parse(
       await Deno.readTextFile(join(snapshot, "actual-plan.json")),
     );
     assertEquals(persisted.steps[0].management, {
       configs: [],
-      service: null,
-      hooks: [],
+      config_scripts: [],
+      manager: null,
     });
     await pending.closeIncomplete();
 

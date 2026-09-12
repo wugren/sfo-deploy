@@ -4,21 +4,39 @@ import { parse } from "jsr:@std/yaml@1.2.0";
 import { extname, isAbsolute, join, relative, resolve } from "jsr:@std/path@1.1.6";
 import * as posix from "jsr:@std/path@1.1.6/posix";
 import { ConfigurationError } from "./errors.ts";
-import { collectManagedSecretPlaceholders, parseManagedStructured } from "./config_generation.ts";
+import {
+  collectManagedSecretPlaceholders,
+  parseManagedStructured,
+  validateManagedPlainText,
+} from "./config_generation.ts";
 import type {
+  AppConfigKind,
   AppDefinition,
   AppManagementDefinition,
-  AppManagementHook,
+  AppManagerDefinition,
+  AppScriptManagement,
+  AppServiceManagement,
   ClusterConfig,
   ConfigTemplate as _ConfigTemplate,
   DeploymentDefinition,
   EnvironmentDefinition,
+  EnvironmentInstallDefinition,
+  EnvironmentInstallKind,
   EnvironmentInstance,
+  EnvironmentManagerDefinition,
+  EnvironmentPackageInstall,
+  EnvironmentPackageManagerKind,
+  EnvironmentScriptInstall,
+  EnvironmentScriptManager,
+  EnvironmentServiceManagerKind,
+  EnvironmentServiceTool,
+  EnvironmentSystemManager,
   Machine,
   ManagedConfigChangeAction,
   ManagedConfigFile,
   ManagedConfigFormat,
   ManagedConfigPathSegment,
+  ManagedConfigTargetRoot,
   ManagedConfigValidator,
   ManagedConfigValueType,
   ManagedConfigVariableBinding,
@@ -30,7 +48,7 @@ import type {
   SecretDeclaration,
   SecretKind,
   SystemdDeployAction,
-  SystemdServiceManagement,
+  SystemdRestartPolicy,
   SystemdUnitConfig,
 } from "./types.ts";
 import { freezeArray, immutableMap } from "./types.ts";
@@ -75,9 +93,9 @@ const HASH_DIGEST_SIZES: Readonly<Record<string, number>> = Object.freeze({
 
 type StringRecord = Record<string, unknown>;
 type ClusterSchemaVersion = 2;
-type AppSchemaVersion = 2 | 3 | 4;
+type AppSchemaVersion = 1;
 
-const MANAGED_CONFIG_FORMATS = new Set<string>(["yaml", "json", "toml", "ini"]);
+const MANAGED_CONFIG_FORMATS = new Set<string>(["yaml", "json", "toml", "ini", "nginx"]);
 const MANAGED_CONFIG_VALUE_TYPES = new Set<string>([
   "string",
   "integer",
@@ -86,26 +104,20 @@ const MANAGED_CONFIG_VALUE_TYPES = new Set<string>([
 ]);
 const MANAGED_CHANGE_ACTIONS = new Set<string>(["none", "reload", "restart"]);
 const SYSTEMD_DEPLOY_ACTIONS = new Set<string>(["none", "start", "reload", "restart"]);
-const MANAGEMENT_HOOKS = Object.freeze(
-  [
-    "before_install",
-    "after_install",
-    "before_configure",
-    "after_configure",
-    "before_deploy",
-    "after_deploy",
-    "before_start",
-    "after_start",
-    "before_stop",
-    "after_stop",
-    "before_restart",
-    "after_restart",
-  ] as const satisfies readonly AppManagementHook[],
-);
-const MANAGEMENT_HOOK_SET = new Set<string>(MANAGEMENT_HOOKS);
+const SYSTEMD_RESTART_POLICIES = new Set<string>([
+  "no",
+  "on-success",
+  "on-failure",
+  "on-abnormal",
+  "on-watchdog",
+  "on-abort",
+  "always",
+]);
 const CONFIG_VARIABLE_RE = /^[A-Z][A-Z0-9_]*$/;
 const ACCOUNT_RE = /^[a-z_][a-z0-9_-]{0,31}\$?$/;
 const SYSTEMD_UNIT_RE = /^[A-Za-z0-9][A-Za-z0-9_.@:-]{0,254}\.service$/;
+const PACKAGE_MANAGER_RE = /^[A-Za-z0-9][A-Za-z0-9+._-]*$/;
+const ENVIRONMENT_SERVICE_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_.@:-]*$/;
 const CANDIDATE_ARG = "{candidate}";
 const DEFAULT_MANAGED_TIMEOUT_MS = 30_000;
 
@@ -129,6 +141,8 @@ interface LoadedEnvironment {
   readonly version: string;
   readonly parameters: Readonly<Record<string, unknown>>;
   readonly dependsOn: readonly string[];
+  readonly install?: EnvironmentInstallDefinition;
+  readonly manager?: EnvironmentManagerDefinition;
 }
 
 function repr(value: unknown): string {
@@ -209,10 +223,8 @@ function clusterSchemaVersion(data: StringRecord): ClusterSchemaVersion {
 }
 
 function appSchemaVersion(data: StringRecord, label: string): AppSchemaVersion {
-  if (data.schema_version !== 2 && data.schema_version !== 3 && data.schema_version !== 4) {
-    throw new ConfigurationError(
-      `${label}.schema_version 只支持 2、3 或 4；v1 内联版本/包已移除，请改用 app_versions.yaml`,
-    );
+  if (data.schema_version !== 1) {
+    throw new ConfigurationError(`${label}.schema_version 只支持 1`);
   }
   return data.schema_version;
 }
@@ -244,6 +256,69 @@ function managedTargetPath(value: unknown, label: string): string {
     throw new ConfigurationError(`${label} 不允许写入内核或设备文件系统: ${text}`);
   }
   return text;
+}
+
+const MANAGED_TARGET_VARIABLE_PREFIXES = {
+  install: "${INSTALL_DIRECTORY}/",
+  current: "${CURRENT_VERSION_DIRECTORY}/",
+  latest: "${LATEST_DIRECTORY}/",
+} as const satisfies Record<Exclude<ManagedConfigTargetRoot, "absolute">, string>;
+
+function managedConfigTarget(
+  value: unknown,
+  installDirectory: string | undefined,
+  label: string,
+): { readonly target: string; readonly targetRoot: ManagedConfigTargetRoot } {
+  const text = stringValue(value, label);
+  const variableBareNames = Object.values(MANAGED_TARGET_VARIABLE_PREFIXES)
+    .map((prefix) => prefix.slice(0, -1));
+  const variableCount = variableBareNames.reduce(
+    (count, variable) => count + text.split(variable).length - 1,
+    0,
+  );
+  if (variableCount === 0) {
+    return { target: managedTargetPath(text, label), targetRoot: "absolute" };
+  }
+  if (variableCount > 1) {
+    throw new ConfigurationError(
+      `${label} 只能包含一个目录变量`,
+    );
+  }
+  const match = Object.entries(MANAGED_TARGET_VARIABLE_PREFIXES).find(([, prefix]) =>
+    text.startsWith(prefix)
+  );
+  if (match === undefined) {
+    throw new ConfigurationError(
+      `${label} 只支持以 \${INSTALL_DIRECTORY}/、\${CURRENT_VERSION_DIRECTORY}/ 或 \${LATEST_DIRECTORY}/ 开头`,
+    );
+  }
+  const [targetRoot, variablePrefix] = match as [
+    Exclude<ManagedConfigTargetRoot, "absolute">,
+    string,
+  ];
+  if (installDirectory === undefined) {
+    throw new ConfigurationError(
+      `${label} 使用安装目录变量，但 App 缺少 install_directory`,
+    );
+  }
+  const variableName = variableBareNames.find((variable) => variablePrefix.startsWith(variable))!;
+  const relative = text.slice(variablePrefix.length);
+  if (
+    relative === "" || relative.startsWith("/") || relative.endsWith("/") ||
+    relative.includes("\\") ||
+    relative.split("/").some((part) => part === "" || part === "." || part === "..")
+  ) {
+    throw new ConfigurationError(
+      `${label} 的 \${${variableName.slice(2, -1)}} 后必须是规范相对路径`,
+    );
+  }
+  const root = targetRoot === "install"
+    ? posix.normalize(installDirectory)
+    : `${posix.normalize(installDirectory)}/latest`;
+  return {
+    target: managedTargetPath(`${root}/${relative}`, label),
+    targetRoot,
+  };
 }
 
 function enumValue<T extends string>(
@@ -795,6 +870,151 @@ async function scripts(
   });
 }
 
+function environmentPackageInstall(
+  value: unknown,
+  label: string,
+): EnvironmentPackageInstall {
+  const item = mapping(value, label);
+  fields(
+    item,
+    ["kind", "manager", "packages", "update_cache"],
+    ["kind", "packages"],
+    label,
+  );
+  if (item.kind !== "package") {
+    throw new ConfigurationError(`${label}.kind 只支持 package`);
+  }
+  const rawPackages = list(item.packages, `${label}.packages`);
+  if (rawPackages.length === 0) {
+    throw new ConfigurationError(`${label}.packages 不能为空`);
+  }
+  const packages = rawPackages.map((raw, index) => {
+    const text = stringValue(raw, `${label}.packages[${index}]`);
+    if (!PACKAGE_MANAGER_RE.test(text)) {
+      throw new ConfigurationError(`${label}.packages[${index}] 不是合法包名`);
+    }
+    return text;
+  });
+  if (new Set(packages).size !== packages.length) {
+    throw new ConfigurationError(`${label}.packages 包含重复包名`);
+  }
+  return Object.freeze({
+    kind: "package",
+    manager: enumValue<EnvironmentPackageManagerKind>(
+      item.manager === undefined || item.manager === null ? "auto" : item.manager,
+      new Set(["auto", "apt-get", "yum"]),
+      `${label}.manager`,
+    ),
+    packages: freezeArray(packages),
+    updateCache: item.update_cache === true,
+  });
+}
+
+async function environmentScriptInstall(
+  value: unknown,
+  directory: string,
+  label: string,
+): Promise<EnvironmentScriptInstall> {
+  const item = mapping(value, label);
+  fields(item, ["kind", "path", "permissions"], ["kind", "path", "permissions"], label);
+  if (item.kind !== "script") {
+    throw new ConfigurationError(`${label}.kind 只支持 script`);
+  }
+  return Object.freeze({
+    kind: "script",
+    invocation: await scriptInvocation(
+      { path: item.path, permissions: item.permissions },
+      directory,
+      `${label}.invocation`,
+    ),
+  });
+}
+
+async function environmentInstall(
+  value: unknown,
+  directory: string,
+  label: string,
+): Promise<EnvironmentInstallDefinition> {
+  const item = mapping(value, label);
+  const kind = enumValue<EnvironmentInstallKind>(
+    item.kind,
+    new Set(["package", "script"]),
+    `${label}.kind`,
+  );
+  return kind === "package"
+    ? environmentPackageInstall(item, label)
+    : await environmentScriptInstall(item, directory, label);
+}
+
+async function environmentManager(
+  value: unknown,
+  directory: string,
+  label: string,
+): Promise<EnvironmentManagerDefinition> {
+  const item = mapping(value, label);
+  const kind = enumValue<EnvironmentServiceManagerKind>(
+    item.kind,
+    new Set(["system", "script"]),
+    `${label}.kind`,
+  );
+  if (kind === "system") return environmentSystemManager(item, label);
+  return await environmentScriptManager(item, directory, label);
+}
+
+function environmentSystemManager(
+  value: StringRecord,
+  label: string,
+): EnvironmentSystemManager {
+  fields(
+    value,
+    ["kind", "name", "tool", "enabled", "start_after_install", "timeout_ms"],
+    ["kind", "name"],
+    label,
+  );
+  if (value.kind !== "system") {
+    throw new ConfigurationError(`${label}.kind 只支持 system`);
+  }
+  const serviceName = stringValue(value.name, `${label}.name`);
+  if (!ENVIRONMENT_SERVICE_NAME_RE.test(serviceName) || serviceName.includes("..")) {
+    throw new ConfigurationError(`${label}.name 不是合法服务名称`);
+  }
+  return Object.freeze({
+    kind: "system",
+    name: serviceName,
+    tool: enumValue<EnvironmentServiceTool>(
+      value.tool ?? "auto",
+      new Set(["auto", "systemctl", "service"]),
+      `${label}.tool`,
+    ),
+    enabled: value.enabled === undefined ? undefined : value.enabled === true,
+    startAfterInstall: value.start_after_install === undefined
+      ? true
+      : value.start_after_install === true,
+    timeoutMs: timeoutMs(value.timeout_ms, `${label}.timeout_ms`),
+  });
+}
+
+async function environmentScriptManager(
+  value: unknown,
+  directory: string,
+  label: string,
+): Promise<EnvironmentScriptManager> {
+  const item = mapping(value, label);
+  fields(
+    item,
+    ["kind", "start", "stop", "restart"],
+    ["kind", "start", "stop", "restart"],
+    label,
+  );
+  if (item.kind !== "script") {
+    throw new ConfigurationError(`${label}.kind 只支持 script`);
+  }
+  const start = await scriptInvocation(item.start, directory, `${label}.start`);
+  const stop = await scriptInvocation(item.stop, directory, `${label}.stop`);
+  const restart = await scriptInvocation(item.restart, directory, `${label}.restart`);
+  return Object.freeze({ kind: "script", start, stop, restart });
+}
+
 /** 顶层 secret_values/secret_files 已移除：cluster.yaml.secrets 是秘密唯一声明点。 */
 function rejectTopLevelSecretDeclarations(
   data: Record<string, unknown>,
@@ -889,6 +1109,10 @@ async function managedSecretReferences(
   } catch (cause) {
     throw new ConfigurationError(`无法读取 ${label}.source 配置 ${source}`, { cause });
   }
+  if (format === "nginx") {
+    validateManagedPlainText(text, configName);
+    return immutableMap(new Map());
+  }
   const parsed = parseManagedStructured(format, text, configName);
   const references = new Map<string, ManagedSecretReference>();
   for (const secretName of collectManagedSecretPlaceholders(parsed, configName)) {
@@ -909,6 +1133,7 @@ async function managedSecretReferences(
 async function managedConfigFiles(
   value: unknown,
   directory: string,
+  installDirectory: string | undefined,
   label: string,
   secrets: ReadonlyMap<string, SecretDeclaration>,
 ): Promise<readonly ManagedConfigFile[]> {
@@ -926,7 +1151,7 @@ async function managedConfigFiles(
     fields(
       item,
       [
-        "name",
+        "kind",
         "source",
         "target",
         "owner",
@@ -937,15 +1162,26 @@ async function managedConfigFiles(
         "validator",
         "on_change",
       ],
-      ["name", "source", "target", "format"],
+      ["kind", "source", "target", "format"],
       itemLabel,
     );
-    const configName = name(item.name, `${itemLabel}.name`);
-    if (names.has(configName)) throw new ConfigurationError(`${label} 包含重复名称: ${configName}`);
+    if (item.kind !== "file") {
+      throw new ConfigurationError(`${itemLabel}.kind 只支持 file`);
+    }
+    const configName = `file-${index}`;
+    if (names.has(configName)) {
+      throw new ConfigurationError(`${label} 包含内部重复名称: ${configName}`);
+    }
     names.add(configName);
-    const target = managedTargetPath(item.target, `${itemLabel}.target`);
-    if (targets.has(target)) throw new ConfigurationError(`${label} 包含重复目标路径: ${target}`);
-    targets.add(target);
+    const parsedTarget = managedConfigTarget(
+      item.target,
+      installDirectory,
+      `${itemLabel}.target`,
+    );
+    if (targets.has(parsedTarget.target)) {
+      throw new ConfigurationError(`${label} 包含重复目标路径: ${parsedTarget.target}`);
+    }
+    targets.add(parsedTarget.target);
     const rawSource = stringValue(item.source, `${itemLabel}.source`);
     const variables = managedVariables(item.variables, `${itemLabel}.variables`);
     const format = enumValue<ManagedConfigFormat>(
@@ -954,6 +1190,9 @@ async function managedConfigFiles(
       `${itemLabel}.format`,
     );
     const source = await contained(directory, rawSource, `${itemLabel}.source`);
+    if (format === "nginx" && variables.length > 0) {
+      throw new ConfigurationError(`${itemLabel}.variables 与 format: nginx 不兼容`);
+    }
     const secretReferences = await managedSecretReferences(
       configName,
       format,
@@ -965,7 +1204,8 @@ async function managedConfigFiles(
       name: configName,
       relativePath: rawSource,
       source,
-      target,
+      target: parsedTarget.target,
+      targetRoot: parsedTarget.targetRoot,
       owner: item.owner === undefined ? undefined : accountName(item.owner, `${itemLabel}.owner`),
       group: item.group === undefined ? undefined : accountName(item.group, `${itemLabel}.group`),
       mode: managedFileMode(item.mode ?? "0600", `${itemLabel}.mode`),
@@ -983,21 +1223,33 @@ async function managedConfigFiles(
   return freezeArray(result);
 }
 
-function systemdService(value: unknown, label: string): SystemdServiceManagement | undefined {
-  if (value === undefined || value === null) return undefined;
-  const item = mapping(value, label);
+function appServiceManagement(
+  item: StringRecord,
+  directory: string,
+  installDirectory: string | undefined,
+  label: string,
+): Promise<AppServiceManagement> {
   fields(
     item,
-    ["type", "unit", "enabled", "daemon_reload", "on_deploy", "timeout_ms"],
-    ["type", "unit"],
+    [
+      "kind",
+      "name",
+      "tool",
+      "enabled",
+      "daemon_reload",
+      "on_deploy",
+      "timeout_ms",
+      "unit_config",
+    ],
+    ["kind", "name"],
     label,
   );
-  if (item.type !== "systemd") {
-    throw new ConfigurationError(`${label}.type 首版只支持 systemd`);
+  if (item.kind !== "service") {
+    throw new ConfigurationError(`${label}.kind 只支持 service`);
   }
-  const unit = stringValue(item.unit, `${label}.unit`);
+  const unit = stringValue(item.name, `${label}.name`);
   if (!SYSTEMD_UNIT_RE.test(unit) || unit.includes("..")) {
-    throw new ConfigurationError(`${label}.unit 必须是合法的 .service unit 名称`);
+    throw new ConfigurationError(`${label}.name 必须是合法的 .service unit 名称`);
   }
   if (item.enabled !== undefined && typeof item.enabled !== "boolean") {
     throw new ConfigurationError(`${label}.enabled 必须是布尔值`);
@@ -1005,9 +1257,23 @@ function systemdService(value: unknown, label: string): SystemdServiceManagement
   if (item.daemon_reload !== undefined && typeof item.daemon_reload !== "boolean") {
     throw new ConfigurationError(`${label}.daemon_reload 必须是布尔值`);
   }
-  return Object.freeze({
-    kind: "systemd",
+  const tool = enumValue<EnvironmentServiceTool>(
+    item.tool ?? "auto",
+    new Set(["auto", "systemctl", "service"]),
+    `${label}.tool`,
+  );
+  if (tool === "service") {
+    if (item.daemon_reload === true) {
+      throw new ConfigurationError(`${label}.daemon_reload 与 tool: service 不兼容`);
+    }
+    if (item.enabled !== undefined) {
+      throw new ConfigurationError(`${label}.enabled 与 tool: service 不兼容`);
+    }
+  }
+  const service: AppServiceManagement = Object.freeze({
+    kind: "service",
     unit,
+    tool,
     enabled: item.enabled as boolean | undefined,
     daemonReload: item.daemon_reload === true,
     onDeploy: enumValue<SystemdDeployAction>(
@@ -1017,216 +1283,160 @@ function systemdService(value: unknown, label: string): SystemdServiceManagement
     ),
     timeoutMs: timeoutMs(item.timeout_ms, `${label}.timeout_ms`),
   });
+  if (item.unit_config === undefined) return Promise.resolve(service);
+  if (service.tool === "service") {
+    throw new ConfigurationError(`${label}.unit_config 与 tool: service 不兼容`);
+  }
+  return Promise.resolve(Object.freeze({
+    ...service,
+    unitConfig: systemdUnitConfig(
+      item.unit_config,
+      service.unit,
+      installDirectory,
+      `${label}.unit_config`,
+    ),
+  }));
 }
 
-async function managementHooks(
-  value: unknown,
+async function appScriptManagement(
+  item: StringRecord,
   directory: string,
   label: string,
-): Promise<ReadonlyMap<AppManagementHook, readonly ScriptInvocation[]>> {
-  const data = mapping(value ?? {}, label);
-  const unknown = Object.keys(data).filter((hook) => !MANAGEMENT_HOOK_SET.has(hook)).sort();
-  if (unknown.length > 0) {
-    throw new ConfigurationError(`${label} 包含未知 hook: ${unknown.join(", ")}`);
+): Promise<AppScriptManagement> {
+  fields(item, ["kind", "start", "stop", "restart"], ["kind", "start", "stop", "restart"], label);
+  if (item.kind !== "script") {
+    throw new ConfigurationError(`${label}.kind 只支持 script`);
   }
-  const result = new Map<AppManagementHook, readonly ScriptInvocation[]>();
-  for (const hook of MANAGEMENT_HOOKS) {
-    if (data[hook] === undefined) continue;
-    const invocations: ScriptInvocation[] = [];
-    for (const [index, raw] of list(data[hook], `${label}.${hook}`).entries()) {
-      invocations.push(await scriptInvocation(raw, directory, `${label}.${hook}[${index}]`));
-    }
-    if (invocations.length === 0) {
-      throw new ConfigurationError(`${label}.${hook} 不能为空列表`);
-    }
-    result.set(hook, freezeArray(invocations));
-  }
-  return immutableMap(result);
+  const invocation = async (action: "start" | "stop" | "restart") =>
+    await scriptInvocation(item[action], directory, `${label}.${action}`);
+  return Object.freeze({
+    kind: "script",
+    start: await invocation("start"),
+    stop: await invocation("stop"),
+    restart: await invocation("restart"),
+  });
 }
 
 async function appManagement(
   value: unknown,
   directory: string,
-  definition: ScriptDefinition,
-  label: string,
-  secrets: ReadonlyMap<string, SecretDeclaration>,
-): Promise<AppManagementDefinition | undefined> {
-  if (value === undefined || value === null) return undefined;
-  const item = mapping(value, label);
-  fields(item, ["run_as", "configs", "service", "hooks"], ["run_as"], label);
-  const runAs = appRunAs(item.run_as, `${label}.run_as`);
-  const configs = await managedConfigFiles(
-    item.configs,
-    directory,
-    `${label}.configs`,
-    secrets,
-  );
-  const service = systemdService(item.service, `${label}.service`);
-  const hooks = await managementHooks(item.hooks, directory, `${label}.hooks`);
-  if (configs.length === 0 && service === undefined && hooks.size === 0) {
-    throw new ConfigurationError(`${label} 不能为空；不需要内置管理时请删除该字段`);
-  }
-  if (configs.length > 0 && (definition.actions.get("configure")?.length ?? 0) > 0) {
-    throw new ConfigurationError(`${label}.configs 与 scripts.configure 不能同时拥有配置动作`);
-  }
-  if (
-    service !== undefined &&
-    ["start", "stop", "restart"].some(
-      (action) => (definition.actions.get(action)?.length ?? 0) > 0,
-    )
-  ) {
-    throw new ConfigurationError(
-      `${label}.service 与 scripts.start/stop/restart 不能同时拥有服务动作`,
-    );
-  }
-  if (service === undefined && configs.some((config) => config.onChange !== "none")) {
-    throw new ConfigurationError(`${label}.configs.on_change 需要声明 management.service`);
-  }
-  return Object.freeze({ runAs, configs, service, hooks });
-}
-
-async function appManagementV4(
-  value: unknown,
-  directory: string,
-  definition: ScriptDefinition,
   installDirectory: string | undefined,
   label: string,
-  secrets: ReadonlyMap<string, SecretDeclaration>,
-  allowEmptyActions: boolean,
+  fileConfigs: readonly ManagedConfigFile[],
+  configScripts: readonly ScriptInvocation[],
 ): Promise<AppManagementDefinition | undefined> {
-  if (value === undefined || value === null) return undefined;
-  const item = mapping(value, label);
-  fields(item, ["run_as", "actions"], ["run_as", "actions"], label);
-  const runAs = appRunAs(item.run_as, `${label}.run_as`);
-  const actions = list(item.actions, `${label}.actions`);
-  if (actions.length === 0 && !allowEmptyActions) {
-    throw new ConfigurationError(`${label}.actions 不能为空；不需要内置管理时请删除该字段`);
-  }
-  const configInputs: unknown[] = [];
-  let service: SystemdServiceManagement | undefined;
-  for (const [index, raw] of actions.entries()) {
-    const entryLabel = `${label}.actions[${index}]`;
-    const entry = mapping(raw, entryLabel);
-    const kind = enumValue(entry.kind, new Set(["config", "service"]), `${entryLabel}.kind`);
-    if (kind === "config") {
-      fields(
-        entry,
-        [
-          "kind",
-          "name",
-          "source",
-          "target",
-          "owner",
-          "group",
-          "mode",
-          "variables",
-          "format",
-          "validator",
-          "on_change",
-        ],
-        ["kind", "name", "source", "target", "format"],
-        entryLabel,
-      );
-      const configData = { ...entry };
-      delete configData.kind;
-      configInputs.push(configData);
-      continue;
-    }
-    if (service !== undefined) {
-      throw new ConfigurationError(`${label} 最多只能声明一个 service action`);
-    }
-    fields(
-      entry,
-      [
-        "kind",
-        "type",
-        "unit",
-        "enabled",
-        "daemon_reload",
-        "on_deploy",
-        "timeout_ms",
-        "unit_config",
-      ],
-      ["kind", "type", "unit"],
-      entryLabel,
-    );
-    if (service !== undefined) {
-      throw new ConfigurationError(`${label} 最多只能声明一个 service action`);
-    }
-    service = systemdServiceV4(entry, installDirectory, entryLabel);
-  }
-  const configs = await managedConfigFiles(configInputs, directory, `${label}.config`, secrets);
-  if (configs.length === 0 && service === undefined && !allowEmptyActions) {
-    throw new ConfigurationError(`${label}.actions 不能为空；不需要内置管理时请删除该字段`);
-  }
-  if (configs.length > 0 && (definition.actions.get("configure")?.length ?? 0) > 0) {
-    throw new ConfigurationError(`${label}.config 与 scripts.configure 不能同时拥有配置动作`);
-  }
-  if (
-    service?.unitConfig !== undefined &&
-    (definition.actions.get("configure")?.length ?? 0) > 0
-  ) {
-    throw new ConfigurationError(
-      `${label}.service.unit_config 与 scripts.configure 不能同时拥有配置动作`,
-    );
-  }
-  if (
-    service !== undefined &&
-    ["start", "stop", "restart"].some(
-      (action) => (definition.actions.get(action)?.length ?? 0) > 0,
-    )
-  ) {
-    throw new ConfigurationError(
-      `${label}.service 与 scripts.start/stop/restart 不能同时拥有服务动作`,
-    );
-  }
-  if (service === undefined && configs.some((config) => config.onChange !== "none")) {
-    throw new ConfigurationError(`${label}.config.on_change 需要声明 service`);
-  }
-  if (service?.unitConfig !== undefined) {
-    if (!service.daemonReload) {
-      throw new ConfigurationError(`${label}.service.unit_config 需要 daemon_reload: true`);
-    }
-    const unitTarget = service.unitConfig.target;
-    if (configs.some((config) => config.target === unitTarget)) {
+  if (value === undefined || value === null) {
+    if (fileConfigs.some((config) => config.onChange !== "none")) {
       throw new ConfigurationError(
-        `${label}.config 与 service.unit_config 不能声明同一个目标路径: ${unitTarget}`,
+        `${label.replace(".management", ".configs")}.on_change 需要声明 management.kind: service`,
       );
     }
+    return undefined;
   }
-  return Object.freeze({ runAs, configs, service, hooks: immutableMap(new Map()) });
-}
-
-function systemdServiceV4(
-  value: StringRecord,
-  installDirectory: string | undefined,
-  label: string,
-): SystemdServiceManagement {
+  const item = mapping(value, label);
   fields(
-    value,
-    ["kind", "type", "unit", "enabled", "daemon_reload", "on_deploy", "timeout_ms", "unit_config"],
-    ["kind", "type", "unit"],
+    item,
+    [
+      "run_as",
+      "kind",
+      "start",
+      "stop",
+      "restart",
+      "name",
+      "tool",
+      "enabled",
+      "daemon_reload",
+      "on_deploy",
+      "timeout_ms",
+      "unit_config",
+    ],
+    ["run_as", "kind"],
     label,
   );
-  if (value.kind !== "service") {
-    throw new ConfigurationError(`${label}.kind 只支持 service`);
+  const runAs = appRunAs(item.run_as, `${label}.run_as`);
+  const kind = enumValue<AppManagerDefinition["kind"]>(
+    item.kind,
+    new Set(["script", "service"]),
+    `${label}.kind`,
+  );
+  const managerInput: StringRecord = { ...item };
+  delete managerInput.run_as;
+  const manager = kind === "script"
+    ? await appScriptManagement(managerInput, directory, label)
+    : await appServiceManagement(managerInput, directory, installDirectory, label);
+  const systemService = manager.kind === "service" ? manager : undefined;
+  if (systemService === undefined && fileConfigs.some((config) => config.onChange !== "none")) {
+    throw new ConfigurationError(
+      `${label} 需要 management.kind: service 才能声明 configs.on_change`,
+    );
   }
-  const serviceData = { ...value };
-  delete serviceData.kind;
-  delete serviceData.unit_config;
-  const service = systemdService(serviceData, label);
-  if (service === undefined) {
-    throw new ConfigurationError(`${label} 缺少 systemd 声明`);
+  if (systemService?.unitConfig !== undefined) {
+    if (!systemService.daemonReload) {
+      throw new ConfigurationError(`${label}.unit_config 需要 daemon_reload: true`);
+    }
+    const unitTarget = systemService.unitConfig.target;
+    if (fileConfigs.some((config) => config.target === unitTarget)) {
+      throw new ConfigurationError(
+        `${label} 配置与 service.unit_config 不能声明同一个目标路径: ${unitTarget}`,
+      );
+    }
   }
-  if (value.unit_config === undefined) return service;
   return Object.freeze({
-    ...service,
-    unitConfig: systemdUnitConfig(
-      value.unit_config,
-      service.unit,
-      installDirectory,
-      `${label}.unit_config`,
-    ),
+    runAs,
+    configs: fileConfigs,
+    configScripts,
+    manager,
+  });
+}
+async function appConfigs(
+  value: unknown,
+  directory: string,
+  installDirectory: string | undefined,
+  label: string,
+  secrets: ReadonlyMap<string, SecretDeclaration>,
+): Promise<
+  {
+    readonly configs: readonly ManagedConfigFile[];
+    readonly configScripts: readonly ScriptInvocation[];
+  }
+> {
+  const fileInputs: unknown[] = [];
+  const scriptInvocations: ScriptInvocation[] = [];
+  const scriptPaths = new Set<string>();
+  for (const [index, raw] of list(value ?? [], label).entries()) {
+    const itemLabel = `${label}[${index}]`;
+    const item = mapping(raw, itemLabel);
+    const kind = enumValue<AppConfigKind>(
+      item.kind,
+      new Set(["script", "file"]),
+      `${itemLabel}.kind`,
+    );
+    if (kind === "file") {
+      fileInputs.push(item);
+      continue;
+    }
+    fields(item, ["kind", "path", "permissions"], ["kind", "path", "permissions"], itemLabel);
+    const invocation = await scriptInvocation(
+      { path: item.path, permissions: item.permissions },
+      directory,
+      `${itemLabel}.script`,
+    );
+    if (scriptPaths.has(invocation.relativePath)) {
+      throw new ConfigurationError(`${label} 包含重复配置脚本: ${invocation.relativePath}`);
+    }
+    scriptPaths.add(invocation.relativePath);
+    scriptInvocations.push(invocation);
+  }
+  const configs = await managedConfigFiles(
+    fileInputs,
+    directory,
+    installDirectory,
+    `${label}.file`,
+    secrets,
+  );
+  return Object.freeze({
+    configs,
+    configScripts: freezeArray(scriptInvocations),
   });
 }
 
@@ -1239,7 +1449,16 @@ function systemdUnitConfig(
   const item = mapping(value, label);
   fields(
     item,
-    ["target", "working_directory", "command", "args"],
+    [
+      "target",
+      "working_directory",
+      "command",
+      "args",
+      "restart_policy",
+      "restart_sec",
+      "start_limit_interval_sec",
+      "start_limit_burst",
+    ],
     ["working_directory", "command"],
     label,
   );
@@ -1249,7 +1468,7 @@ function systemdUnitConfig(
   if (posix.basename(target) !== unit) {
     throw new ConfigurationError(`${label}.target 文件名必须与 service.unit 一致`);
   }
-  const workingDirectory = remoteDirectoryPath(
+  const workingDirectory = systemdWorkingDirectory(
     item.working_directory,
     installDirectory,
     `${label}.working_directory`,
@@ -1267,7 +1486,85 @@ function systemdUnitConfig(
     workingDirectory,
     command,
     args: freezeArray(args),
+    restartPolicy: item.restart_policy === undefined ? undefined : enumValue<SystemdRestartPolicy>(
+      item.restart_policy,
+      SYSTEMD_RESTART_POLICIES,
+      `${label}.restart_policy`,
+    ),
+    restartSec: item.restart_sec === undefined
+      ? undefined
+      : boundedInteger(item.restart_sec, `${label}.restart_sec`, 0, 86_400),
+    startLimitIntervalSec: item.start_limit_interval_sec === undefined ? undefined : boundedInteger(
+      item.start_limit_interval_sec,
+      `${label}.start_limit_interval_sec`,
+      0,
+      86_400,
+    ),
+    startLimitBurst: item.start_limit_burst === undefined
+      ? undefined
+      : boundedInteger(item.start_limit_burst, `${label}.start_limit_burst`, 0, 10_000),
   });
+}
+
+function systemdWorkingDirectory(
+  value: unknown,
+  installDirectory: string | undefined,
+  label: string,
+): string {
+  const text = stringValue(value, label);
+  const variableBareNames = Object.values(MANAGED_TARGET_VARIABLE_PREFIXES)
+    .map((prefix) => prefix.slice(0, -1));
+  const variableCount = variableBareNames.reduce(
+    (count, variable) => count + text.split(variable).length - 1,
+    0,
+  );
+  if (variableCount === 0) {
+    if (text.includes("$") || text.includes("%") || text.includes('"')) {
+      throw new ConfigurationError(
+        `${label} 只支持 ${variableBareNames.join("、")} 目录变量，不支持其他展开或引号字符`,
+      );
+    }
+    return remoteDirectoryPath(value, installDirectory, label);
+  }
+  if (variableCount > 1) {
+    throw new ConfigurationError(`${label} 只能包含一个目录变量`);
+  }
+  const match = Object.entries(MANAGED_TARGET_VARIABLE_PREFIXES).find(
+    ([, prefix]) => text === prefix.slice(0, -1) || text.startsWith(prefix),
+  );
+  if (match === undefined) {
+    throw new ConfigurationError(
+      `${label} 只支持以 ${variableBareNames.join("、")} 开头或作为裸值`,
+    );
+  }
+  if (installDirectory === undefined) {
+    throw new ConfigurationError(`${label} 使用目录变量，但 App 缺少 install_directory`);
+  }
+  const [targetRoot, variablePrefix] = match as [
+    Exclude<ManagedConfigTargetRoot, "absolute">,
+    string,
+  ];
+  const bareValue = text === variablePrefix.slice(0, -1);
+  const relative = bareValue ? "" : text.slice(variablePrefix.length);
+  if (
+    relative !== "" && (
+      relative.startsWith("/") || relative.endsWith("/") || relative.includes("\\") ||
+      relative.includes("$") || relative.includes("%") || relative.includes('"') ||
+      relative.split("/").some((part) => part === "" || part === "." || part === "..")
+    )
+  ) {
+    throw new ConfigurationError(
+      `${label} 的目录变量后必须是规范相对路径`,
+    );
+  }
+  if (!bareValue && relative === "") {
+    throw new ConfigurationError(`${label} 的目录变量后必须是规范相对路径`);
+  }
+  const root = targetRoot === "install"
+    ? posix.normalize(installDirectory)
+    : `${posix.normalize(installDirectory)}/latest`;
+  const resolved = relative === "" ? root : posix.join(root, relative);
+  return managedTargetPath(resolved, label);
 }
 
 function remoteDirectoryPath(
@@ -1410,8 +1707,10 @@ async function loadEnvironment(
       "requires_privilege",
       "package",
       "scripts",
+      "install",
+      "manager",
     ],
-    ["schema_version", "name", "version", "scripts"],
+    ["schema_version", "name", "version"],
     label,
   );
   const declaredName = name(data.name, `${label}.name`);
@@ -1422,15 +1721,36 @@ async function loadEnvironment(
   if (privilege !== undefined && privilege !== null && typeof privilege !== "boolean") {
     throw new ConfigurationError(`${label}.requires_privilege 必须是布尔值`);
   }
+  const hasScripts = data.scripts !== undefined && data.scripts !== null;
+  const hasLifecycle = data.install !== undefined || data.manager !== undefined;
+  if (hasScripts === hasLifecycle) {
+    throw new ConfigurationError(
+      `${label} 必须且只能选择旧顶层 scripts 或新的 install/manager 生命周期`,
+    );
+  }
+  if (hasLifecycle && (data.install === undefined || data.install === null)) {
+    throw new ConfigurationError(`${label}.install 是新生命周期的必需字段`);
+  }
+  const environmentScripts = hasScripts
+    ? await scripts(data, directory, label)
+    : Object.freeze({ actions: immutableMap(new Map()) });
+  const install = hasLifecycle
+    ? await environmentInstall(data.install, directory, `${label}.install`)
+    : undefined;
+  const manager = data.manager === undefined || data.manager === null
+    ? undefined
+    : await environmentManager(data.manager, directory, `${label}.manager`);
   return Object.freeze({
     name: environmentName,
     directory: await Deno.realPath(directory),
-    scripts: await scripts(data, directory, label),
+    scripts: environmentScripts,
     defaults: deepFreezeRecord(mapping(data.defaults ?? {}, `${label}.defaults`)),
     package: data.package === undefined || data.package === null
       ? undefined
       : packageSpec(data.package, `${label}.package`),
     requiresPrivilege: privilege === true,
+    install,
+    manager,
     version: stringValue(data.version, `${label}.version`),
     parameters: deepFreezeRecord(mapping(data.parameters ?? {}, `${label}.parameters`)),
     dependsOn: stringList(data.depends_on ?? [], `${label}.depends_on`),
@@ -1448,6 +1768,8 @@ function placedEnvironmentDefinition(
     defaults: environment.defaults,
     package: environment.package,
     requiresPrivilege: environment.requiresPrivilege,
+    install: environment.install,
+    manager: environment.manager,
   });
 }
 
@@ -1563,22 +1885,23 @@ async function loadV2PlacedEnvironments(
   };
 }
 
-const APP_V2_FIELDS = [
+const APP_FIELDS = [
   "schema_version",
   "name",
   "install_directory",
   "packageless",
   "depends_on",
-  "scripts",
-] as const;
-const APP_V3_FIELDS = [
-  ...APP_V2_FIELDS,
+  "deployment",
+  "configs",
   "management",
 ] as const;
-const APP_V4_FIELDS = [
-  ...APP_V3_FIELDS,
-  "deployment",
-] as const;
+
+function rejectTopLevelAppScripts(data: StringRecord, label: string): void {
+  if (data.scripts === undefined) return;
+  throw new ConfigurationError(
+    `${label} 的顶层 scripts 已移除：配置脚本请使用 configs.kind: script，服务脚本请使用 management.kind: script`,
+  );
+}
 
 function deploymentDefinition(value: unknown, label: string): DeploymentDefinition {
   const item = mapping(value, label);
@@ -1636,9 +1959,10 @@ async function loadApps(
     const directory = join(parent, directoryName);
     const data = await loadYaml(join(directory, "app.yaml"));
     const label = `app[${directoryName}]`;
-    const schemaVersion = appSchemaVersion(data, label);
+    appSchemaVersion(data, label);
     rejectTopLevelSecretDeclarations(data, label);
     rejectTopLevelTemplates(data, label);
+    rejectTopLevelAppScripts(data, label);
     if (data.packageless !== undefined && typeof data.packageless !== "boolean") {
       throw new ConfigurationError(`${label}.packageless 必须是布尔值`);
     }
@@ -1649,15 +1973,13 @@ async function loadApps(
     }
     if (appVersions === undefined) {
       throw new ConfigurationError(
-        `App ${appName} 使用 schema v2/v3/v4，但集群缺少 app_versions.yaml`,
+        `App ${appName} 使用 schema 1，但集群缺少 app_versions.yaml`,
       );
     }
     fields(
       data,
-      schemaVersion === 2 ? APP_V2_FIELDS : schemaVersion === 3 ? APP_V3_FIELDS : APP_V4_FIELDS,
-      packageless
-        ? ["schema_version", "name", "scripts"]
-        : ["schema_version", "name", "install_directory", "scripts"],
+      APP_FIELDS,
+      packageless ? ["schema_version", "name"] : ["schema_version", "name", "install_directory"],
       label,
     );
     const entry = appVersions.get(appName);
@@ -1670,54 +1992,37 @@ async function loadApps(
     } else if (!entry) {
       throw new ConfigurationError(`app_versions.yaml 缺少 App ${appName} 的版本记录`);
     }
-    const appScripts = await scripts(data, directory, label);
     const installDirectory = data.install_directory === undefined
       ? undefined
       : remoteAbsolutePath(data.install_directory, `${label}.install_directory`);
     let deployment: DeploymentDefinition | undefined;
-    if (schemaVersion === 4 && data.deployment !== undefined) {
+    if (data.deployment !== undefined) {
       deployment = deploymentDefinition(data.deployment, `${label}.deployment`);
     }
     if (deployment !== undefined) {
       if (packageless) {
         throw new ConfigurationError(`${label}.deployment 不能用于 packageless App`);
       }
-      if (appScripts.actions.has("deploy")) {
-        throw new ConfigurationError(
-          `${label}.deployment 与 scripts.deploy 不能同时拥有发布动作`,
-        );
-      }
-    } else if (!packageless && schemaVersion === 4 && !appScripts.actions.has("deploy")) {
+    } else if (!packageless) {
       deployment = Object.freeze({ kind: "versioned" as const });
     }
-    const management = schemaVersion === 2 ? undefined : schemaVersion === 3
-      ? await appManagement(
-        data.management,
-        directory,
-        appScripts,
-        `${label}.management`,
-        secrets,
-      )
-      : await appManagementV4(
-        data.management,
-        directory,
-        appScripts,
-        installDirectory,
-        `${label}.management`,
-        secrets,
-        deployment !== undefined,
-      );
-    if (
-      packageless &&
-      (!appScripts.actions.has("check") ||
-        (!appScripts.actions.has("configure") &&
-          (management?.configs.length ?? 0) === 0 &&
-          management?.service?.unitConfig === undefined) ||
-        appScripts.actions.has("deploy"))
-    ) {
-      throw new ConfigurationError(
-        `packageless App ${appName} 必须只使用 check/configure，不能声明 deploy`,
-      );
+    const appConfig = await appConfigs(
+      data.configs,
+      directory,
+      installDirectory,
+      `${label}.configs`,
+      secrets,
+    );
+    const management = await appManagement(
+      data.management,
+      directory,
+      installDirectory,
+      `${label}.management`,
+      appConfig.configs,
+      appConfig.configScripts,
+    );
+    if (appConfig.configs.length > 0 && management?.runAs === undefined) {
+      throw new ConfigurationError(`${label}.configs.file 需要声明 management.run_as`);
     }
     if (deployment !== undefined && management?.runAs === undefined) {
       throw new ConfigurationError(
@@ -1736,7 +2041,6 @@ async function loadApps(
         package: entry?.package,
         packageless,
         deployment,
-        scripts: appScripts,
         dependsOn: stringList(data.depends_on ?? [], `${label}.depends_on`),
         management,
       }),

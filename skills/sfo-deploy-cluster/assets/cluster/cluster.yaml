@@ -1,0 +1,5 @@
+schema_version: 2
+name: production
+executor_region: cn-east
+environments: {}
+apps: {}

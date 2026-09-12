@@ -5,11 +5,23 @@
 - Keep design documents readable by using UML diagrams for module relationships and source-language signatures for file-level interfaces.
 
 ## Scope
-- This rule is part of the high-risk workflow. Trivial and standard work does not create `design.md` or task-local `design/` artifacts.
+- Formal design artifacts and completion requirements in this rule are part of the high-risk workflow. Standard work does not create `design.md` or task-local `design/` artifacts. Proposal discussion uses only the applicability guidance below.
 - Single-project design: `docs/versions/<version>/modules/<project>/<task-seq>-<task-slug>/design.md` and optional task-local `design/`.
 - Cross-project design: `docs/versions/<version>/modules/globals/<task-seq>-<task-slug>/design.md`.
 - Required long-lived boundary sync in `docs/modules/<module>.md`.
 - Project-rule-required updates to global architecture docs under `docs/architecture/`.
+
+## Proposal Applicability
+- In any tier, proposal discussion of a candidate design MUST apply the relevant design-quality guardrails below at the depth actually discussed: top-down reasoning, business responsibility boundaries, acyclic dependency direction, shared-module justification, state ownership, interface compatibility, affected consumers, material failure/lifecycle behavior, and preservation of existing invariants.
+- When depicting module relationships, use the same-level UML-style Mermaid conventions below; when specifying file-level interfaces, use source-language signatures. An exploratory discussion need not reach file-level detail, but must not assert a lower-level solution without explaining the parent boundary it depends on.
+- Keep alternatives and abstractions grounded in the actual requirement and current code. Apply the guardrails against filler, speculative architecture, and unjustified abstractions to candidate solutions too.
+- Formal metadata, independent child design documents and indexes, exhaustive file sequences, migration-closure tables/statuses, architecture synchronization, and design completion commands remain downstream obligations. In proposal, record material compatibility and migration implications needed for the requirement decision without claiming completed migration evidence.
+- The prohibition on test planning below applies to design-stage artifacts. Proposal may discuss testing under [Test Design Rules — Proposal Applicability](test-design-rules.md#proposal-applicability); proposal content and its handoff are governed by [Proposal Document Rules](proposal-doc-rules.md#design-and-testing-discussion).
+
+## Proposal Design Handoff
+- When `proposal.md` contains a design solution, the design stage's primary goal is to inspect it for defects and complete it into an implementation-ready design. Start from that solution, retain sound decisions, correct defects, and fill missing detail under the guardrails below. Proposal approval does not prove design correctness.
+- Compare the proposed solution with the requirement baseline, current code, affected consumers, dependencies, ownership, interfaces, and failure behavior. Record material findings, corrections, and their reasons in the active design source, referencing the relevant proposal sections or item IDs; do not recreate a valid solution merely to fill a separate stage document.
+- Review depth and completion work follow what the proposal already establishes. A partial design needs review plus missing design work; when no solution exists, develop one from the approved requirements. In every case, the final design must satisfy the stage's required coverage and implementation-readiness criteria.
 
 ## Required Metadata
 - `task_manifest: task.yaml`
@@ -25,7 +37,7 @@
 - Source-language fenced code blocks for file-level module interfaces when the design reaches implementation files.
 - Key boundary-crossing flows as sequence diagrams when runtime interaction matters.
 - State/data ownership only for persistent data or shared state affected by the task.
-- Direct change mapping with stable `change_id` values, a concrete `target_module`, and concrete `Scope Paths`.
+- Direct change mapping with stable `change_id` values, a concrete `target_module`, and concrete `Scope Paths`. Refine task-manifest paths during design; proposal does not freeze them. Receipt binding and later path revisions follow [Schema Validation Rules](schema-validation-rules.md#receipt-binding).
 - File-level modules to create or modify, ordered by same-level dependency for implementation.
 - Implementation ordering constraints, material design notes, risks, and rollback notes.
 
@@ -72,3 +84,5 @@
 - Proposal ambiguity routes back to proposal.
 - Downstream testing or acceptance follow-up is recorded unless cross-stage synchronization is explicitly requested.
 - Before completion, run `UV_CACHE_DIR=.harness/uv-cache uv run --active python ./harness/scripts/harness-check.py --task <packet>/task.yaml --profile completion`.
+
+Proposal confirmation authorizes downstream execution under `harness/rules/task-execution-rules.md`. Design/testing documents become approved after their stage checks pass; no intermediate user approval is required.

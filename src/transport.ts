@@ -10,6 +10,7 @@ import {
   extractValidatedAppPackage,
   type ManagedAppIdentity,
   type ManagedConfigPublication,
+  ManagedConfigPublicationError,
   type ManagedConfigPublishRequest,
   REMOTE_CONFIG_UPDATER_BUNDLE_PATH,
   type RemoteConfigCandidate,
@@ -75,6 +76,8 @@ export interface RemoteSecretState {
 
 export interface RemoteSession extends AsyncDisposable {
   createWorkspace(signal?: AbortSignal): Promise<string>;
+  /** 恢复失败时保留工作目录，移出 close 自动清理集合。 */
+  preserveWorkspace?(path: string): void;
   stageDeploymentBundle?(
     bundle: BuiltDeploymentBundle,
     options: StageDeploymentBundleOptions,
@@ -566,7 +569,11 @@ export class OpenSshRemoteSession implements RemoteSession {
       await this.run(["rm", "-rf", "--", scope], { privileged: identity.requiresSudo }).catch(
         () => undefined,
       );
-      throw new TransportError(`配置 ${request.name} 的固定更新器失败`);
+      const detail = [result.stdout, result.stderr].map((text) => text.trim()).filter(Boolean)
+        .join("\n");
+      throw new TransportError(
+        `配置 ${request.name} 的固定更新器失败${detail ? `: ${detail}` : ""}`,
+      );
     }
     await this.#assertCandidate(candidatePath, request.name, signal);
     return Object.freeze({ name: request.name, workspace, path: candidatePath });
@@ -610,11 +617,66 @@ export class OpenSshRemoteSession implements RemoteSession {
         }
         await this.preflightPrivilege(signal);
         const parent = posix.dirname(target);
+        let resolvedRoot: string | undefined;
+        if (request.releaseRoot !== undefined) {
+          const root = safeRemotePath(request.releaseRoot);
+          if (
+            !target.startsWith(`${root}/`) || root.split("/").includes("..") ||
+            target.split("/").includes("..")
+          ) {
+            throw new PreflightError(`版本配置目标越界 ${target}`);
+          }
+          const rootLink = await this.run(["/usr/bin/test", "-L", root], {
+            signal,
+            privileged: true,
+          });
+          if (rootLink.exitCode !== 1) throw new TransportError(`版本根目录不是普通目录 ${root}`);
+          const realRoot = await this.run(["realpath", "-e", "--", root], {
+            signal,
+            privileged: true,
+          });
+          requireSuccess(realRoot, `解析版本根目录失败 ${root}`);
+          resolvedRoot = realRoot.stdout.trim();
+          if (!resolvedRoot.startsWith("/")) {
+            throw new TransportError(`解析版本根目录失败 ${root}`);
+          }
+        }
         const parentState = await this.run(["/usr/bin/test", "-d", parent], {
           signal,
           privileged: true,
         });
-        requireSuccess(parentState, `配置目标父目录不存在 ${parent}`);
+        if (parentState.exitCode === 1) {
+          if (request.releaseRoot === undefined) {
+            requireSuccess(parentState, `配置目标父目录不存在 ${parent}`);
+          }
+          await this.#ensureReleaseParent(
+            safeRemotePath(request.releaseRoot!),
+            parent,
+            request.runAs,
+            signal,
+          );
+        } else {
+          requireSuccess(parentState, `配置目标父目录不存在 ${parent}`);
+        }
+        if (request.releaseRoot !== undefined) {
+          const root = safeRemotePath(request.releaseRoot);
+          const realParent = await this.run(["realpath", "-e", "--", parent], {
+            signal,
+            privileged: true,
+          });
+          requireSuccess(realParent, `解析版本配置父目录失败 ${parent}`);
+          const resolvedParent = realParent.stdout.trim();
+          const expectedRoot = resolvedRoot;
+          if (expectedRoot === undefined) {
+            throw new TransportError(`解析版本根目录失败 ${root}`);
+          }
+          if (
+            !expectedRoot.startsWith("/") ||
+            (resolvedParent !== expectedRoot && !resolvedParent.startsWith(`${expectedRoot}/`))
+          ) {
+            throw new TransportError(`版本配置父目录逃逸 ${parent}`);
+          }
+        }
         const targetState = await this.run(["/usr/bin/test", "-e", target], {
           signal,
           privileged: true,
@@ -716,6 +778,19 @@ export class OpenSshRemoteSession implements RemoteSession {
             await this.run(installArgv, { signal, privileged: true }),
             `创建配置发布临时文件失败 ${target}`,
           );
+          // 发送 rename 前记录补偿状态，覆盖远端成功而响应丢失的情况。
+          publications.push(Object.freeze({
+            name: request.candidate.name,
+            workspace,
+            target,
+            changed: true,
+            existed,
+            backupPath: backup,
+            originalMode,
+            originalOwner,
+            originalGroup,
+            serviceChange: true,
+          }));
           requireSuccess(
             await this.run(["mv", "-f", "-T", "--", temporary, target], {
               signal,
@@ -729,27 +804,19 @@ export class OpenSshRemoteSession implements RemoteSession {
           );
           await this.run(["rm", "-f", "--", candidate]).catch(() => undefined);
         }
-        publications.push(Object.freeze({
-          name: request.candidate.name,
-          workspace,
-          target,
-          changed: true,
-          existed,
-          backupPath: backup,
-          originalMode,
-          originalOwner,
-          originalGroup,
-          serviceChange: true,
-        }));
       }
       return Object.freeze(publications);
     } catch (cause) {
       try {
         await this.restoreManagedConfigs(publications);
       } catch (recoveryCause) {
-        throw new TransportError("配置发布失败且已发布配置恢复不完整", {
-          cause: new AggregateError([cause, recoveryCause]),
-        });
+        throw new ManagedConfigPublicationError(
+          "配置发布失败且已发布配置恢复不完整",
+          publications,
+          {
+            cause: new AggregateError([cause, recoveryCause]),
+          },
+        );
       }
       throw cause;
     }
@@ -897,6 +964,56 @@ export class OpenSshRemoteSession implements RemoteSession {
         await this.run(["rm", "-f", "--", backup], { signal }),
         `清理配置备份失败 ${publication.name}`,
       );
+    }
+  }
+
+  async #ensureReleaseParent(
+    root: string,
+    parent: string,
+    runAs: string | undefined,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    if (!parent.startsWith(`${root}/`)) {
+      throw new PreflightError(`版本配置目标越界 ${parent}`);
+    }
+    const relative = parent.slice(root.length + 1);
+    const segments = relative.split("/");
+    if (
+      relative.length === 0 ||
+      segments.some((segment) => segment.length === 0 || segment === "." || segment === "..")
+    ) {
+      throw new PreflightError(`版本配置父目录非法 ${parent}`);
+    }
+    let current = root;
+    for (const segment of segments) {
+      current += `/${segment}`;
+      const existing = await this.run(["/usr/bin/test", "-e", current], {
+        signal,
+        privileged: true,
+      });
+      if (existing.exitCode === 1) {
+        const argv = ["/usr/bin/install", "-d", "-m", "0750"];
+        if (runAs !== undefined) argv.push("-o", userOrGroup(runAs, "run_as"));
+        argv.push("--", current);
+        requireSuccess(
+          await this.run(argv, { signal, privileged: true }),
+          `创建配置目标父目录失败 ${current}`,
+        );
+        continue;
+      }
+      requireSuccess(existing, `检查配置目标父目录失败 ${current}`);
+      const link = await this.run(["/usr/bin/test", "-L", current], {
+        signal,
+        privileged: true,
+      });
+      if (link.exitCode !== 1) {
+        throw new TransportError(`版本配置父目录不是普通目录 ${current}`);
+      }
+      const directory = await this.run(["/usr/bin/test", "-d", current], {
+        signal,
+        privileged: true,
+      });
+      requireSuccess(directory, `版本配置父目录不是普通目录 ${current}`);
     }
   }
 
@@ -1838,6 +1955,15 @@ export class OpenSshRemoteSession implements RemoteSession {
 
   async removeTree(path: string, signal?: AbortSignal): Promise<void> {
     await this.cleanupWorkspace(path, signal);
+  }
+
+  preserveWorkspace(path: string): void {
+    this.#ensureOpen();
+    const workspace = this.#registeredWorkspace(path);
+    this.#workspaces.delete(workspace);
+    for (const copy of this.#scopedSecretCopies.keys()) {
+      if (copy.startsWith(`${workspace}/`)) this.#scopedSecretCopies.delete(copy);
+    }
   }
 
   async cleanupWorkspace(path: string, signal?: AbortSignal): Promise<void> {

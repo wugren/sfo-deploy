@@ -93,6 +93,22 @@ async function makePackage(root: string, content = "app-bytes\n"): Promise<strin
   return path;
 }
 
+async function makeWrappedPackage(
+  root: string,
+  name: string,
+  files: readonly { readonly path: string; readonly content: string }[] = [
+    { path: "app.txt", content: "wrapped\n" },
+  ],
+): Promise<string> {
+  const path = join(root, "package", name);
+  await Deno.mkdir(path, { recursive: true });
+  for (const file of files) {
+    await Deno.mkdir(join(path, file.path, ".."), { recursive: true });
+    await Deno.writeTextFile(join(path, file.path), file.content);
+  }
+  return join(root, "package");
+}
+
 async function makeRelease(
   work: string,
   version: string,
@@ -181,6 +197,57 @@ Deno.test("integration/versioned release: different version publishes payload an
     assertEquals(await Deno.readTextFile(join(work, "2.0.0", "VERSION")), "2.0.0\n");
     assertEquals((await Deno.readLink(join(work, "latest"))).split("/").at(-1), "2.0.0");
     assertEquals(await Deno.readTextFile(join(work, ".demo.version")), "2.0.0\n");
+  });
+});
+
+Deno.test("integration/versioned release: unique root directory is stripped by default", async () => {
+  await withTempDir(async (root) => {
+    const work = join(root, "work");
+    await Deno.mkdir(work, { recursive: true });
+    await makeWrappedPackage(root, "server", [
+      { path: "jx-server.jar", content: "server-jar\n" },
+      { path: "resources/application.yml", content: "listen: 127.0.0.1:8080\n" },
+    ]);
+    const result = await runRelease(
+      root,
+      metadata(root, { parameters: { version: "2.0.0" } }),
+    );
+    assertEquals(result.code, 0, result.output);
+    assertEquals(
+      await Deno.readTextFile(join(work, "2.0.0", "jx-server.jar")),
+      "server-jar\n",
+    );
+    assertEquals(
+      await Deno.readTextFile(join(work, "2.0.0", "resources", "application.yml")),
+      "listen: 127.0.0.1:8080\n",
+    );
+    await assertRejects(() => Deno.stat(join(work, "2.0.0", "server")), Deno.errors.NotFound);
+  });
+});
+
+Deno.test("integration/versioned release: multiple top-level members keep package layout", async () => {
+  await withTempDir(async (root) => {
+    const work = join(root, "work");
+    const packageRoot = join(root, "package");
+    await Deno.mkdir(work, { recursive: true });
+    await Deno.mkdir(join(packageRoot, "server", "resources"), { recursive: true });
+    await Deno.mkdir(join(packageRoot, "other"), { recursive: true });
+    await Deno.writeTextFile(join(packageRoot, "server", "jx-server.jar"), "server\n");
+    await Deno.writeTextFile(join(packageRoot, "server", "resources", "app.yml"), "server\n");
+    await Deno.writeTextFile(join(packageRoot, "other", "keep.txt"), "other\n");
+    const result = await runRelease(
+      root,
+      metadata(root, { parameters: { version: "2.0.0" } }),
+    );
+    assertEquals(result.code, 0, result.output);
+    assertEquals(
+      await Deno.readTextFile(join(work, "2.0.0", "server", "jx-server.jar")),
+      "server\n",
+    );
+    assertEquals(
+      await Deno.readTextFile(join(work, "2.0.0", "other", "keep.txt")),
+      "other\n",
+    );
   });
 });
 
@@ -297,14 +364,26 @@ Deno.test("integration/versioned release: Multipass apps use builtin layout and 
   ]);
   for (const text of [templateApp, liveApp]) {
     assertStringIncludes(text, "kind: versioned");
-    assertStringIncludes(text, "working_directory: current");
-    assertStringIncludes(text, 'args: ["-jar", "jx-server.jar"]');
+    assertStringIncludes(text, "- -jar");
+    assertStringIncludes(text, "- --spring.profiles.active=local");
+    assertStringIncludes(text, "- -Dloader.path=resources,lib");
     assertStringIncludes(text, "on_deploy: restart");
   }
+  assertStringIncludes(templateApp, "working_directory: latest");
+  assertStringIncludes(templateApp, "- base-entry.jar");
+  assertStringIncludes(liveApp, "working_directory: ${LATEST_DIRECTORY}");
+  assertStringIncludes(liveApp, "- jx-server.jar");
+  assertStringIncludes(
+    liveApp,
+    "${CURRENT_VERSION_DIRECTORY}/resources/application.yml",
+  );
   for (const text of [templateWeb, liveWeb]) {
     assertStringIncludes(text, "kind: versioned");
     assertStringIncludes(text, "run_as: ubuntu");
   }
+  assertStringIncludes(liveWeb, "on_deploy: none");
+  assertEquals(/enabled: true/u.test(liveWeb), false);
   assertStringIncludes(release, "validated-directory");
+  assertStringIncludes(release, "唯一顶层目录");
   assertStringIncludes(release, "原子切换 latest");
 });

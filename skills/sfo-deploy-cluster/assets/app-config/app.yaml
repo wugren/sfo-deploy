@@ -1,0 +1,12 @@
+schema_version: 1
+name: settings
+packageless: true
+configs:
+  - kind: file
+    source: templates/settings.json
+    target: /home/deploy/settings.json
+    owner: deploy
+    group: deploy
+    mode: "0600"
+    format: json
+    on_change: none

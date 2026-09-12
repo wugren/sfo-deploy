@@ -128,6 +128,7 @@ function managedPlan(
       relativePath: `templates/${name}.json`,
       source: join(root, `${name}.json`),
       target: `/etc/demo/${name}.json`,
+      targetRoot: "absolute",
       mode: 0o600,
       variables: Object.freeze([]),
       format: "json" as const,
@@ -138,7 +139,16 @@ function managedPlan(
   const management: AppManagementDefinition = Object.freeze({
     runAs: "deploy",
     configs,
-    hooks: new Map(afterDeploy.length === 0 ? [] : [["after_deploy" as const, afterDeploy]]),
+    configScripts: Object.freeze([]),
+    manager: Object.freeze({
+      kind: "service" as const,
+      unit: "demo.service",
+      tool: "systemctl" as const,
+      enabled: true,
+      daemonReload: true,
+      onDeploy: "none" as const,
+      timeoutMs: 30_000,
+    }),
   });
   return Object.freeze({
     schemaVersion: 4,
@@ -361,40 +371,6 @@ Deno.test("dv/app-management: 两个候选先生成再单批发布，unchanged �
   });
 });
 
-Deno.test("dv/app-management: 发布后 hook 失败恢复整批配置且结果显式记录 recovery", async () => {
-  await withTempDir(async (root) => {
-    await Promise.all(
-      ["alpha", "beta"].map((name) =>
-        Deno.writeTextFile(join(root, `${name}.json`), '{"value":"fixed"}\n')
-      ),
-    );
-    const hookPath = join(root, "after.ts");
-    await Deno.writeTextFile(hookPath, "Deno.exit(19);\n");
-    const hook = Object.freeze({
-      source: hookPath,
-      relativePath: "scripts/after.ts",
-      permissions: Object.freeze({ run: Object.freeze([]), net: Object.freeze([]) }),
-    });
-    const remote = managedTransport({ changed: true, failHook: true });
-    const result = await new DeploymentExecutor(remote.transport).execute(
-      managedPlan(root, "deploy", [hook]),
-    );
-    assertEquals(result.steps[0].status, StepStatus.FAILED);
-    assertEquals(
-      result.steps[0].recovery,
-      Object.freeze({
-        attempted: true,
-        succeeded: true,
-        configAttempted: true,
-        serviceAttempted: false,
-      }),
-    );
-    assert(remote.events.indexOf("publish") < remote.events.indexOf("hook"));
-    assert(remote.events.indexOf("hook") < remote.events.indexOf("restore:2"));
-    assertEquals(remote.events.some((event) => event.startsWith("commit:")), false);
-  });
-});
-
 Deno.test("dv/app-management: 每个配置与生命周期只获得声明秘密，清理后输出按值和文件内容脱敏", async () => {
   await withTempDir(async (root) => {
     const alpha = "alpha-secret-value";
@@ -419,7 +395,7 @@ Deno.test("dv/app-management: 每个配置与生命周期只获得声明秘密�
       relativePath: "scripts/after.ts",
       permissions: Object.freeze({ run: Object.freeze([]), net: Object.freeze([]) }),
     });
-    const base = managedPlan(root, "deploy", [invocation]);
+    const base = managedPlan(root, "deploy");
     const configs = base.steps[0].management!.configs.map((config, index) =>
       Object.freeze({
         ...config,
@@ -440,7 +416,16 @@ Deno.test("dv/app-management: 每个配置与生命周期只获得声明秘密�
       secretFiles: Object.freeze(["HOOK_FILE"]),
       lifecycleSecretValues: Object.freeze(["HOOK_SECRET"]),
       lifecycleSecretFiles: Object.freeze(["HOOK_FILE"]),
-      management: Object.freeze({ ...base.steps[0].management!, configs }),
+      scripts: Object.freeze([invocation]),
+      deliveryInputs: Object.freeze({
+        scripts: Object.freeze([invocation]),
+        files: Object.freeze([]),
+      }),
+      management: Object.freeze({
+        ...base.steps[0].management!,
+        configs,
+        configScripts: Object.freeze([invocation]),
+      }),
     });
     const plan: ExecutionPlan = Object.freeze({ ...base, steps: Object.freeze([step]) });
     const leaked = `${alpha} ${beta} ${hook} ${fileValue}`;
@@ -455,9 +440,9 @@ Deno.test("dv/app-management: 每个配置与生命周期只获得声明秘密�
     const result = await new DeploymentExecutor(remote.transport, { bindings }).execute(plan);
     assertEquals(result.steps[0].status, StepStatus.SUCCEEDED);
     assertEquals(remote.scopedRequests.map((request) => request.names), [
+      ["HOOK_SECRET", "HOOK_FILE"],
       ["ALPHA_SECRET"],
       ["BETA_SECRET"],
-      ["HOOK_SECRET", "HOOK_FILE"],
     ]);
     assertEquals(new Set(remote.scopedRequests.map((request) => request.path)).size, 3);
     assertEquals(remote.events.filter((event) => event === "cleanup-secrets").length, 3);
@@ -523,8 +508,10 @@ Deno.test("dv/app-management: activate 发布 service unit 并触发 daemon-relo
       management: Object.freeze({
         runAs: "deploy",
         configs: Object.freeze([]),
-        service: Object.freeze({
-          kind: "systemd" as const,
+        configScripts: Object.freeze([]),
+        manager: Object.freeze({
+          kind: "service" as const,
+          tool: "systemctl" as const,
           unit: "demo.service",
           enabled: true,
           daemonReload: true,
@@ -537,7 +524,6 @@ Deno.test("dv/app-management: activate 发布 service unit 并触发 daemon-relo
             args: Object.freeze(["--config", "config/application.ini"]),
           }),
         }),
-        hooks: new Map(),
       }),
       deliveryInputs: Object.freeze({
         scripts: Object.freeze([]),

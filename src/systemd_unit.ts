@@ -4,14 +4,14 @@ import { createHash } from "node:crypto";
 import { basename } from "jsr:@std/path@1.1.6";
 import { PreflightError } from "./errors.ts";
 import type { GeneratedConfigSkeleton } from "./config_generation.ts";
-import type { ManagedConfigFile, SystemdServiceManagement } from "./types.ts";
+import type { AppServiceManagement, ManagedConfigFile } from "./types.ts";
 
 const TEXT_ENCODER = new TextEncoder();
 const MAX_UNIT_BYTES = 64 * 1024;
 
 /** 把 service.unitConfig 归一为现有 managed config 发布事务可消费的候选描述。 */
 export function serviceUnitManagedConfig(
-  service: SystemdServiceManagement,
+  service: AppServiceManagement,
 ): ManagedConfigFile | undefined {
   const unitConfig = service.unitConfig;
   if (unitConfig === undefined) return undefined;
@@ -23,6 +23,7 @@ export function serviceUnitManagedConfig(
     relativePath: `systemd/${service.unit}`,
     source: unitConfig.target,
     target: unitConfig.target,
+    targetRoot: "absolute",
     owner: "root",
     group: "root",
     mode: 0o644,
@@ -35,7 +36,7 @@ export function serviceUnitManagedConfig(
 
 export function generateSystemdUnitSkeleton(
   config: ManagedConfigFile,
-  service: SystemdServiceManagement,
+  service: AppServiceManagement,
   runAs: string,
 ): GeneratedConfigSkeleton {
   const unitConfig = service.unitConfig;
@@ -57,7 +58,7 @@ export function generateSystemdUnitSkeleton(
 }
 
 function renderUnit(
-  service: SystemdServiceManagement,
+  service: AppServiceManagement,
   runAs: string,
 ): string {
   const unitConfig = service.unitConfig!;
@@ -69,9 +70,17 @@ function renderUnit(
     "[Unit]",
     `Description=sfo-deploy managed ${service.unit}`,
     "After=network.target",
+    ...(unitConfig.startLimitIntervalSec === undefined
+      ? []
+      : [`StartLimitIntervalSec=${unitConfig.startLimitIntervalSec}s`]),
+    ...(unitConfig.startLimitBurst === undefined
+      ? []
+      : [`StartLimitBurst=${unitConfig.startLimitBurst}`]),
     "",
     "[Service]",
     "Type=simple",
+    ...(unitConfig.restartPolicy === undefined ? [] : [`Restart=${unitConfig.restartPolicy}`]),
+    ...(unitConfig.restartSec === undefined ? [] : [`RestartSec=${unitConfig.restartSec}s`]),
     `User=${runAs}`,
     `WorkingDirectory=${quoteUnitPath(unitConfig.workingDirectory, "working_directory")}`,
     `ExecStart=${[command, ...args].join(" ")}`,

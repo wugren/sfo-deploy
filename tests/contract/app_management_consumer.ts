@@ -1,5 +1,6 @@
 import {
   type AppManagementDefinition,
+  type AppServiceManagement,
   buildDeploymentBundle,
   buildPlan,
   type BuiltDeploymentBundle,
@@ -16,7 +17,6 @@ import {
   restoreSystemd,
   type StagedDeploymentBundle,
   stageDeploymentBundle,
-  type SystemdServiceManagement,
   type SystemdUnitConfig,
 } from "../../src/mod.ts";
 
@@ -37,7 +37,7 @@ export type PublicManagedTypes = {
   readonly deployment: DeploymentDefinition;
   readonly management: AppManagementDefinition;
   readonly config: ManagedConfigFile;
-  readonly service: SystemdServiceManagement;
+  readonly manager: AppServiceManagement;
   readonly fileFormat: ManagedFileFormat;
   readonly unitConfig: SystemdUnitConfig;
   readonly bundle: BuiltDeploymentBundle;

@@ -1,0 +1,21 @@
+schema_version: 1
+name: backend
+install_directory: /home/deploy/apps/backend
+deployment:
+  kind: versioned
+management:
+  run_as: deploy
+  kind: service
+  name: backend.service
+  tool: auto
+  enabled: true
+  daemon_reload: true
+  on_deploy: restart
+  unit_config:
+    working_directory: latest
+    command: bin/server
+    args: []
+    restart_policy: on-failure
+    restart_sec: 5
+    start_limit_interval_sec: 30
+    start_limit_burst: 5

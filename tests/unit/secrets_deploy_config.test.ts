@@ -81,8 +81,8 @@ Deno.test("unit/secrets config: app.yaml top-level secret declarations are rejec
     await Deno.writeTextFile(
       appYaml,
       (await Deno.readTextFile(appYaml)).replace(
-        "scripts:\n",
-        "secret_values: [DB_PASSWORD]\nscripts:\n",
+        "management:\n",
+        "secret_values: [DB_PASSWORD]\nmanagement:\n",
       ),
     );
     const error = await assertRejects(
@@ -140,13 +140,10 @@ Deno.test("unit/secrets planning: steps carry only their declared secret subset"
     );
     const cluster = await loadCluster(directory);
     const plan = buildPlan(cluster, "deploy", { machines: ["node-a"] });
-    const configure = plan.steps.find((step) =>
-      step.kind === "app" && step.action === "configure"
-    )!;
-    const deploy = plan.steps.find((step) => step.kind === "app" && step.action === "deploy")!;
-    assertEquals(configure.secretValues, ["DB_PASSWORD"]);
-    assertEquals(configure.secretFiles, ["TLS_KEY"]);
-    assertEquals(deploy.secretValues, ["DB_PASSWORD"]);
-    assertEquals(deploy.secretFiles, ["TLS_KEY"]);
+    for (const action of ["stage", "activate"] as const) {
+      const step = plan.steps.find((item) => item.kind === "app" && item.action === action)!;
+      assertEquals(step.secretValues, ["DB_PASSWORD"]);
+      assertEquals(step.secretFiles, ["TLS_KEY"]);
+    }
   });
 });

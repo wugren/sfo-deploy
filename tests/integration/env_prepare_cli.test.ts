@@ -29,6 +29,77 @@ class IntegrationSession implements RemoteSession {
   readonly environmentVersions = new Map<string, string | undefined>();
   closed = false;
 
+  acquireOperationLock(request: { readonly app: string; readonly target: string }): Promise<{
+    readonly id: string;
+    readonly app: string;
+    readonly target: string;
+  }> {
+    return Promise.resolve(Object.freeze({
+      id: "integration-lease",
+      app: request.app,
+      target: request.target,
+    }));
+  }
+
+  releaseOperationLock(): Promise<void> {
+    return Promise.resolve();
+  }
+
+  validateManagedIdentity(runAs: string): Promise<{
+    readonly runAs: string;
+    readonly uid: number;
+    readonly sshUid: number;
+    readonly requiresSudo: boolean;
+  }> {
+    return Promise.resolve(Object.freeze({
+      runAs,
+      uid: 1000,
+      sshUid: 1000,
+      requiresSudo: false,
+    }));
+  }
+
+  createScopedSecretCopy(
+    request: {
+      readonly workspace: string;
+      readonly sourceDirectory: string;
+      readonly names: readonly string[];
+      readonly runAs: string;
+    },
+  ): Promise<{ readonly workspace: string; readonly path: string; readonly runAs: string }> {
+    return Promise.resolve(Object.freeze({
+      workspace: request.workspace,
+      path: `${request.workspace}/consumer-secrets-integration`,
+      runAs: request.runAs,
+    }));
+  }
+
+  cleanupScopedSecretCopy(): Promise<void> {
+    return Promise.resolve();
+  }
+
+  extractAppPackage(
+    request: {
+      readonly workspace: string;
+      readonly packagePath: string;
+      readonly runAs: string;
+    },
+  ): Promise<{
+    readonly workspace: string;
+    readonly root: string;
+    readonly packagePath: string;
+    readonly memberCount: number;
+    readonly expandedBytes: number;
+  }> {
+    return Promise.resolve(Object.freeze({
+      workspace: request.workspace,
+      root: `${request.workspace}/app-package`,
+      packagePath: request.packagePath,
+      memberCount: 1,
+      expandedBytes: 0,
+    }));
+  }
+
   createWorkspace(): Promise<string> {
     return Promise.resolve("/tmp/sfo-deploy-integration");
   }
@@ -62,7 +133,28 @@ class IntegrationSession implements RemoteSession {
   uploadFile(): Promise<void> {
     return Promise.resolve();
   }
-  run(_argv: readonly string[], _options?: RemoteRunOptions): Promise<CommandResult> {
+  run(argv: readonly string[], _options?: RemoteRunOptions): Promise<CommandResult> {
+    if (argv[0] === "/usr/bin/test") {
+      const [flag, path] = argv.slice(1);
+      if (flag === "-L") return Promise.resolve(commandResult(1));
+      if (flag === "-d" && (path === "/srv/demo" || path === "/srv/demo/1.0.0")) {
+        return Promise.resolve(commandResult(0));
+      }
+      if (
+        flag === "-e" &&
+        (path === "/srv/demo/.demo.version" || path === "/srv/demo/latest")
+      ) {
+        return Promise.resolve(commandResult(1));
+      }
+      return Promise.resolve(commandResult(0));
+    }
+    if (
+      argv[0] === "/usr/bin/cat" &&
+      argv[1] === "--" &&
+      argv[2] === "/srv/demo/1.0.0/VERSION"
+    ) {
+      return Promise.resolve(commandResult(0, "1.0.0\n"));
+    }
     return Promise.resolve(commandResult(0));
   }
   deploySecrets(): Promise<readonly DeploySecretResult[]> {
@@ -233,11 +325,29 @@ Deno.test("integration/lifecycle: start executes inside a completed release atte
     const appDefinition = join(directory, "apps", "demo", "app.yaml");
     await Deno.writeTextFile(
       appDefinition,
-      (await Deno.readTextFile(appDefinition)).replace(
-        "  deploy:",
-        "  start: [{path: scripts/action.ts, permissions: {run: [], net: []}}]\n  deploy:",
-      ),
+      `schema_version: 1
+name: demo
+install_directory: /srv/demo
+depends_on: [base]
+configs:
+  - kind: file
+    source: templates/application.json
+    target: /etc/demo/application.json
+    format: json
+management:
+  run_as: deploy
+  kind: script
+  start: {path: scripts/start.ts, permissions: {run: [], net: []}}
+  stop: {path: scripts/stop.ts, permissions: {run: [], net: []}}
+  restart: {path: scripts/restart.ts, permissions: {run: [], net: []}}
+`,
     );
+    for (const name of ["start", "stop", "restart"]) {
+      await Deno.writeTextFile(
+        join(directory, "apps", "demo", "scripts", `${name}.ts`),
+        "Deno.exit(0);\n",
+      );
+    }
     const result = await run(
       {
         configRoot: root,
@@ -280,18 +390,28 @@ apps:
     );
     await Deno.writeTextFile(
       join(directory, "apps", "demo", "app.yaml"),
-      `schema_version: 2
+      `schema_version: 1
 name: demo
 install_directory: /srv/demo
 depends_on: []
-scripts:
-  configure: [{path: scripts/action.ts, permissions: {run: [], net: []}}]
-  deploy: [{path: scripts/action.ts, permissions: {run: [], net: []}}]
-  start: [{path: scripts/action.ts, permissions: {run: [], net: []}}]
-  stop: [{path: scripts/action.ts, permissions: {run: [], net: []}}]
-  restart: [{path: scripts/action.ts, permissions: {run: [], net: []}}]
+configs:
+  - kind: script
+    path: scripts/configure.ts
+    permissions: {run: [], net: []}
+management:
+  run_as: deploy
+  kind: script
+  start: {path: scripts/start.ts, permissions: {run: [], net: []}}
+  stop: {path: scripts/stop.ts, permissions: {run: [], net: []}}
+  restart: {path: scripts/restart.ts, permissions: {run: [], net: []}}
 `,
     );
+    for (const name of ["configure", "start", "stop", "restart"]) {
+      await Deno.writeTextFile(
+        join(directory, "apps", "demo", "scripts", `${name}.ts`),
+        "Deno.exit(0);\n",
+      );
+    }
     const transport = new IntegrationTransport();
     const fixtureProvider: DownloadProvider & ReleaseSourceCodec = {
       releaseSourceSchema: "fixture.v1",

@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "stages": {
+    "acceptance": {
+      "inputs": {
+        "docs/versions/v0.1/modules/sfo-deploy/071-declarative-environment-install/acceptance-report.md": "9ffe382d31012eed1f390f0c59c197701ebf4f862cad0180acb4121bec54b96c"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "b3e0340fdff302671c4182cfbb939f43b153e231759d185f20e447d57c4f8771"
+    },
+    "design": {
+      "inputs": {
+        "docs/versions/v0.1/modules/sfo-deploy/071-declarative-environment-install/design.md": "1f9c185accc62ec6262eed24f63c1506b9872b55b10edd35a7a5e7f5b9d82388",
+        "docs/versions/v0.1/modules/sfo-deploy/071-declarative-environment-install/risk-profile.yaml": "36c2787596503db83da9959b95b829279e4353b3bbb3416c32b23920e0bda123"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "b3e0340fdff302671c4182cfbb939f43b153e231759d185f20e447d57c4f8771"
+    },
+    "implementation": {
+      "inputs": {},
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "b3e0340fdff302671c4182cfbb939f43b153e231759d185f20e447d57c4f8771"
+    },
+    "proposal": {
+      "inputs": {
+        "docs/versions/v0.1/modules/sfo-deploy/071-declarative-environment-install/proposal.md": "e8d9a1977cc3282cc616dba06e8bc0516525f68db333e45d7c1d839f87990a3c"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "b3e0340fdff302671c4182cfbb939f43b153e231759d185f20e447d57c4f8771"
+    },
+    "testing": {
+      "inputs": {
+        "docs/versions/v0.1/modules/sfo-deploy/071-declarative-environment-install/testing.md": "97fd454f192755f2c0668d72e11228ae661dc69b7088034a8052b41e14e6d67f",
+        "docs/versions/v0.1/modules/sfo-deploy/071-declarative-environment-install/testplan.yaml": "aff1d8473114bdce5df1a2f02bec0d36e4da9202a09841d0010d9784b17b6129"
+      },
+      "status": "complete",
+      "task_binding_schema": 2,
+      "task_binding_sha256": "b3e0340fdff302671c4182cfbb939f43b153e231759d185f20e447d57c4f8771",
+      "test_run": ".harness/test-results/test-runs/20260909T074510Z-sfo-deploy+071-declarative-environment-install-all.json",
+      "test_run_sha256": "a8f3ed1913fbc9d8e5e5df24acc8c65a7ebeea2e0da00f265176794ed8fab970"
+    }
+  },
+  "task_manifest": "task.yaml"
+}

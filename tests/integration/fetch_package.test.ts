@@ -130,14 +130,14 @@ Deno.test("integration/fetch: packageless apps are skipped without requiring pac
   await withTempDir(async (root) => {
     const cluster = await writeCluster(root);
     await fixAppHash(cluster);
-    await Deno.mkdir(join(cluster, "apps", "config", "scripts"), { recursive: true });
+    await Deno.mkdir(join(cluster, "apps", "config", "templates"), { recursive: true });
     await Deno.writeTextFile(
-      join(cluster, "apps", "config", "scripts", "action.ts"),
-      "Deno.exit(0);\n",
+      join(cluster, "apps", "config", "templates", "settings.json"),
+      "{}\n",
     );
     await Deno.writeTextFile(
       join(cluster, "apps", "config", "app.yaml"),
-      "schema_version: 2\nname: config\npackageless: true\nscripts:\n  check: [{path: scripts/action.ts, permissions: {run: [], net: []}}]\n  configure: [{path: scripts/action.ts, permissions: {run: [], net: []}}]\n",
+      "schema_version: 1\nname: config\npackageless: true\nconfigs:\n  - kind: file\n    source: templates/settings.json\n    target: /etc/config/settings.json\n    format: json\nmanagement:\n  run_as: deploy\n  kind: service\n  name: config.service\n  tool: systemctl\n",
     );
     await Deno.writeTextFile(
       join(cluster, "cluster.yaml"),

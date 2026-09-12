@@ -1,5 +1,6 @@
 import { join } from "jsr:@std/path@1.1.6";
 import {
+  assert,
   assertEquals,
   assertRejects,
   assertStringIncludes,
@@ -90,6 +91,8 @@ Deno.test("unit/history: new writes use v4 and v1/v2/v3 snapshots remain readabl
       delete step.management;
       delete step.deployment;
       delete step.delivery_inputs;
+      delete step.environment_install;
+      delete step.environment_manager;
       delete step.run_as;
       delete step.lifecycle_secret_values;
       delete step.lifecycle_secret_files;
@@ -228,14 +231,15 @@ Deno.test("unit/history: v4 codec round-trips install_directory and delivery inp
               management: Object.freeze({
                 runAs: "deploy",
                 configs: Object.freeze([]),
-                service: Object.freeze({
-                  kind: "systemd" as const,
+                configScripts: Object.freeze([]),
+                manager: Object.freeze({
+                  kind: "service" as const,
+                  tool: "systemctl" as const,
                   unit: "demo.service",
                   daemonReload: false,
                   onDeploy: "restart" as const,
                   timeoutMs: 30_000,
                 }),
-                hooks: new Map(),
               }),
             }
             : {}),
@@ -313,7 +317,8 @@ Deno.test("unit/history: v4 codec round-trips secret placeholder references", as
                     name: "custom",
                     relativePath: "custom.conf",
                     source: template,
-                    target: "/etc/demo/custom.conf",
+                    target: "/srv/demo/latest/resources/application.json",
+                    targetRoot: "current",
                     owner: undefined,
                     group: undefined,
                     mode: 0o600,
@@ -331,8 +336,8 @@ Deno.test("unit/history: v4 codec round-trips secret placeholder references", as
                     onChange: "restart" as const,
                   }),
                 ]),
-                service: undefined,
-                hooks: new Map(),
+                configScripts: Object.freeze([]),
+                manager: undefined,
               }),
             }
             : {}),
@@ -361,6 +366,13 @@ Deno.test("unit/history: v4 codec round-trips secret placeholder references", as
       value_type: "string",
     }]);
     const decoded = await __internal.decodePlan(current, snapshot, cluster, importer);
+    const encodedConfig = current.steps.find((step: { action: string }) => step.action === "deploy")
+      .management.configs[0];
+    assertEquals(encodedConfig.target_root, "current");
+    assertEquals(
+      decoded.steps.find((step) => step.action === "deploy")?.management?.configs[0]?.targetRoot,
+      "current",
+    );
     const config = decoded.steps.find((step) => step.action === "deploy")?.management?.configs[0];
     assertEquals(config?.format, "json");
     assertEquals([...config!.secretReferences.entries()], [[
@@ -392,8 +404,10 @@ Deno.test("unit/history: v4 codec round-trips service unit config", async () => 
               management: Object.freeze({
                 runAs: "deploy",
                 configs: Object.freeze([]),
-                service: Object.freeze({
-                  kind: "systemd" as const,
+                configScripts: Object.freeze([]),
+                manager: Object.freeze({
+                  kind: "service" as const,
+                  tool: "systemctl" as const,
                   unit: "demo.service",
                   daemonReload: true,
                   onDeploy: "restart" as const,
@@ -403,9 +417,12 @@ Deno.test("unit/history: v4 codec round-trips service unit config", async () => 
                     workingDirectory: "/srv/demo/current",
                     command: "/srv/demo/current/bin/server",
                     args: Object.freeze(["--config", "config/application.ini"]),
+                    restartPolicy: "on-failure" as const,
+                    restartSec: 5,
+                    startLimitIntervalSec: 30,
+                    startLimitBurst: 5,
                   }),
                 }),
-                hooks: new Map(),
               }),
             }
             : {}),
@@ -425,22 +442,125 @@ Deno.test("unit/history: v4 codec round-trips service unit config", async () => 
     const snapshot = join(store.root, pending.releaseId, "snapshot");
     const current = JSON.parse(await Deno.readTextFile(join(snapshot, "actual-plan.json")));
     const encoded = current.steps.find((step: { action: string }) => step.action === "deploy")
-      .management.service.unit_config;
+      .management.manager.unit_config;
     assertEquals(encoded, {
       target: "/etc/systemd/system/demo.service",
       working_directory: "/srv/demo/current",
       command: "/srv/demo/current/bin/server",
       args: ["--config", "config/application.ini"],
+      restart_policy: "on-failure",
+      restart_sec: 5,
+      start_limit_interval_sec: 30,
+      start_limit_burst: 5,
     });
     const decoded = await __internal.decodePlan(current, snapshot, cluster, importer);
+    const service = decoded.steps.find((step) => step.action === "deploy")?.management?.manager;
+    assert(service?.kind === "service");
+    assertEquals(service.unitConfig, {
+      target: "/etc/systemd/system/demo.service",
+      workingDirectory: "/srv/demo/current",
+      command: "/srv/demo/current/bin/server",
+      args: ["--config", "config/application.ini"],
+      restartPolicy: "on-failure",
+      restartSec: 5,
+      startLimitIntervalSec: 30,
+      startLimitBurst: 5,
+    });
+    const legacy = JSON.parse(JSON.stringify(current));
+    const deployStep = legacy.steps.find((step: { action: string }) => step.action === "deploy");
+    for (
+      const key of [
+        "restart_policy",
+        "restart_sec",
+        "start_limit_interval_sec",
+        "start_limit_burst",
+      ]
+    ) delete deployStep.management.manager.unit_config[key];
+    const legacyDecoded = await __internal.decodePlan(legacy, snapshot, cluster, importer);
+    const legacyService = legacyDecoded.steps.find((step) => step.action === "deploy")
+      ?.management?.manager;
+    assert(legacyService?.kind === "service");
+    assertEquals(legacyService.unitConfig?.restartPolicy, undefined);
+    assertEquals(legacyService.unitConfig?.restartSec, undefined);
+    assertEquals(legacyService.unitConfig?.startLimitIntervalSec, undefined);
+    assertEquals(legacyService.unitConfig?.startLimitBurst, undefined);
+  });
+});
+
+Deno.test("unit/history: v4 codec round-trips nginx raw config format", async () => {
+  await withTempDir(async (root) => {
+    const cluster = join(root, "demo");
+    await Deno.mkdir(cluster);
+    const source = join(cluster, "action.ts");
+    const template = join(cluster, "jx-web.conf");
+    await Deno.writeTextFile(source, "Deno.exit(0);\n");
+    await Deno.writeTextFile(template, "server { listen 80; }\n");
+    const base = makePlan(["node-a"]);
+    const plan: ExecutionPlan = Object.freeze({
+      ...base,
+      steps: Object.freeze(base.steps.map((step) =>
+        Object.freeze({
+          ...step,
+          scripts: Object.freeze(step.scripts.map((item) => Object.freeze({ ...item, source }))),
+          deliveryInputs: Object.freeze({
+            scripts: Object.freeze(
+              step.scripts.map((item) => Object.freeze({ ...item, source })),
+            ),
+            files: Object.freeze([]),
+          }),
+          ...(step.action === "deploy"
+            ? {
+              runAs: "deploy",
+              secretValues: Object.freeze([]),
+              secretFiles: Object.freeze([]),
+              lifecycleSecretValues: Object.freeze([]),
+              lifecycleSecretFiles: Object.freeze([]),
+              management: Object.freeze({
+                runAs: "deploy",
+                configs: Object.freeze([
+                  Object.freeze({
+                    name: "jx-web",
+                    relativePath: "jx-web.conf",
+                    source: template,
+                    target: "/etc/nginx/conf.d/jx-web.conf",
+                    targetRoot: "absolute",
+                    owner: undefined,
+                    group: undefined,
+                    mode: 0o644,
+                    variables: Object.freeze([]),
+                    format: "nginx" as const,
+                    secretReferences: Object.freeze(new Map()),
+                    validator: undefined,
+                    onChange: "reload" as const,
+                  }),
+                ]),
+                configScripts: Object.freeze([]),
+                manager: undefined,
+              }),
+            }
+            : {}),
+        })
+      )),
+    });
+    const store = new ReleaseStore(cluster, {
+      sourceExporter: exporter,
+      sourceImporter: importer,
+    });
+    const pending = await store.beginAttempt({
+      operation: "deploy",
+      selection: new ReleaseSelection(),
+    });
+    await pending.archivePlans(plan);
+    await pending.closeIncomplete();
+    const snapshot = join(store.root, pending.releaseId, "snapshot");
+    const encoded = JSON.parse(await Deno.readTextFile(join(snapshot, "actual-plan.json")));
+    const config = encoded.steps.find((step: { action: string }) => step.action === "deploy")
+      .management.configs[0];
+    assertEquals(config.format, "nginx");
+    const decoded = await __internal.decodePlan(encoded, snapshot, cluster, importer);
     assertEquals(
-      decoded.steps.find((step) => step.action === "deploy")?.management?.service?.unitConfig,
-      {
-        target: "/etc/systemd/system/demo.service",
-        workingDirectory: "/srv/demo/current",
-        command: "/srv/demo/current/bin/server",
-        args: ["--config", "config/application.ini"],
-      },
+      decoded.steps.find((step) => step.action === "deploy")?.management?.configs[0]?.format,
+      "nginx",
     );
   });
 });

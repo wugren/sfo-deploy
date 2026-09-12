@@ -1,22 +1,22 @@
 # Testing Document Rules
 
-This rule is part of the high-risk workflow. Trivial and standard tasks run proportionate targeted verification without creating Harness testing documents or `testplan.yaml` by default.
+This rule is part of the high-risk workflow. Standard tasks run proportionate targeted verification without creating Harness testing documents or `testplan.yaml` by default.
 
 ## Goal
-- Define optional persistent testing artifacts and post-implementation testing responsibilities.
+- Define persistent testing artifacts and post-implementation testing responsibilities.
 
 ## Scope
 - `docs/versions/<version>/modules/<project>/<task-seq>-<task-slug>/testing.md`, `testing/`, and `testplan.yaml`.
 - Cross-project testing artifacts under `docs/versions/<version>/modules/globals/<task-seq>-<task-slug>/`.
 
-## Metadata For Optional Testing Documents
+## Metadata For Testing Documents
 - `task_manifest: task.yaml`
 - `status`
 - Do not repeat `module`, `version`, `task_name`, or `submodule`; canonical identity comes from `task.yaml`.
 
 ## Required Content
 - Reference `Risk profile: ./risk-profile.yaml`; implement the applicable profile's `required_checks` through task test metadata/evidence, and do not copy a Trigger Matrix into testing artifacts.
-- Test cases designed after implementation from proposal, design, and delivered code.
+- Test cases reviewed, refined, and completed after implementation from proposal, design, and delivered code, following [Proposal Test Handoff](test-design-rules.md#proposal-test-handoff) when the proposal already contains a test solution.
 - Submodule, module, external interface, and direct `change_id` coverage.
 - Validation rationale tied to concrete behaviors, risks, and success criteria.
 - Case-type coverage for normal, boundary, negative, error, compatibility, lifecycle, and cross-module cases, including the implementing test level.
@@ -30,8 +30,8 @@ This rule is part of the high-risk workflow. Trivial and standard tasks run prop
 ## Guardrails
 - Testing operationalizes approved proposal/design intent against delivered implementation.
 - When the task contains GitHub issue information, design and prioritize tests around the issue-described behavior, boundaries, and acceptance conditions. Process-document coverage is secondary and cannot substitute for evidence that the issue outcome works.
-- Optional testing docs use the approval authority in `harness/rules/task-entry-gate-rules.md` and metadata schema in `harness/rules/schema-validation-rules.md`.
-- Testing runs after implementation and MUST inspect proposal, design, and delivered code before designing cases.
+- Testing docs use the approval authority in `harness/rules/task-entry-gate-rules.md` and metadata schema in `harness/rules/schema-validation-rules.md`.
+- Testing runs after implementation and MUST inspect proposal, design, and delivered code before reviewing, refining, or designing cases.
 - Case depth, design-element derivation, lowest-level placement, test-file placement, and design-return conditions are owned by `harness/rules/test-design-rules.md`.
 - Baseline capture is project-local generated state. `.harness/` MUST be git-ignored, and testing tasks MUST NOT use `GIT_INDEX_FILE`, `git read-tree`, `git write-tree`, or `git commit-tree` to create synthetic Git baseline objects.
 - Human-authored testing docs MUST stay under 1000 lines, splitting by submodule, responsibility, validation layer, or interface boundary when needed.
@@ -47,7 +47,8 @@ This rule is part of the high-risk workflow. Trivial and standard tasks run prop
 - Upstream design or implementation problems route to the owning stage instead of silently widening testing scope.
 - Downstream acceptance follow-up is recorded unless cross-stage synchronization is explicitly requested.
 - Before completion, run:
-  - manual flow: the unified completion profile validates optional `testing.md` when it exists
-  - auto-pipeline: do not run `doc-structure-check.py --docs testing`, because `testing.md` / `testing/` are forbidden; validate pipeline testing evidence and `testplan.yaml` through `testing-coverage-check.py`
+  - task flow: the unified completion profile validates optional `testing.md` when it exists
   - `UV_CACHE_DIR=.harness/uv-cache uv run --active python ./harness/scripts/harness-check.py --task <packet>/task.yaml --profile completion`
 - Use `testing-coverage-check.py --allow-missing-testplan` only with a recorded repo-local versioned exception.
+
+Proposal confirmation authorizes downstream execution under `harness/rules/task-execution-rules.md`. Design/testing documents become approved after their stage checks pass; no intermediate user approval is required.

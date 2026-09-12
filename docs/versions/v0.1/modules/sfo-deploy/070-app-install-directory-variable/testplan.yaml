@@ -1,0 +1,72 @@
+schema_version: 1
+task_manifest: task.yaml
+risk_profile: risk-profile.yaml
+api_impact:
+  public_api: backward-compatible
+  crate_root_export_change: false
+  build_surface_change: false
+  documentation_examples_affected: true
+evidence_inputs: ["src", "tests", "docs/guides", "docs/modules/sfo-deploy.md", "README.md", "examples/eleph-server-multipass", "skills/sfo-deploy-cluster"]
+contract_checks:
+  mode: enabled
+  steps:
+    - id: C1
+      kind: repository-compile-closure
+      assertion: repository-consumers-compile
+      name: 仓库类型闭包
+      change_ids: ["CHG-install-directory-variable"]
+      run: ["deno", "task", "check"]
+    - id: C2
+      kind: documentation-examples
+      assertion: documentation-examples-compile
+      name: 配置文档契约
+      change_ids: ["CHG-install-directory-variable"]
+      run: ["deno", "run", "--frozen", "--allow-read", "tests/contract/verify_app_management_contract.ts"]
+defaults:
+  workdir: .
+  timeout_sec: 600
+  env: {}
+manual_gaps: []
+levels:
+  unit:
+    mode: enabled
+    summary: 覆盖变量展开、兼容、路径边界和缺声明失败关闭
+    test_targets: ["tests/unit/app_management_config.test.ts"]
+    preconditions:
+      tools: ["deno>=2"]
+      env: []
+      services: []
+      notes: ["只使用本地临时目录。"]
+    steps:
+      - id: U1
+        name: managed target 变量装载
+        change_ids: ["CHG-install-directory-variable"]
+        run: ["deno", "test", "--allow-read", "--allow-write", "--allow-env", "--allow-net", "--allow-run", "tests/unit/app_management_config.test.ts"]
+  dv:
+    mode: enabled
+    summary: 覆盖 latest 选择器到候选版本的部署和 configure 语义
+    test_targets: ["tests/dv/versioned_deploy_order.test.ts"]
+    preconditions:
+      tools: ["deno>=2"]
+      env: []
+      services: []
+      notes: ["使用本地临时目录和记录型传输，不执行远端部署。"]
+    steps:
+      - id: D1
+        name: 版本部署路径与顺序
+        change_ids: ["CHG-install-directory-variable"]
+        run: ["deno", "test", "--allow-read", "--allow-write", "--allow-env", "--allow-net", "--allow-run", "tests/dv/versioned_deploy_order.test.ts"]
+  integration:
+    mode: enabled
+    summary: 覆盖发布根边界和 managed 配置事务恢复
+    test_targets: ["tests/integration/versioned_transport_boundary.test.ts", "tests/integration/managed_transport_security.test.ts"]
+    preconditions:
+      tools: ["deno>=2"]
+      env: []
+      services: []
+      notes: ["使用本地临时目录和伪远端会话，不执行真实 SSH。"]
+    steps:
+      - id: I1
+        name: 版本配置边界与事务
+        change_ids: ["CHG-install-directory-variable"]
+        run: ["deno", "test", "--allow-read", "--allow-write", "--allow-env", "--allow-net", "--allow-run", "tests/integration/versioned_transport_boundary.test.ts", "tests/integration/managed_transport_security.test.ts"]

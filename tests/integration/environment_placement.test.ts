@@ -99,10 +99,10 @@ Deno.test("dv/environment placement: machine, App and Environment filters preser
     const cluster = await multiMachineCluster(root);
     const directed = buildPlan(cluster, { action: "deploy", apps: ["web"] });
     assertEquals(directed.steps.map((step) => step.id), [
-      "app:node-a/web:configure",
-      "app:node-a/web:deploy",
-      "app:node-b/web:configure",
-      "app:node-b/web:deploy",
+      "app:node-a/web:stage",
+      "app:node-b/web:stage",
+      "app:node-a/web:activate",
+      "app:node-b/web:activate",
     ]);
     const withDependencies = buildPlan(cluster, {
       action: "configure",
@@ -233,15 +233,13 @@ Deno.test("integration/environment placement: multipass template is a runnable v
       action: "prepare",
     });
     assertEquals(plan.steps.map((step) => step.id), [
-      "env:eleph-server/jre:check",
       "env:eleph-server/jre:install",
-      "env:eleph-server/mysql:check",
       "env:eleph-server/mysql:install",
       "env:eleph-server/mysql:start",
       "env:eleph-server/mysql:restart",
-      "env:eleph-server/nginx:check",
       "env:eleph-server/nginx:install",
-      "env:eleph-server/redis:check",
+      "env:eleph-server/nginx:start",
+      "env:eleph-server/nginx:restart",
       "env:eleph-server/redis:install",
       "env:eleph-server/redis:start",
       "env:eleph-server/redis:restart",
@@ -295,8 +293,8 @@ Deno.test("integration/environment placement: archived rollback plan does not re
     const rollback = await store.loadRollbackPlan(record.releaseId);
     assertEquals(rollback.requestedAction, "rollback");
     assertEquals(rollback.steps.map((step) => step.id), [
-      "app:node-a/demo:configure",
-      "app:node-a/demo:deploy",
+      "app:node-a/demo:stage",
+      "app:node-a/demo:activate",
     ]);
     for (const step of rollback.steps) {
       for (const script of step.scripts) {

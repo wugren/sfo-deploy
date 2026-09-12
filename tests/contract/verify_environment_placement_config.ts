@@ -113,22 +113,32 @@ async function documentationExamples(): Promise<void> {
   const shellPrepare = await Deno.readTextFile(
     join(root, "examples", "eleph-server-multipass", "prepare-multipass.sh"),
   );
+  check(
+    !shellPrepare.includes("cluster-template"),
+    "prepare-multipass.sh must not reference the cluster template",
+  );
   assertOrderedFragments(shellPrepare, "prepare-multipass.sh", [
-    'validate_template_tree "$template_root"',
-    'cp -R "$template_root/." "$stage_cluster/"',
-    'validate_template_tree "$stage_cluster"',
-    'deno run --quiet --allow-read "$script_dir/../../src/cli.ts" validate',
-    'publish_cluster_atomically "$stage_cluster" "$cluster_root"',
+    'die "Existing Multipass cluster state is required; prepare no longer builds it',
+    'multipass delete --purge "$instance_name"',
+    'multipass launch "$ubuntu_image"',
+    'scan_host_keys "$address" "$stage_root/known_hosts"',
+    'deno run --quiet --allow-read --allow-env=HOME,USERPROFILE "$script_dir/../../src/cli.ts" validate',
+    'update_hosts_entry "$address"',
   ]);
   const powerShellPrepare = await Deno.readTextFile(
     join(root, "examples", "eleph-server-multipass", "prepare-multipass.ps1"),
   );
+  check(
+    !powerShellPrepare.includes("cluster-template"),
+    "prepare-multipass.ps1 must not reference the cluster template",
+  );
   assertOrderedFragments(powerShellPrepare, "prepare-multipass.ps1", [
-    "Assert-CleanClusterTemplate -Root $templateRoot",
-    "Copy-Item -LiteralPath $templateRoot -Destination $stageCluster -Recurse",
-    "Assert-CleanClusterTemplate -Root $stageCluster",
-    "& deno run --quiet --allow-read $frameworkCli validate",
-    "Publish-ClusterAtomically -Staged $stageCluster -Destination $clusterRoot",
+    'throw "Existing Multipass cluster state is required; prepare no longer builds it',
+    "& multipass delete --purge $InstanceName",
+    "& multipass launch $UbuntuImage",
+    "Scan-HostKeys -Address $address",
+    "& deno run --quiet --allow-read --allow-env=HOME,USERPROFILE $frameworkCli validate",
+    "Set-HostsEntry -Address $address",
   ]);
 
   const documents = [

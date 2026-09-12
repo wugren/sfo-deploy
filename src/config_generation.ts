@@ -57,6 +57,9 @@ export function parseManagedStructured(
   name: string,
 ): unknown {
   try {
+    if (format === "nginx") {
+      throw new PreflightError(`配置 ${name} 不支持结构化解析 format: nginx`);
+    }
     if (format === "yaml") return requireContainer(parseYaml(text, { allowDuplicateKeys: false }));
     if (format === "json") {
       rejectDuplicateJsonKeys(text);
@@ -68,6 +71,17 @@ export function parseManagedStructured(
   } catch (cause) {
     if (cause instanceof PreflightError) throw cause;
     throw new PreflightError(`无法解析 ${format.toUpperCase()} 配置 ${name}`, { cause });
+  }
+}
+
+/** Nginx 原生配置只做文本安全边界检查，不做 DSL 解析。 */
+export function validateManagedPlainText(text: string, name: string): void {
+  if (text.includes(RESERVED_MARKER_PREFIX)) {
+    throw new PreflightError(`配置 ${name} 源文件包含框架保留占位符`);
+  }
+  const invalid = SECRET_PLACEHOLDER_CANDIDATE_RE.exec(text);
+  if (invalid !== null) {
+    throw new PreflightError(`配置 ${name} 不支持占位符: \${${invalid?.[1] ?? ""}}`);
   }
 }
 
@@ -126,6 +140,28 @@ export async function generateConfigSkeleton(
   }
   if (text.includes(SECRET_MARKER_PREFIX)) {
     throw new PreflightError(`配置 ${config.name} 源文件包含框架保留占位符`);
+  }
+
+  if (format === "nginx") {
+    if (config.variables.length > 0) {
+      throw new PreflightError(`配置 ${config.name} 的 format: nginx 不支持 variables`);
+    }
+    if (config.secretReferences.size > 0) {
+      throw new PreflightError(`配置 ${config.name} 的 format: nginx 不支持秘密占位符`);
+    }
+    validateManagedPlainText(text, config.name);
+    const plainContent = TEXT_ENCODER.encode(text);
+    if (plainContent.byteLength > MAX_CONFIG_BYTES) {
+      throw new PreflightError(`配置 ${config.name} 骨架超过 ${MAX_CONFIG_BYTES} 字节限制`);
+    }
+    return Object.freeze({
+      name: config.name,
+      format: config.format,
+      content: plainContent,
+      size: plainContent.byteLength,
+      sha256: sha256Bytes(plainContent),
+      secretBindings: Object.freeze([]),
+    });
   }
 
   const parsed = parseManagedStructured(format, text, config.name);

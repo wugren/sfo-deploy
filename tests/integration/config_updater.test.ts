@@ -23,6 +23,7 @@ function definition(
     relativePath: `config.${format}`,
     source,
     target: `/etc/demo/config.${format}`,
+    targetRoot: "absolute",
     mode: 0o600,
     variables: Object.freeze([]),
     format,
@@ -40,6 +41,7 @@ const sources: Readonly<Record<ManagedConfigFormat, string>> = Object.freeze({
   json: '{"database":{"password":"${PASSWORD}"}}\n',
   toml: '[database]\npassword = "${PASSWORD}"\n',
   ini: "[database]\npassword=${PASSWORD}\n",
+  nginx: "server {\n  listen 80;\n}\n",
 });
 
 function bindingDocument(skeleton: Awaited<ReturnType<typeof generateConfigSkeleton>>) {
@@ -165,6 +167,42 @@ Deno.test("integration/config-updater: 类型、缺失秘密、无效候选和�
   });
 });
 
+Deno.test("integration/config-updater: nginx config passes through without bindings", async () => {
+  await withTempDir(async (root) => {
+    const source = join(root, "jx-web.conf");
+    const input = join(root, "input.conf");
+    const bindings = join(root, "bindings.json");
+    const output = join(root, "output.conf");
+    const nginx = "server {\n  charset utf-8;\n}\n";
+    await Deno.writeTextFile(source, nginx);
+    const skeleton = await generateConfigSkeleton({
+      name: "jx-web",
+      relativePath: "jx-web.conf",
+      source,
+      target: "/etc/nginx/conf.d/jx-web.conf",
+      targetRoot: "absolute",
+      mode: 0o644,
+      variables: Object.freeze([]),
+      format: "nginx",
+      secretReferences: Object.freeze(new Map()),
+      onChange: "reload",
+      validator: undefined,
+    }, {});
+    await Deno.writeFile(input, skeleton.content);
+    await Deno.writeTextFile(bindings, JSON.stringify(bindingDocument(skeleton)));
+    await updateConfig({
+      format: "nginx",
+      input,
+      bindings,
+      secrets: join(root, "unused"),
+      secretRoot: join(root, "unused-root"),
+      output,
+    });
+    assertEquals(await Deno.readTextFile(output), nginx);
+    assertEquals((await Deno.stat(output)).mode! & 0o777, 0o600);
+  });
+});
+
 Deno.test("integration/config-updater: 文件秘密只注入稳定路径", async () => {
   await withTempDir(async (root) => {
     const source = join(root, "source.yaml");
@@ -200,8 +238,9 @@ Deno.test("integration/config-updater: 无效候选按格式复解析失败且�
     yaml: "value: [unterminated\n",
     json: '{"value":\n',
     toml: "value = [\n",
-    ini: "[unterminated\nvalue=x\n",
-  });
+  ini: "[unterminated\nvalue=x\n",
+  nginx: "server { __SFO_SECRET_V1_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA__ }\n",
+});
   for (const format of ["yaml", "json", "toml", "ini"] as const) {
     await withTempDir(async (root) => {
       const input = join(root, `invalid.${format}`);

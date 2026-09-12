@@ -1,0 +1,37 @@
+schema_version: 1
+
+# 用户已确认提案并选择 standard 层级；同时追加要求 prepare-multipass.ps1 同步维护入 scope_paths。
+workflow_tier: standard
+
+# Canonical task identity. Other task artifacts reference this file instead of
+# asking agents to repeat these values on checker command lines.
+version: v0.1
+packet_module: sfo-deploy
+task_name: 085-recreate-multipass-instance
+stage: proposal
+mode: manual
+auto_pipeline_start_stage:
+
+proposal: proposal.md
+completion_report: completion-report.md
+change_record: docs/changes/085-recreate-multipass-instance.md
+design:
+testing:
+testplan:
+acceptance_report:
+pipeline_plan:
+risk_profile:
+lifecycle_state:
+
+changed_paths_file: .harness/evidence/v0.1/stage-scope/085-recreate-multipass-instance.paths
+baseline_manifest: .harness/baselines/v0.1/085-recreate-multipass-instance-delivery/manifest.json
+
+changes:
+  - id: CHG-multipass-recreate-instance
+    target_module: sfo-deploy
+    scope_paths: ["examples/eleph-server-multipass/prepare-multipass.sh", "examples/eleph-server-multipass/prepare-multipass.ps1", "examples/eleph-server-multipass/README.md"]
+    changed_paths_file:
+  - id: CHG-multipass-hosts-entry
+    target_module: sfo-deploy
+    scope_paths: ["examples/eleph-server-multipass/prepare-multipass.sh", "examples/eleph-server-multipass/prepare-multipass.ps1", "examples/eleph-server-multipass/README.md"]
+    changed_paths_file:

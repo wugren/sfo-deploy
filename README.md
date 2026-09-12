@@ -2,8 +2,8 @@
 
 一个供项目部署模块复用的 Deno 2 / TypeScript SSH 集群部署框架。控制端、公共 API
 和远端生命周期脚本都使用 TypeScript；每个集群是独立目录。当前 cluster schema v2 在
-`environments/<环境名>/` 集中定义环境，并在 `cluster.yaml.environments` 声明目标机器；App schema v4
-可选择内置版本化发布、配置文件和 systemd 服务管理，旧 v2/v3 App 继续按原脚本执行。
+`environments/<环境名>/` 集中定义环境，并在 `cluster.yaml.environments` 声明目标机器；App schema 1
+使用顶层 `configs` 和 `management.kind: script|service`，旧 v2/v3/v4 App 直接拒收。
 
 从零创建集群配置、编写生命周期脚本并完成首次部署，请参阅[使用 sfo-deploy 配置集群](docs/guides/sfo-deploy-cluster-configuration.md)。
 
@@ -65,8 +65,8 @@ clusters/production/
 同区机器默认通过内网 IP 连接，跨区机器默认使用公网 IP。所有配置在首次 SSH 连接前完成严格校验。
 
 `machines.yaml` 只声明机器身份与连接信息。schema v2 的 Environment 与 App 一样把定义和放置分开：
-`environments/<环境名>/environment.yaml` 定义安装和配置方法，`cluster.yaml.environments`
-决定哪些机器生成该环境实例。同一个定义对其全部目标机器使用相同的
+`environments/<环境名>/environment.yaml` 定义安装/配置方法或新的 `install`/`manager` 生命周期，
+`cluster.yaml.environments` 决定哪些机器生成该环境实例。同一个定义对其全部目标机器使用相同的
 version、parameters、defaults、脚本和资源； 不支持逐机器 overrides，需要差异时应创建不同名称的
 Environment。
 
@@ -174,42 +174,51 @@ apps:
         value: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 ```
 
-`clusters/production/apps/backend/app.yaml` 使用 schema v3 显式启用内置配置和 systemd 管理：
+`clusters/production/apps/backend/app.yaml` 使用 schema 1：
 
 ```yaml
-schema_version: 3
+schema_version: 1
 name: backend
 install_directory: /home/deploy/apps/backend
 depends_on: [postgresql]
-scripts:
-  deploy:
-    - path: scripts/deploy.ts
-      permissions:
-        run: [/usr/bin/install]
-        net: []
+deployment:
+  kind: versioned
+configs:
+  - kind: file
+    source: templates/application.ini.tpl
+    target: /home/deploy/apps/backend/application.ini
+    owner: deploy
+    group: deploy
+    mode: "0600"
+    variables:
+      - name: APP_VERSION
+        path: [version]
+        type: string
+    format: ini
+    on_change: restart
 management:
   run_as: deploy
-  configs:
-    - name: application
-      source: templates/application.ini.tpl
-      target: /home/deploy/apps/backend/application.ini
-      owner: deploy
-      group: deploy
-      mode: "0600"
-      variables:
-        - name: APP_VERSION
-          path: [version]
-          type: string
-      format: ini
-      on_change: restart
-  service:
-    type: systemd
-    unit: backend.service
-    enabled: true
-    daemon_reload: false
-    on_deploy: restart
-    timeout_ms: 30000
+  kind: service
+  name: backend.service
+  tool: auto
+  enabled: true
+  daemon_reload: true
+  on_deploy: restart
+  timeout_ms: 30000
+  unit_config:
+    working_directory: latest
+    command: bin/server
+    args: []
+    restart_policy: on-failure
+    restart_sec: 5
+    start_limit_interval_sec: 30
+    start_limit_burst: 5
 ```
+
+`unit_config` 会生成受管 systemd unit。崩溃拉起通过 systemd 原生指令生效： `restart_policy` 映射为
+`Restart`，`restart_sec` 映射为 `RestartSec`；启动限流分别映射为 `StartLimitIntervalSec` 和
+`StartLimitBurst`。这些字段可选；未声明时不写入新指令，unit 保持 systemd 缺省行为。字段只在框架生成
+unit 时生效，不修改已有外部 unit。
 
 对应 INI 源文件必须已经包含 selector 指向的完整值；普通变量 marker 也必须独占一个值：
 
@@ -247,7 +256,7 @@ secrets:
 时覆盖全部声明机器（交互确认）。执行 `prepare`/`deploy` 前密钥必须已经部署到对应节点，
 否则脚本步骤在 SSH 连接前失败关闭。
 
-### App v3 内置管理
+### App schema 1 内置配置和服务
 
 声明 `management` 时必须同时声明规范的非 root Linux 用户 `run_as`。SSH 用户为 root 时，框架先用固定
 `getent passwd`/`id` 参数验证该账号存在且 UID 大于 0，并从 `getent` 取得规范绝对 HOME，再以等价于
@@ -256,11 +265,14 @@ updater、hook 和生命周期脚本。环境变量在降权后注入，绝不�
 `run_as` 完全一致，也会显式使用已验证 HOME。验证或降权失败时不会退回 root 执行。systemd 查询和最终
 配置发布仍由框架的固定特权原语负责。
 
-`management.configs` 只支持 `format: yaml|json|toml|ini` 的结构化配置。配置值中的 `${SECRET_NAME}`
-引用 `cluster.yaml.secrets` 已声明并放置到目标机器的秘密；整值占位符按秘密声明的 `type` 注入， 缺省
-`string`。嵌入字符串中的占位符只做字符串替换。`kind: file` 的占位符注入 `secrets-deploy`
-后的稳定文件路径。已移除的 `updater` 字段会被定向拒收；自定义文本格式不再是 managed
-配置契约的一部分。
+顶层 `configs` 的 `kind: file` 支持 `format: yaml|json|toml|ini` 的结构化配置，以及
+`format: nginx` 的 Nginx 原生纯文本配置。`nginx` 格式按 UTF-8 原文发布，不解析 Nginx DSL，
+不支持普通变量和 `${SECRET_NAME}` 秘密占位符；语法应由部署环境的 `nginx -t` 或其他外部检查器
+验证。结构化配置值中的
+`${SECRET_NAME}` 引用 `cluster.yaml.secrets` 已声明并放置到目标机器的秘密；整值占位符按秘密声明的
+`type` 注入， 缺省 `string`。嵌入字符串中的占位符只做字符串替换。`kind: file` 的占位符注入
+`secrets-deploy` 后的稳定文件路径。已移除的 `updater` 字段会被定向拒收。除内置 `nginx` 原生配置
+外，其他自定义文本格式不是 managed 配置契约的一部分。
 
 控制端解析源配置、用步骤 `parameters` 填充声明的普通变量并写入秘密 marker，生成不含秘密的确定性
 骨架。随后它把原始 App `tar.gz`（如有）、本 App 声明脚本、配置骨架、绑定清单和普通文件封装成一个
@@ -287,11 +299,13 @@ tar.gz 协议。秘密不在 manifest 或包内；每个 config updater 和每�
 并原子发布。相同内容报告 `unchanged`，不触发
 `on_change`；多个配置变更合并为至多一次服务动作，`restart` 优先于 `reload`。
 
-`management.service` 首版只支持 `type: systemd`。框架以固定 argv 和 root/`sudo -n` 执行状态读取、
-可选 enable/disable、daemon-reload 以及 start/stop/reload/restart，并在动作后确认状态。显式
-`start`、`stop`、`restart` CLI 动作归该声明所有；因此不能再声明同名 App 脚本。类似地，只要
-`management.configs` 非空，就不能同时声明 `scripts.configure`。App 特有流程应放在受支持的
-`management.hooks`，或让整个旧 App 保持 v2/v3 脚本模式。
+`management.kind: service` 使用 `name` 和 `tool: auto|systemctl|service`。`auto` 先探测
+`systemctl`，没有 systemd 时探测 `service`，可覆盖 Ubuntu/CentOS 常见场景；显式工具不回退。 框架经
+root/`sudo -n` 执行状态读取、可选 enable/disable、daemon-reload（systemctl 时）以及
+start/stop/reload/restart，并在动作后确认状态。显式 `start`、`stop`、`restart` CLI 动作归该声明
+所有。脚本管理由 `management.kind: script` 提供，必须声明 `start`、`stop`、`restart` 三个脚本。
+
+`management.kind: script` 必须提供 `start`、`stop`、`restart` 三个脚本。
 
 旧版 `updater.type: script/template` 已移除。含该字段的配置装载失败；自定义文本格式请迁移到
 受支持结构化格式，或在 managed 配置之外使用显式生命周期脚本。
@@ -300,51 +314,9 @@ tar.gz 协议。秘密不在 manifest 或包内；每个 config updater 和每�
 租约内完成；控制端的 configure/start/stop/restart/deploy/rollback 也各自拥有 release attempt。
 未取得锁不产生远端副作用，成功、失败、超时和取消都会清理并释放。任一候选生成或验证失败都不会改动最终配置；服务收敛失败时框架尝试恢复本次已发布配置及操作前的
 enabled/active 状态。恢复不完整会明确报告 partial/recovery 失败，绝不伪报成功。v2/v3 App 无
-`management` 字段时行为不变；迁移时先升到 `schema_version: 3`，删除每个配置的 `updater` 并改为
-`format` 与源配置中的 `${SECRET_NAME}`，再逐项把 configure 与 start/stop/restart 所有权移入
-management，不能只增加 management 而保留冲突脚本。
-
-### App v4 统一 managed 资源
-
-新 App 推荐使用 schema v4。`management.actions` 用同一个列表声明 `config` 和 `service`
-两类资源；`deployment.kind: versioned` 声明内置版本化发布，没有 `scripts.deploy` 的带包 App
-自动启用。 v4 不接受 `management.configs`、`management.service` 或 `management.hooks`
-旧形状，也不再提供 hook。
-
-```yaml
-schema_version: 4
-name: backend
-install_directory: /home/deploy/apps/backend
-deployment:
-  kind: versioned
-scripts: {}
-management:
-  run_as: deploy
-  actions:
-    - kind: config
-      name: application
-      source: templates/application.ini.tpl
-      target: /home/deploy/apps/backend/application.ini
-      owner: deploy
-      group: deploy
-      mode: "0600"
-      format: ini
-      on_change: restart
-    - kind: service
-      type: systemd
-      unit: backend.service
-      enabled: true
-      daemon_reload: true
-      on_deploy: restart
-      unit_config:
-        working_directory: current
-        command: bin/server
-        args: ["--config", "config/application.ini"]
-```
-
-`unit_config` 缺省时只控制目标节点已有 unit。声明它时会生成并发布 root/root/0644 的 systemd
-unit；`working_directory` 相对 `install_directory` 解析，启动命令相对 working directory 解析为
-`ExecStart` 绝对路径，参数保持固定字面值。unit 内容变化会 daemon-reload 后 restart。
+配置契约没有旧版本兼容；v2/v3/v4 配置必须重写为 schema 1，不能保留冲突脚本。schema 1 配置条目 不声明
+`name`，直接用 `kind: script|file` 表达类型。`kind: file` 的目标路径唯一，`kind: script`
+的脚本路径唯一。
 
 映射必须在 app 目录集与 `app_versions.yaml` 之间完整闭合：缺失、多余、未知 App 条目与非法
 `install_directory`（非绝对 POSIX 路径或含 `..`）都会在 SSH 前被拒绝。App 不再支持 v1 内联
@@ -393,10 +365,10 @@ packages_dir: /data/sfo-deploy/packages
 keep_versions: 5
 ```
 
-`keep_versions`（默认 5，合法范围 1-100）控制旧版本自动清理：每次 App 部署成功并写入版本标记后，
-目标机按版本字符串保留最新 N 个版本目录，删除更旧的 `<install_directory>/<version>/` 与
-`~/.sfo-deploy/apps/<version>/` 安装包；同版本跳过、失败或回滚路径不清理。被清理版本不可回滚，
-请按回滚需求调整保留数量。
+`keep_versions`（默认 5，合法范围 1-100）控制内置版本目录清理：服务与版本标记提交成功后，始终
+保留当前版本，并按目录修改时间保留其他较新版本，合计最多 N 个。仅识别含匹配 `VERSION` 普通文件的
+版本目录，保留 logs 等普通目录。同版本成功部署也执行保留策略，失败补偿不清理旧版本。
+清理失败单独报告；被清理版本不可回滚，请按回滚需求调整保留数量。
 
 `deploy` 只从该缓存取包：缺少目标 App 包时在预检期失败（退出码 3）并提示先运行 `fetch`，不会连接
 远端或创建发布记录。`install`/`rollback` 等动作同样缓存优先，缓存缺失时仍按原有 source 下载并回填
@@ -405,11 +377,17 @@ keep_versions: 5
 部署准备阶段从本地缓存固定同一个原始 tar.gz，并与声明脚本、无秘密配置骨架及普通文件构建上述单一部署
 包；执行期不会再次调用 package provider。目标机验证并安全解开外层包后，managed App 的内层包由框架
 先完成路径、类型、重复、成员数和展开大小验证。内置 versioned release 把该目录发布到
-`<install_directory>/<version>/`，原子切换 `latest` 并写 `.<app>.version`；自定义 deploy 脚本仍可在
-验证目录上执行特殊安装协议；legacy 非-managed App 继续取得原始 tar.gz 并自行复验。
+`<install_directory>/<version>/`，先完成配置和服务准备，再切换 `latest` 并立即启动/重启，成功后写
+`.<app>.version`；自定义 deploy 脚本仍可在 验证目录上执行特殊安装协议；legacy 非-managed App
+继续取得原始 tar.gz 并自行复验。
+
+Environment 还可以在 schema v1 中声明顶层 `install` 和可选 `manager`：`install.kind: package` 用
+`apt-get`/`yum` 幂等安装系统包，`install.kind: script` 执行安装脚本；`manager.kind: system` 按
+目标机选择 `systemctl` 或 `service`，`manager.kind: script` 使用 start/stop/restart 脚本。`manager`
+缺省表示不管理应用运行；新契约没有独立 `check`，顶层 `scripts` 与新生命周期互斥。
 
 旧脚本模式的顶层 `templates`（app.yaml / environment.yaml 的 `templates:` 字段）已移除：它把额外普通
-文件随脚本上传到 configure 步骤。现在模板文件交付统一由每个 `management.configs[].source`
+文件随脚本上传到 configure 步骤。现在模板文件交付统一由每个 `configs[].source`
 明确源文件与持久目标，不再让自定义 configure 脚本猜测发布位置；配置绑定和渲染由框架的受限 updater
 完成。
 
@@ -476,11 +454,12 @@ sfo-deploy prepare --cluster production --env mysql --machine app-01
 ```
 
 `--env` 与 `--environment` 等价（更短），可重复，也支持 `[机器/]名称` 精确实例；`prepare`
-是环境动作，不支持 `--app`。流程为 check → 按需 install；未声明 `configure` 时不再生成该步骤。
-首次安装成功后自动执行 `start`，版本更新成功后自动执行 `restart`；同版本且检查通过时整体跳过；
-未声明 `start`/`restart` 脚本的环境应用自动跳过对应步骤。框架把 `environment.yaml` 的 `version`
-记录到目标机 `~/.sfo-deploy/environments/<环境名>.version` 作为更新标记，失败/阻断不更新。 `deploy`
-只处理 App；发布前应先使用 `prepare` 确认依赖环境已就绪。
+是环境动作，不支持 `--app`。旧脚本环境流程为 check → 按需 install；未声明 `configure` 时不再生成
+该步骤。首次安装成功后自动执行 `start`，版本更新成功后自动执行 `restart`；同版本且检查通过时整体
+跳过；未声明 `start`/`restart` 脚本的环境应用自动跳过对应步骤。新 `install`/`manager` 环境没有
+`check`，总是执行幂等 install；`manager` 缺省时不产生服务动作。框架把 `environment.yaml` 的
+`version` 记录到目标机 `~/.sfo-deploy/environments/<环境名>.version` 作为更新标记，失败/阻断不更新。
+`deploy` 只处理 App；发布前应先使用 `prepare` 确认依赖环境已就绪。
 
 ## 命令行
 
@@ -543,16 +522,24 @@ redactor 时 stdout/stderr 置空，只返回固定错误类别和结构化状�
 步骤，也不支持 `--environment` 或 `--with-dependencies`。环境应用先用 `prepare` 安装、配置和更新。
 deploy 同样在执行前请求二次确认：计划生成后会先打印将处理的步骤并等待输入 `yes`，确认后才创建发布
 attempt 并真正连接远端执行；拒绝、EOF 或非交互终端未显式传 `--yes` 时按取消处理（退出码
-130）且不执行任何远端步骤、不产生发布记录。内置 versioned App 的 deploy 分成 `stage`、`activate`
-和 managed `restart` 阶段：所有目标先完成包校验、上传/解包和版本目录暂存；任一准备失败时，后续
-activate/restart 都不会执行。全部准备成功后才统一切换 `latest`、更新版本标记并发布配置/unit；
-activate 全部成功后才进入统一 restart 阶段。这是协调阶段边界，不是跨机器分布式原子事务。自定义 deploy
-脚本仍保持原单步语义。App 部署脚本以 `app_versions.yaml` 的 `version`
-为“待部署版本”，与远端上次成功部署记录的版本标记比对：版本一致时
-不发布制品、不重启、不等待健康检查，远端不做任何修改；版本不同时才解压重打包、原子发布到版本目录、
-切换 `latest`、更新版本标记并在统一 restart 阶段重启应用。 执行 `deploy` 前需先用 `fetch` 把 App
-安装包下载到本地缓存（见上文“本地部署包缓存”），缓存缺失时 命令会在任何 SSH 连接前预检失败（退出码
-3）并提示先运行 `fetch`。
+130）且不执行任何远端步骤、不产生发布记录。内置 versioned App 的 deploy 分成 `stage` 和
+`activate`：所有目标先完成版本目录、配置发布、unit 发布以及 systemd 的 daemon-reload/enable 准备。
+任一准备失败时，不切换任何目标的 `latest`，并恢复已准备目标的配置及服务设置。
+全部准备成功后，按应用依赖顺序逐目标原子切换 `latest`，紧接着执行一次启动或重启；两者之间不插入
+配置发布、标记写入、清理或其他目标操作。服务成功后更新版本标记并清理旧版本。
+这是协调阶段边界，不保证跨机器原子提交。自定义 deploy 脚本保持原有语义。
+
+受管配置 target 支持三个内置目录变量：`${INSTALL_DIRECTORY}` 是 `install_directory` 本身，
+`${CURRENT_VERSION_DIRECTORY}` 是当前动作定位的版本目录（deploy 时为候选版本，configure 时为
+当前版本），`${LATEST_DIRECTORY}` 是 `<install_directory>/latest`。因此版本内配置推荐声明
+`'${CURRENT_VERSION_DIRECTORY}/resources/application.yml'`；内置部署准备时解析到本次
+`<version>/resources/`，不写入旧 `latest` 指向的目录。`${LATEST_DIRECTORY}` 不做候选版本
+重定位。`<install_directory>/latest/resources/...` 绝对路径写法继续兼容。
+发布前框架会先校验发布根，再在候选版本内逐级创建缺失的目标父目录；目录 mode 为 `0750`，owner 为 App
+`run_as`。中间目录必须是普通目录，真实路径越界或符号链接逃逸会在写入前拒绝。单独 `configure`
+仍使用原 target，不激活版本。 同版本部署跳过制品暂存，但仍处理配置和服务，不代表远端零修改。 执行
+`deploy` 前需先用 `fetch` 把 App 安装包下载到本地缓存（见上文“本地部署包缓存”），缓存缺失时
+命令会在任何 SSH 连接前预检失败（退出码 3）并提示先运行 `fetch`。
 
 `install-deno` 是运行时引导动作：只接受 `--machine` 筛选（缺省全部机器并请求确认，非交互需
 `--yes`），可用 `--deno-version` 固定精确版本、`--install-to` 指定远端安装目录；省略版本时

@@ -215,16 +215,18 @@ scripts:
 
 环境字段：
 
-| 字段                 | 必填 | 说明                                                                                                      |
-| -------------------- | ---: | --------------------------------------------------------------------------------------------------------- |
-| `name`               |   是 | 必须与环境目录名一致。                                                                                    |
-| `version`            |   是 | 环境版本；脚本可从 `metadata.parameters.version` 读取。                                                   |
-| `scripts`            |   是 | 动作到有序 TypeScript 脚本对象列表的映射；每项都显式声明 `path`、`permissions.run` 和 `permissions.net`。 |
-| `parameters`         |   否 | Environment 参数，会覆盖 `defaults` 中的同名值，并用于该定义的全部目标机器。                              |
-| `defaults`           |   否 | 环境默认参数。                                                                                            |
-| `depends_on`         |   否 | 环境依赖；`runtime` 表示同机环境，`app-02/runtime` 表示指定机器环境。                                     |
-| `requires_privilege` |   否 | 默认为 `false`；为 `true` 时，环境脚本通过远端提权接口执行。                                              |
-| `package`            |   否 | 环境安装需要的下载包；只在环境 `install` 步骤下载。                                                       |
+| 字段                 |   必填 | 说明                                                                                            |
+| -------------------- | -----: | ----------------------------------------------------------------------------------------------- |
+| `name`               |     是 | 必须与环境目录名一致。                                                                          |
+| `version`            |     是 | 环境版本；脚本可从 `metadata.parameters.version` 读取。                                         |
+| `scripts`            | 二选一 | 旧生命周期入口；动作到有序 TypeScript 脚本对象列表的映射，不能与 `install`/`manager` 同时声明。 |
+| `install`            | 二选一 | 新生命周期入口，声明系统包安装或安装脚本；新契约必须声明，不能与 `scripts` 同时声明。           |
+| `manager`            |     否 | 新生命周期的可选服务管理声明；缺省表示只安装依赖，不管理运行中的应用。                          |
+| `parameters`         |     否 | Environment 参数，会覆盖 `defaults` 中的同名值，并用于该定义的全部目标机器。                    |
+| `defaults`           |     否 | 环境默认参数。                                                                                  |
+| `depends_on`         |     否 | 环境依赖；`runtime` 表示同机环境，`app-02/runtime` 表示指定机器环境。                           |
+| `requires_privilege` |     否 | 默认为 `false`；为 `true` 时，环境脚本通过远端提权接口执行。                                    |
+| `package`            |     否 | 环境安装需要的下载包；只在环境 `install` 步骤下载。                                             |
 
 最终脚本参数按 `defaults`、`parameters` 的顺序合并；框架随后写入保留字段 `version` 和
 `requires_privilege`，普通参数不能覆盖这两个字段。
@@ -232,6 +234,73 @@ scripts:
 一个共享定义的 version、parameters、defaults、依赖、权限、脚本、模板和包来源对所有放置机器
 完全相同，没有逐机器覆盖或合并层。机器之间需要不同值时，应使用不同 Environment
 名称和定义，并分别放置。
+
+### 新生命周期：install/manager
+
+新环境建议使用顶层 `install` 和可选 `manager`，而不是写 `check`/`install`/`start` 脚本。系统包
+安装与服务控制在 Ubuntu/Debian 和 CentOS 7 上使用同一份 YAML：
+
+```yaml
+schema_version: 1
+name: nginx
+version: "1.24"
+requires_privilege: true
+install:
+  kind: package
+  manager: auto
+  packages: [nginx]
+  update_cache: false
+manager:
+  kind: system
+  name: nginx
+  tool: auto
+  enabled: true
+  start_after_install: true
+  timeout_ms: 300000
+```
+
+`install.kind: package` 会让框架查询目标机包状态，只在缺少包时执行固定安装命令。
+`install.manager: auto` 按 `apt-get`、`yum` 顺序探测；显式指定 `apt-get` 或 `yum` 时不会自动
+降级。`update_cache: true` 只在实际需要安装时刷新软件源索引。
+
+不需要框架启动应用时，`manager` 可缺省；此时只执行安装。需要应用运行管理时声明 `manager`。
+`manager.kind: system` 的 `tool: auto` 按 `systemctl`、`service` 顺序探测，Ubuntu/Debian 通常命中
+systemctl，CentOS 7 通常命中 service；显式指定工具时缺失即失败。`enabled` 控制目标状态。
+
+特殊安装协议和启动协议可以使用脚本方式：
+
+```yaml
+schema_version: 1
+name: runtime
+version: "1.0"
+requires_privilege: true
+install:
+  kind: script
+  path: scripts/install.ts
+  permissions:
+    run: [/usr/bin/install]
+    net: []
+manager:
+  kind: script
+  start:
+    path: scripts/start.ts
+    permissions:
+      run: [/usr/bin/systemctl]
+      net: []
+  restart:
+    path: scripts/restart.ts
+    permissions:
+      run: [/usr/bin/systemctl]
+      net: []
+  stop:
+    path: scripts/stop.ts
+    permissions:
+      run: [/usr/bin/systemctl]
+      net: []
+```
+
+新契约不声明 `check`。`package` 安装的幂等性由包状态查询保证；`script` 安装必须自身可重复执行。
+`manager.kind: script` 必须同时声明 `start`、`stop` 和 `restart`，脚本负责幂等处理。
 
 ### 环境脚本
 
@@ -305,11 +374,13 @@ sfo-deploy prepare --config-root ./clusters --cluster production --env jre --mac
 `--env` 与 `--environment` 等价（更短），可重复，并接受 `[机器/]名称` 精确实例。`prepare`
 是环境动作，不支持 `--app`。单个环境应用的执行序列：
 
-1. `check` 检查是否已满足；已满足且版本标记一致时整体跳过（不重启）；
-2. 未满足时按需执行 `install`；
-3. 只在环境声明了 `configure` 时执行该动作；
-4. 首次安装成功后自动执行 `start`；版本更新成功后自动执行 `restart`； 未声明 `start`/`restart`
-   脚本的环境应用跳过对应步骤并提示，不报错。
+旧 `scripts` 环境的序列是：`check` 检查是否已满足；已满足且版本标记一致时整体跳过（不重启）；
+未满足时按需执行 `install`；声明 `configure` 时执行；首次安装成功后自动执行 `start`，版本更新
+成功后自动执行 `restart`；未声明 `start`/`restart` 脚本的环境应用跳过对应步骤并提示，不报错。
+
+新 `install`/`manager` 环境没有 `check`：总是执行幂等 `install`；声明 `manager` 且
+`start_after_install: true`（或脚本 manager）时，首次安装成功后自动执行 `start`，版本更新成功后
+自动执行 `restart`。缺省 `manager` 不会产生服务动作。
 
 框架把 `environment.yaml` 的 `version` 记录到目标机 `~/.sfo-deploy/environments/<环境名>.version`
 作为更新标记；任何步骤失败、阻断或取消都不会更新 标记，下一轮 `prepare`
@@ -319,9 +390,9 @@ sfo-deploy prepare --config-root ./clusters --cluster production --env jre --mac
 
 App 目录名必须与 `app.yaml` 的 `name` 一致。带制品 App 每次发版都会变化的安装版本、下载配置
 （provider/source）与版本 hash 统一放在集群根 `app_versions.yaml`，且包始终需要可信哈希。 纯配置型
-App 用 `packageless: true` 显式声明，不需要版本/包，也不出现在 `app_versions.yaml`。新集群使用
-`app_versions.yaml` 加 schema v4 的 app.yaml；schema v2/v3 仍适合完整保留旧生命周期脚本的 App，App
-不再支持 v1 内联 version/package，必须使用 `app_versions.yaml` 提供版本记录。
+App 用 `packageless: true` 显式声明，不需要版本/包，也不出现在 `app_versions.yaml`。App 只使用
+`app.yaml schema_version: 1`；旧 v2/v3/v4 装载会直接失败，必须使用 `app_versions.yaml`
+提供版本记录。
 
 创建 `clusters/production/app_versions.yaml`：
 
@@ -342,145 +413,129 @@ apps:
 创建 `clusters/production/apps/backend/app.yaml`：
 
 ```yaml
-schema_version: 3
+schema_version: 1
 name: backend
 install_directory: /home/deploy/apps/backend
 depends_on: [runtime]
-scripts:
-  deploy:
-    - path: scripts/deploy.ts
-      permissions:
-        run: [/usr/bin/install]
-        net: []
+deployment:
+  kind: versioned
+configs:
+  - kind: file
+    source: templates/application.ini.tpl
+    target: /home/deploy/apps/backend/application.ini
+    owner: deploy
+    group: deploy
+    mode: "0600"
+    variables:
+      - name: APP_VERSION
+        path: [version]
+        type: string
+    format: ini
+    on_change: restart
 management:
   run_as: deploy
-  configs:
-    - name: application
-      source: templates/application.ini.tpl
-      target: /home/deploy/apps/backend/application.ini
-      owner: deploy
-      group: deploy
-      mode: "0600"
-      variables:
-        - name: APP_VERSION
-          path: [version]
-          type: string
-      format: ini
-      on_change: restart
-  service:
-    type: systemd
-    unit: backend.service
-    enabled: true
-    daemon_reload: false
-    on_deploy: restart
-    timeout_ms: 30000
+  kind: service
+  name: backend.service
+  tool: auto
+  enabled: true
+  daemon_reload: true
+  on_deploy: restart
+  timeout_ms: 30000
 ```
 
 部署前必须把 URL 和 64 位 SHA-256 示例值替换为真实、可信的值。App 字段如下：
 
-| 字段                | 必填 | 说明                                                                                      |
-| ------------------- | ---: | ----------------------------------------------------------------------------------------- |
-| `name`              |   是 | 必须与 App 目录名一致。                                                                   |
-| `install_directory` |   是 | 远端绝对 POSIX 路径，版本目录与 `latest` 软链位于其下。                                   |
-| `scripts`           |   是 | App 生命周期动作的有序 TypeScript 脚本对象列表及逐脚本权限白名单；v4 内置发布可用空对象。 |
-| `depends_on`        |   否 | App 在每台放置机器上的环境依赖。                                                          |
-| `management`        |   否 | schema v3 的内置配置、systemd 服务及有限 hook；声明时 `run_as` 必填且不能为 root。        |
+| 字段                | 必填 | 说明                                                    |
+| ------------------- | ---: | ------------------------------------------------------- |
+| `name`              |   是 | 必须与 App 目录名一致。                                 |
+| `install_directory` |   是 | 远端绝对 POSIX 路径，版本目录与 `latest` 软链位于其下。 |
+| `configs`           |   否 | App 配置段列表；每个条目用 `kind: script                |
+| `depends_on`        |   否 | App 在每台放置机器上的环境依赖。                        |
+| `management`        |   否 | 管理器声明；`kind: script                               |
 
-### App v4 统一 managed 资源
+### App schema 1 配置与服务
 
-schema v4 把 managed 声明收敛为 `management.actions` 列表，条目只有 `kind: config` 和
-`kind: service` 两种。它不接受 `management.configs`、`management.service` 或 `management.hooks`；App
-自身的 `check`/`deploy` 脚本仍使用顶层 `scripts`。
+配置在顶层 `configs`，管理器由 `management.kind` 直接声明。配置条目不声明 `name`，以 `kind`
+表达类型； 受管文件按远端目标路径唯一，配置脚本按 App 内相对脚本路径唯一。
 
 ```yaml
-schema_version: 4
+schema_version: 1
 name: backend
 install_directory: /home/deploy/apps/backend
 deployment:
   kind: versioned
-scripts: {}
 management:
   run_as: deploy
-  actions:
-    - kind: config
-      name: application
-      source: templates/application.ini.tpl
-      target: /home/deploy/apps/backend/application.ini
-      owner: deploy
-      group: deploy
-      mode: "0600"
-      format: ini
-      on_change: restart
-    - kind: service
-      type: systemd
-      unit: backend.service
-      enabled: true
-      daemon_reload: true
-      on_deploy: restart
-      unit_config:
-        working_directory: current
-        command: bin/server
-        args: ["--config", "config/application.ini"]
+  kind: service
+  name: backend.service
+  tool: auto
+  enabled: true
+  daemon_reload: true
+  on_deploy: restart
+  unit_config:
+    working_directory: latest
+    command: bin/server
+    args: ["--config", "config/application.ini"]
 ```
 
-`kind: config` 的字段与 v3 `management.configs[]` 相同。`kind: service` 的 `unit_config`
-可选：缺省时只控制已有 unit；声明时生成并发布 root/root/0644 的 systemd unit。`working_directory`
-相对 `install_directory` 解析；可执行命令相对 working directory 解析为 `ExecStart`
-绝对路径。启动参数是固定字面值，参数中的相对路径由 App 进程按 working directory 解析。unit target
-缺省为 `/etc/systemd/system/<unit>`，文件名必须与 `unit` 一致。unit 内容变化会先 daemon-reload 再
-restart。
+`kind: file` 支持 YAML、JSON、TOML、INI 和 Nginx 原生纯文本；`kind: script` 是 App 内 TypeScript
+配置脚本，具备 `path` 和 `permissions`，并会在 `configure` 生命周期执行。`format: nginx` 按 UTF-8
+原文发布，不解析 Nginx DSL，也不支持 variables 或秘密占位符。`kind: file` 的
+`on_change: reload|restart` 需要 `management.kind: service`。脚本配置和服务脚本必须幂等；非零退出会
+失败当前步骤。
 
-动作所有权仍然是唯一：有 `kind: config` 或 `unit_config` 时不能声明 `scripts.configure`； 有
-`kind: service` 时不能声明 `scripts.start/stop/restart`。v4 不提供 hook；需要部署后
-自定义验证时，请继续使用 App 的 deploy/check 脚本或保持 v3 legacy App。
+`management.kind: service` 使用 `name` 指定服务，`tool: auto|systemctl|service`
+选择发行版工具。`auto` 探测 `systemctl`，没有 systemd 时探测 `service`，可覆盖 Ubuntu/CentOS 常见
+systemd 和旧 SysV 场景。 显式 `systemctl`/`service` 不自动回退。`unit_config` 可选：缺省时只控制已有
+unit；声明时生成并 发布 root/root/0644 的 systemd unit，必须使用 `daemon_reload: true`，且不能与
+`tool: service` 同时 声明。`working_directory` 相对 `install_directory` 解析，也支持与 config
+target 相同的三个目录变量：`${INSTALL_DIRECTORY}` 解析为安装根，`${LATEST_DIRECTORY}` 与
+`${CURRENT_VERSION_DIRECTORY}` 在装载期都解析为 `latest` 软链路径（unit 是静态文件，不随候选版本
+重定位，`latest` 在 activate 切换后经软链指向当前版本目录）；变量必须在开头且只出现一次，可用
+`变量/相对后缀`，使用变量时 App 必须声明 `install_directory`。命令相对 working directory 解析为
+`ExecStart` 绝对路径。unit target 缺省为
+`/etc/systemd/system/<name>`，文件名必须一致。
 
-`deployment.kind` 首版只支持 `versioned`，是 v4 带包 App 的内置发布声明。没有 `scripts.deploy`
-时自动启用；它要求 `management.run_as`，禁止 packageless，且不能与 `scripts.deploy` 同时声明。内置
-deploy 拆成 `stage` 与 `activate`：stage 把内层 tar.gz 解包结果建立为
-`<install_directory>/<version>/` 并写入 `VERSION`；activate 校验版本目录后写入
-`.<app>.version`、原子切换 `<install_directory>/latest`，并按 `keep_versions`
-清理旧版本。最新载荷路径是 `<install_directory>/latest`。特殊解包/数据迁移仍应保留自定义
-`scripts.deploy`。
+`management.kind: script` 必须声明 `start`、`stop` 和 `restart` 三个脚本；versioned 内置 deploy 会在
+activate 后执行一次 `restart`。`tool: service` 不提供 daemon-reload 或 enable 状态语义，因此禁止
+`unit_config`，也必须省略 `enabled`。
+
+动作所有权仍然是唯一：App 顶层没有 `scripts` 节点。脚本配置只能放在 `configs.kind: script`；
+服务动作只能放在 `management.kind: script` 或 `management.kind: service`。App schema 1 不提供 hook。
+
+`deployment.kind` 首版只支持 `versioned`，是带包 App 的内置发布声明；非 packageless App 会自动启用。
+它要求 `management.run_as`，禁止 packageless。内置 deploy 拆成 `stage` 与 `activate`：stage 建立
+`<install_directory>/<version>/`、写入 `VERSION`， 并发布配置/unit、完成 systemd 的 daemon-reload 和
+enable 准备；所有目标准备成功后，activate 逐目标原子切换
+`<install_directory>/latest`，紧接着执行一次 start（服务未运行）或 restart（服务运行中）。
+切换与服务命令之间不插入标记、配置、清理或其他应用操作。成功后写入 `.<app>.version` 并按
+`keep_versions` 清理旧版本。无服务应用只提交版本。特殊安装/数据迁移仍应保留自定义 `scripts.deploy`。
+
+版本内 managed config 的 target 使用 `<install_directory>/latest/` 前缀时，内置 deploy 会将其
+解析到待发布版本目录，例如 `latest/resources/application.yml` 发布到
+`<version>/resources/application.yml`。
+框架会先校验发布根，再在候选版本内逐级创建缺失的目标父目录，并复核真实路径必须位于该版本目录内；
+中间目录必须是普通目录，符号链接逃逸会在切换前拒绝。 其他绝对 target 保持原有位置，显式 configure
+不进行版本重定位或切换。推荐 target 使用
+`'${CURRENT_VERSION_DIRECTORY}/resources/application.yml'`；可用目录变量分别是
+`${INSTALL_DIRECTORY}`（`install_directory` 安装根）、`${CURRENT_VERSION_DIRECTORY}`（当前动作的
+版本目录，deploy 为候选版本，configure 为当前版本）和 `${LATEST_DIRECTORY}`（latest 软链）。
+变量必须位于开头，后面的路径不含 `..`，且 App 必须声明 `install_directory`。旧 `latest/`
+绝对路径写法继续兼容。旧 `${INSTALL_DIRECTORY}` 版本内写法是 breaking 变更，必须迁移到
+`${CURRENT_VERSION_DIRECTORY}`。
+
+旧三阶段 stage/activate/restart 历史计划在执行准备时归一到新的事务，保留步骤标识并跳过多余的
+restart。 更早的单步 versioned deploy 历史计划在连接节点前拒绝执行，需用当前配置重新生成
+stage/activate 计划； 自定义 deploy
+脚本不受此限制。补偿失败时保留恢复所需的工作目录和备份，并在结果中报告，供后续修复。
 
 `packageless: true` App 是显式的配置型 App：不需要版本/包，也不出现在 `app_versions.yaml`
-条目中；`fetch` 会跳过它，`deploy` 请求展开为 `check -> configure`。它必须声明 `check`，并由
-`scripts.configure` 或 `management.configs` 二选一拥有配置动作，不能声明 `deploy`；特殊带包 App 可以
-保留 `scripts.deploy`。没有该脚本时，v4 带包 App 自动使用内置 versioned 发布。 packageless App
-可显式声明 `install_directory`。示例 nginx 使用结构化 YAML 配置； 配置发布和服务动作仍由框架管理：
+条目中；`fetch` 会跳过它，`deploy` 请求展开为受管 `configure`。它不提供独立 `check`，配置只能由 顶层
+`configs` 拥有，不能声明 `deploy` 或 `deployment`。 packageless App 可显式声明
+`install_directory`。当前 Multipass 示例没有独立 nginx App；jx-web 的 versioned stage直接发布
+Nginx server 片段，并在配置变化后 reload `nginx.service`。
 
-```yaml
-schema_version: 4
-name: nginx
-packageless: true
-install_directory: /etc/nginx
-scripts:
-  check:
-    - path: scripts/check.ts
-      permissions:
-        run: [/usr/bin/sudo, /usr/sbin/nginx, /usr/bin/test]
-        net: []
-management:
-  run_as: ubuntu
-  actions:
-    - kind: config
-      name: nginx-conf
-      source: templates/nginx.yaml
-      target: /etc/nginx/nginx.yaml
-      owner: root
-      group: root
-      mode: "0644"
-      format: yaml
-      on_change: restart
-    - kind: service
-      type: systemd
-      unit: nginx.service
-      enabled: true
-      daemon_reload: false
-      on_deploy: none
-      timeout_ms: 30000
-```
-
-### App v3 配置占位符
+### 配置占位符与安全边界
 
 所有 managed App 都必须声明规范的非 root Linux 用户 `management.run_as`。SSH 连接本身为 root 时，
 框架用固定 argv 执行 `getent passwd` 和 `id`，确认目标账号存在且 UID 大于 0，并从 `getent` 严格取得
@@ -490,10 +545,10 @@ management:
 `run_as` 一致，也会显式使用该已验证 HOME。身份校验、UID/HOME 校验或 sudo 降权失败都会在 App
 代码运行前失败关闭，绝不回退到 root。systemd 和最终配置发布是框架固定的特权原语，不随 App 脚本降权。
 
-每个 `management.configs[]` 都必须声明唯一 `name`、App 目录内的 `source`、规范远端绝对 `target`、
-`format`；`owner`/`group` 可选，`mode` 默认为 `"0600"`，且必须允许 owner 读取、不能包含执行位或
-group/other 写权限。`on_change` 可取 `none`、`reload`、`restart`。可选 validator 使用固定
-argv，`{candidate}` 必须且只能作为一个独立参数：
+每个 `configs` 的 `kind: file` 条目必须声明 App 目录内的 `source`、规范远端绝对 `target`、
+`format`，不声明 `name`；`owner`/`group` 可选，`mode` 默认为 `"0600"`，且必须允许 owner
+读取、不能包含执行位或 group/other 写权限。`on_change` 可取 `none`、`reload`、`restart`。可选
+validator 使用固定 argv，`{candidate}` 必须且只能作为一个独立参数：
 
 ```yaml
 validator:
@@ -501,9 +556,10 @@ validator:
   timeout_ms: 10000
 ```
 
-控制端会解析 YAML/JSON/TOML/INI 源文件并生成规范化、无秘密配置骨架。目标端所需 parser 会编译成
-单文件载荷随外层 bundle 固定交付，以 `--no-remote --no-npm` 离线执行；秘密注入后必须按声明格式完整
-复解析成功才能发布，不会降级为文本或 marker 检查。普通参数占位符使用
+控制端会解析 YAML/JSON/TOML/INI 源文件并生成规范化、无秘密配置骨架；`format: nginx` 只验证 UTF-8、
+框架保留标记和 `${...}` 占位符后保留原文。目标端所需 parser 会编译成
+单文件载荷随外层 bundle 固定交付，以 `--no-remote --no-npm` 离线执行；结构化配置秘密注入后必须按
+声明格式完整复解析成功才能发布，不会降级为 marker 检查。普通参数占位符使用
 `__SFO_CONFIG_VAR_V1_<NAME>__`，必须独占一个完整值，并由 `variables[].path` 从步骤参数读取。带包 App
 常用 `[version]`；packageless App 的参数为空，不能凭空引用自定义参数。秘密占位符直接写在源配置值中，
 不能自行写 `__SFO_SECRET_...` 保留 marker。
@@ -526,21 +582,18 @@ tls:
 危险目标或残留框架 marker 都会失败关闭。
 
 已移除的 `updater.type: script/template` 不再是新契约；含 `updater` 的配置装载时定向拒收。
-自定义文本格式请迁移到受支持结构化格式，或保持 legacy 脚本模式。
+除 `format: nginx` 外，其他自定义文本格式请迁移到受支持结构化格式，或保持 legacy 脚本模式。
 
 ### systemd 与动作所有权
 
-`management.service` 首版只接受 `type: systemd` 和合法 `.service` unit。`enabled`
-缺省表示保持节点当前状态；`daemon_reload` 控制 deploy 或配置变化时是否执行
-daemon-reload；`on_deploy` 可取 `none`、`start`、`reload`、`restart`。框架使用固定 systemctl
-argv，经 root/`sudo -n` 读取并收敛 enabled/active 状态。显式 CLI `start`/`stop`/`restart`
-直接映射到同名 systemd 动作。
+`management.kind: service` 只接受合法服务名和 `tool: auto|systemctl|service`。`enabled`
+缺省表示保持节点当前状态，但 `tool: service` 时必须省略；`daemon_reload` 只适用于 `systemctl`。
+`on_deploy` 可取 `none`、`start`、`reload`、`restart`。框架经 root/`sudo -n` 探测并收敛状态。 显式
+CLI `start`/`stop`/`restart` 映射到对应服务动作。
 
-同一个 App 不能让两个实现拥有同一动作：有 `management.configs` 时禁止 `scripts.configure`，有
-`management.service` 时禁止 `scripts.start`、`scripts.stop`、`scripts.restart`。App 特有逻辑可以放在
-`management.hooks` 的 `before_`/`after_` install、configure、deploy、start、stop、restart 点，每个
-hook 仍使用普通 `{path, permissions}` 脚本声明。一次操作有多个配置变化时，框架最多通知 systemd
-一次，`restart` 优先于 `reload`；所有配置 unchanged 时不因 `on_change` 触发服务动作。
+同一个 App 不能让两个实现拥有同一动作：App 顶层 `scripts` 已移除。服务动作只由 `management.kind`
+拥有。一次操作有多个配置变化时，框架最多通知 systemd 一次，`restart` 优先于 `reload`；所有配置
+unchanged 时不因 `on_change` 触发服务动作。
 
 `app_versions.yaml` 与 app 目录必须完整闭合：缺失/多余 App 条目、未知字段、非法 version 或 hash
 都会在 SSH 前失败。`app_versions.yaml` 的 `version` 经装载合并到 App 定义后作为唯一版本来源传给
@@ -594,7 +647,7 @@ workspace，集群目录不得定义或复制它。脚本用与自身同目录�
 `loadSecrets` 的 `values`/`files` 参数只是读取过滤器，名称必须真实存在于副本目录中，不构成新的
 声明面。秘密副本目录不存在的步骤不得读取 `DEPLOYMENT_SECRETS_DIR`。
 非秘密步骤元数据（模板远端路径、包路径、安装目录、参数、动作等）由 `DEPLOYMENT_METADATA_PATH` 指向的
-mode `0600` JSON 提供。App v3 managed 配置不走这套模板渲染逻辑，而是把版本固定的
+mode `0600` JSON 提供。App schema 1 的受管配置不走这套模板渲染逻辑，而是把版本固定的
 `sfo-config-updater.ts` 放入单部署包，由框架以更窄权限直接调用。例如旧脚本模式：
 
 ```typescript
@@ -732,14 +785,14 @@ App 可执行包必须是 tar.gz：fetch 与部署准备阶段都会校验 gzip 
 值秘密按配置引用复制到独立 0700 目录（文件 0600）并在调用后清理；文件秘密只暴露 `secrets-deploy`
 后的稳定路径。lifecycle/hook 仍只复制第 9 节描述的机器范围步骤集合，不会在消费者之间复用目录。
 
-内置 versioned release 在 stage 建立版本目录，在 activate 发布 `<install_directory>/<version>/`；
-自定义 deploy 脚本按 App 安装协议消费该目录；legacy deploy 脚本继续取得原始 tar.gz。managed
+内置 versioned release 在 stage 建立版本目录并发布配置，在 activate 切换最新版本并启动服务； 自定义
+deploy 脚本按 App 安装协议消费该目录；legacy deploy 脚本继续取得原始 tar.gz。managed
 配置则由框架固定渲染器 在节点注入当前秘密、生成候选并单独原子发布，两者职责不要混淆。
 
 旧版本自动清理由用户配置 `~/.sfo-deploy/config.yaml` 的 `keep_versions` 控制（默认 5，范围
-1-100）：App 部署成功并写入版本标记后，目标机按版本字符串保留最新 N 个版本目录，删除更旧的
-`<install_directory>/<version>/` 与 `~/.sfo-deploy/apps/<version>/` 安装包；同版本跳过、失败、
-回滚路径不清理。被清理版本不可回滚。
+1-100）。内置版本部署仅在服务与版本标记提交成功后清理：始终保留当前版本，再按目录修改时间保留
+其他较新版本，合计最多 N 个。只识别包含匹配 `VERSION` 普通文件的版本目录，保留 logs 等普通目录。
+同版本成功提交也会执行此保留策略；准备失败或补偿路径不清理旧版本。清理失败单独报告，已删除版本不可回滚。
 
 ## 9. 配置秘密、放置与秘密装载
 
@@ -845,13 +898,16 @@ sfo-deploy deploy \
   --app backend
 ```
 
-对于 App v3 managed 配置，deploy 流程会：
+managed App 的 deploy 流程会：
 
 1. 在控制端生成无秘密骨架和单一部署包，随后在节点验证、安全解包；
-2. 对内置 versioned App，先完成所有目标的 `stage`；任一 stage 失败时所有 `activate/restart` 被阻断；
-3. 执行 App deploy/activate 脚本或内置 versioned release，生成全部配置候选，通过校验后按事务发布；
-4. 合并配置通知与 `on_deploy`，至多执行一次 daemon-reload/reload/restart/start 并确认 systemd 状态；
-5. 清理工作区并为本次 `deploy` 写入发布历史。
+2. 内置 versioned App 在 stage 完成版本目录、配置事务及 systemd
+   准备，保留工作目录和锁直到提交或恢复；
+3. 全部 stage 成功后，每个 activate 执行相邻的 latest 切换与启动/重启，不再追加独立 restart 步骤；
+4. 准备失败不切换版本；切换失败不启动新服务；服务失败恢复配置、原软链接与标记并补偿原服务，恢复失败明确报告；
+5. 服务成功后提交版本标记并清理旧版本、配置备份及工作区。清理失败单独报告，不回滚已成功运行的版本。
+
+自定义 deploy 和无包配置应用保留原有配置、通知合并及服务管理行为；跨机器不保证原子回滚。
 
 App 部署包来自上一步 `fetch` 写入的本地缓存；未先 fetch 时，命令会在任何 SSH 连接前预检失败并提示
 运行 `fetch`。
@@ -886,11 +942,10 @@ deploy 不执行依赖环境检查；环境应用必须先通过 `prepare` 准�
 选择范围内的环境，再校验依赖闭包。生产操作应显式给出这两个筛选器；如果过滤掉必需依赖，规划会失败。
 `deploy` 和 `plan` 不支持该开关。
 
-App 部署脚本以 `app_versions.yaml` 的 `version` 作为待部署版本，与远端上次成功部署持久化的版本标记
-比对：版本一致时不发布制品、不重启、不等待健康检查，版本不同才把解压重打包后的真实安装包发布到
-`<install_directory>/<version>/`，在全部内置 versioned 目标准备完成后统一原子切换 `latest` 和更新
-版本标记，再统一执行 restart 阶段。生产 App 的 `version` 必须反映真实发布版本，否则“版本一致”判定没有意义；示例 App
-当前仍是 `external-url` 哨兵值。
+内置部署以 `app_versions.yaml` 的 `version` 作为待部署版本。版本一致时跳过制品暂存，仍执行配置
+事务与必要的服务启动/重启；同版本更新直接作用于当前版本文件，不具有新版本的目录隔离。
+版本不同则先向真实版本目录发布制品与配置，全部目标准备成功后才逐目标切换并立即启动/重启。 生产 App
+的 version 必须反映真实发布版本，服务验证成功前保留恢复所需的旧版本。
 
 如果使用 `configure` 而不传 `--with-dependencies`，定向 App
 动作只检查其传递环境依赖，不会自动安装或配置它们；检查不满足时 App
@@ -1022,7 +1077,7 @@ deploy 不再检查或安装依赖环境。先运行
 - [ ] 需要提权的环境或文件秘密目标可使用 root 或非交互 `sudo -n`。
 - [ ] 环境脚本可重复执行，`check` 能准确区分“满足”和“未满足”。
 - [ ] App 脚本不依赖未声明的 root 权限。
-- [ ] App v3 的 configure 与 systemd 动作只有一个所有者，没有同时声明冲突的 legacy 脚本。
+- [ ] App schema 1 的 configure 与服务动作只有一个所有者，没有同时声明冲突的 legacy 脚本。
 - [ ] 每个 managed App 都声明了已存在的非 root `run_as`，root SSH 可对该账号执行 `sudo -n -u`。
 - [ ] managed 配置中的 `${SECRET_NAME}` 均已声明并放置到目标机器；普通变量 marker
       各出现且只出现一次。

@@ -1,6 +1,6 @@
 # Acceptance Defect-Discovery Gate
 
-This standalone review contract applies to high-risk task packets. Trivial and standard tasks use the proportional defect-discovery contract in `harness/rules/task-entry-gate-rules.md`.
+This standalone review contract applies to high-risk task packets. Standard tasks use the proportional defect-discovery contract in `harness/rules/task-entry-gate-rules.md`.
 
 ## Primary Goal
 - Acceptance is an independent falsification review. Its first responsibility is to discover defects, not to justify completion.
@@ -9,7 +9,7 @@ This standalone review contract applies to high-risk task packets. Trivial and s
 
 ## Independence And Review Order
 1. Start a separate acceptance task after implementation and testing. Use a reviewer that did not implement the change when the environment supports it.
-2. Read the current `proposal.md`, current implementation, relevant callers/dependencies, test design, test code, and available runtime evidence. Do not adopt an implementation summary, self-review, previous acceptance conclusion, or pipeline completion claim as truth.
+2. Read the current `proposal.md`, current implementation, relevant callers/dependencies, test design, test code, and available runtime evidence. Do not adopt an implementation summary, self-review, previous acceptance conclusion, or task completion claim as truth.
 3. Inspect the requirement and implementation directly, generate failure hypotheses, and try to falsify the delivery.
 4. Record findings and every defect-discovery category before selecting `accepted`, `rejected`, or `needs changes`.
 5. Check design/testing document consistency and lifecycle closure only after the defect search. Never convert a process pass into a correctness pass.
@@ -40,9 +40,9 @@ For documentation-only or non-runtime tasks, use the same categories. Mark truly
 - A report checker can enforce category coverage, evidence shape, and conclusion consistency. It cannot prove that the reviewer found every real defect; AI MUST NOT describe a checker pass as functional correctness.
 
 ## Requirement And Document Review
+- When `design.md` exists, inspect both whether implementation follows it and whether the design itself can produce incorrect behavior.
 - `proposal.md` is the mandatory requirement baseline. Every task `change_id` MUST have a requirement-coverage row tied to concrete implementation evidence.
 - When the task contains GitHub issue information, reread the issue description and verify its behavior and acceptance conditions directly before evaluating process closure. A proposal, design, implementation, test, or report that is internally consistent but misses or narrows the issue outcome cannot be accepted.
-- When `design.md` or auto-pipeline `pipeline/plan.md` exists, inspect both whether implementation follows it and whether the design itself can produce incorrect behavior.
 - When `testing.md` or `testplan.yaml` exists, inspect both document/implementation consistency and whether the resulting tests can reveal relevant defects.
 - Agreement among proposal, design, code, and tests is not sufficient when they share the same invalid assumption.
 
