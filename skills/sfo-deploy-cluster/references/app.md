@@ -64,8 +64,8 @@ updater。模板文件本身仍可放在 `templates/`。
   install_directory。框架会在候选版本内创建缺失父目录，但不允许越界或符号链接逃逸。支持
   yaml/json/toml/ini，源文件应能按对应格式解析；`format: nginx` 发布 UTF-8 原生 Nginx 片段，
   不解析 Nginx DSL，也不支持 variables 或秘密占位符。模板 mode 要用字符串，如 `"0600"`。
-- config entry 也可以是 `kind: script`，包含 `path` 与 `permissions`；配置脚本在 `configure`
-  生命周期执行，必须幂等。
+- config entry 也可以是 `kind: script`，包含 `path` 与 `permissions`；`permissions` 除 `run/net`
+  外可分别声明 `read/write` 绝对路径。配置脚本在 `configure` 生命周期执行，必须幂等。
 - `on_change: reload|restart` 要有 `management.kind: service`；纯文件配置使用 `none`。可选 validator
   为绝对可执行路径开头的 argv，必须恰有一个独立的 `"{candidate}"` 参数。
 - 最多一个管理器。`kind: service` 必填 `name`，`tool: auto|systemctl|service` 覆盖

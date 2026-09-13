@@ -37,6 +37,7 @@ import type {
   PlanStep,
   ResolvedMachine,
   ScriptInvocation,
+  ScriptPermissions,
   ScriptRuntime,
   SystemdRestartPolicy,
 } from "./types.ts";
@@ -790,14 +791,10 @@ export class PendingRelease implements AsyncDisposable {
     await Deno.mkdir(join(temporary, "files"), { recursive: true, mode: 0o700 });
     const archive = new ArchiveWriter(temporary, this.store.clusterDirectory);
     try {
-      const legacy = executedPlan.steps.some((step) =>
-        step.machine.machine.scriptRuntime.kind === "python"
-      );
       const actualData = await encodePlan(
         executedPlan,
         archive,
         this.store.sourceExporter,
-        legacy ? 1 : PLAN_SCHEMA_VERSION,
       );
       await atomicJson(join(temporary, "actual-plan.json"), actualData, { exclusive: true });
       if (rollback !== undefined) {
@@ -805,7 +802,6 @@ export class PendingRelease implements AsyncDisposable {
           rollback,
           archive,
           this.store.sourceExporter,
-          legacy ? 1 : PLAN_SCHEMA_VERSION,
         );
         await atomicJson(join(temporary, "rollback-plan.json"), rollbackData, { exclusive: true });
       }
@@ -845,11 +841,7 @@ export class PendingRelease implements AsyncDisposable {
   async inheritRollbackSnapshot(sourceReleaseId: string): Promise<ExecutionPlan> {
     this.#requireOpen();
     const plan = await this.store.loadRollbackPlan(sourceReleaseId);
-    const runtimeKinds = new Set(plan.steps.map((step) => step.machine.machine.scriptRuntime.kind));
-    if (
-      runtimeKinds.size !== 1 ||
-      ![...runtimeKinds].every((kind) => kind === "deno" || kind === "python")
-    ) {
+    if (plan.steps.some((step) => step.machine.machine.scriptRuntime.kind !== "deno")) {
       throw new ConfigurationError("回退计划包含混合或未知脚本运行时");
     }
     return await this.archivePlans(plan, plan);
@@ -1070,7 +1062,6 @@ async function encodePlan(
   plan: ExecutionPlan,
   archive: ArchiveWriter,
   sourceExporter: SourceExporter,
-  schemaVersion: 1 | 4,
 ): Promise<JsonObject> {
   if (
     !plan || !Array.isArray(plan.steps) || plan.steps.length === 0 || plan.steps.length > MAX_STEPS
@@ -1078,11 +1069,11 @@ async function encodePlan(
   validateStepGraph(plan.steps);
   validatePlanSemantics(plan.requestedAction, plan.steps);
   return {
-    schema_version: schemaVersion,
+    schema_version: PLAN_SCHEMA_VERSION,
     cluster: requiredString(plan.cluster, "cluster"),
     requested_action: requiredString(plan.requestedAction, "requested_action"),
     steps: await Promise.all(
-      plan.steps.map((step) => encodeStep(step, archive, sourceExporter, schemaVersion)),
+      plan.steps.map((step) => encodeStep(step, archive, sourceExporter)),
     ),
   };
 }
@@ -1091,19 +1082,12 @@ async function encodeStep(
   step: PlanStep,
   archive: ArchiveWriter,
   sourceExporter: SourceExporter,
-  schemaVersion: 1 | 4,
 ): Promise<JsonObject> {
   const machine = step.machine.machine;
   const runtime = machine.scriptRuntime;
   if (!runtime) throw new ConfigurationError("计划机器缺少显式脚本运行时");
-  if (!step.scripts.length && schemaVersion !== 4) {
-    throw new ConfigurationError("legacy 计划步骤必须包含显式脚本调用");
-  }
-  if (schemaVersion === 4 && runtime.kind !== "deno") {
+  if (runtime.kind !== "deno") {
     throw new ConfigurationError("execution-plan v4 只接受 Deno 运行时");
-  }
-  if (schemaVersion === 1 && runtime.kind !== "python") {
-    throw new ConfigurationError("execution-plan v1 兼容编码只接受 Python 运行时");
   }
   const declaredRunAs = step.management?.runAs;
   const runAs = step.runAs ?? declaredRunAs;
@@ -1155,34 +1139,23 @@ async function encodeStep(
       hash_value: step.package.hashValue,
     };
   }
-  const scripts = schemaVersion === 1
-    ? await Promise.all(step.scripts.map((invocation) => archive.add(invocation.source)))
-    : await Promise.all(step.scripts.map(async (invocation) => ({
-      source: await archive.add(invocation.source),
-      relative_path: invocation.relativePath,
-      permissions: {
-        run: validateRunPermissions(invocation.permissions.run),
-        net: validateNetPermissions(invocation.permissions.net),
-      },
-    })));
+  const scripts = await Promise.all(
+    step.scripts.map((invocation) => encodePlanInvocation(invocation, archive)),
+  );
   return {
     id: step.id,
     machine: {
       definition: {
         name: machine.name,
         domains: machine.domains,
-        private_ip: schemaVersion === 1 ? machine.privateIp[0] ?? null : machine.privateIp,
-        public_ip: schemaVersion === 1 ? machine.publicIp[0] ?? null : machine.publicIp,
+        private_ip: machine.privateIp,
+        public_ip: machine.publicIp,
         region: machine.region,
         ssh_user: machine.sshUser,
         ssh_port: machine.sshPort,
         ssh_private_key: sshKey,
-        ...(schemaVersion === 4 && machine.secretsDir !== undefined
-          ? { secrets_dir: machine.secretsDir }
-          : {}),
-        ...(schemaVersion === 1 ? { python: runtime.executable } : {
-          script_runtime: { kind: "deno", executable: runtimeExecutable(runtime.executable) },
-        }),
+        ...(machine.secretsDir !== undefined ? { secrets_dir: machine.secretsDir } : {}),
+        script_runtime: { kind: "deno", executable: runtimeExecutable(runtime.executable) },
         environments: machine.environments.map((item) => ({
           name: item.name,
           definition: item.definition,
@@ -1201,44 +1174,46 @@ async function encodeStep(
     scripts,
     parameters: jsonCopy(step.parameters),
     package: packageData,
-    ...(schemaVersion === 4
-      ? {
-        secret_values: step.secretValues,
-        secret_files: step.secretFiles,
-        run_as: runAs ?? null,
-        lifecycle_secret_values: step.lifecycleSecretValues ?? [],
-        lifecycle_secret_files: step.lifecycleSecretFiles ?? [],
-      }
-      : { config_secrets: [], file_secrets: [] }),
+    secret_values: step.secretValues,
+    secret_files: step.secretFiles,
+    run_as: runAs ?? null,
+    lifecycle_secret_values: step.lifecycleSecretValues ?? [],
+    lifecycle_secret_files: step.lifecycleSecretFiles ?? [],
     install_directory: step.installDirectory ?? null,
     bundle_scripts: step.bundleScripts === undefined ? null : await Promise.all(
-      step.bundleScripts.map(async (invocation) => ({
-        source: await archive.add(invocation.source),
-        relative_path: invocation.relativePath,
-        permissions: {
-          run: validateRunPermissions(invocation.permissions.run),
-          net: validateNetPermissions(invocation.permissions.net),
-        },
-      })),
+      step.bundleScripts.map((invocation) => encodePlanInvocation(invocation, archive)),
     ),
-    ...(schemaVersion === 4
-      ? {
-        deployment: step.deployment ?? null,
-        management: step.management === undefined
-          ? null
-          : await encodeManagement(step.management, archive),
-        delivery_inputs: step.deliveryInputs === undefined
-          ? null
-          : await encodeDeliveryInputs(step.deliveryInputs, archive),
-        environment_install: step.environmentInstall === undefined
-          ? null
-          : await encodeEnvironmentInstall(step.environmentInstall, archive),
-        environment_manager: step.environmentManager === undefined
-          ? null
-          : await encodeEnvironmentManager(step.environmentManager, archive),
-      }
-      : {}),
+    deployment: step.deployment ?? null,
+    management: step.management === undefined
+      ? null
+      : await encodeManagement(step.management, archive),
+    delivery_inputs: step.deliveryInputs === undefined
+      ? null
+      : await encodeDeliveryInputs(step.deliveryInputs, archive),
+    environment_install: step.environmentInstall === undefined
+      ? null
+      : await encodeEnvironmentInstall(step.environmentInstall, archive),
+    environment_manager: step.environmentManager === undefined
+      ? null
+      : await encodeEnvironmentManager(step.environmentManager, archive),
     depends_on: step.dependsOn,
+  };
+}
+
+async function encodePlanInvocation(
+  invocation: ScriptInvocation,
+  archive: ArchiveWriter,
+): Promise<JsonObject> {
+  return {
+    source: await archive.add(invocation.source),
+    // 旧 v2/v3 快照的步骤脚本可省略 relative_path；重新归档时保留空值。
+    relative_path: invocation.relativePath,
+    permissions: {
+      run: validateRunPermissions(invocation.permissions.run),
+      net: validateNetPermissions(invocation.permissions.net),
+      read: validatePathPermissions(invocation.permissions.read ?? [], "permissions.read"),
+      write: validatePathPermissions(invocation.permissions.write ?? [], "permissions.write"),
+    },
   };
 }
 
@@ -1261,6 +1236,8 @@ async function encodeInvocation(
     permissions: {
       run: validateRunPermissions(invocation.permissions.run),
       net: validateNetPermissions(invocation.permissions.net),
+      read: validatePathPermissions(invocation.permissions.read ?? [], "permissions.read"),
+      write: validatePathPermissions(invocation.permissions.write ?? [], "permissions.write"),
     },
   };
 }
@@ -1362,15 +1339,26 @@ async function decodeInvocation(
 ): Promise<ScriptInvocation> {
   const item = objectValue(raw, label);
   expectKeys(item, ["source", "relative_path", "permissions"], label);
-  const permissions = objectValue(item.permissions, `${label}.permissions`);
-  expectKeys(permissions, ["run", "net"], `${label}.permissions`);
   return Object.freeze({
     source: await snapshotFile(snapshot, item.source),
     relativePath: safeRelative(requiredString(item.relative_path, `${label}.relative_path`)),
-    permissions: Object.freeze({
-      run: validateRunPermissions(uniqueStrings(permissions.run, `${label}.permissions.run`)),
-      net: validateNetPermissions(uniqueStrings(permissions.net, `${label}.permissions.net`)),
-    }),
+    permissions: decodePermissions(item.permissions, `${label}.permissions`),
+  });
+}
+
+function decodePermissions(value: unknown, label: string): ScriptPermissions {
+  const permissions = objectValue(value, label);
+  expectKeysOptional(permissions, ["run", "net"], ["read", "write"], label);
+  return Object.freeze({
+    run: validateRunPermissions(uniqueStrings(permissions.run, `${label}.run`)),
+    net: validateNetPermissions(uniqueStrings(permissions.net, `${label}.net`)),
+    read: permissions.read === undefined
+      ? freezeArray([])
+      : validatePathPermissions(uniqueStrings(permissions.read, `${label}.read`), `${label}.read`),
+    write: permissions.write === undefined ? freezeArray([]) : validatePathPermissions(
+      uniqueStrings(permissions.write, `${label}.write`),
+      `${label}.write`,
+    ),
   });
 }
 
@@ -1740,8 +1728,13 @@ async function decodePlan(
   const plan = objectValue(value, "execution plan");
   expectKeys(plan, ["schema_version", "cluster", "requested_action", "steps"], "execution plan");
   const schema = plan.schema_version;
+  if (schema === 1) {
+    throw new ConfigurationError(
+      "execution-plan v1 Python 快照不再支持；请使用匹配旧快照的旧版执行器或重新部署为 Deno 计划",
+    );
+  }
   if (
-    (schema !== 1 && schema !== 2 && schema !== 3 && schema !== 4) || !Array.isArray(plan.steps) ||
+    (schema !== 2 && schema !== 3 && schema !== 4) || !Array.isArray(plan.steps) ||
     plan.steps.length === 0 || plan.steps.length > MAX_STEPS
   ) throw new ConfigurationError("执行计划 schema 非法");
   const requestedAction = requiredString(plan.requested_action, "requested_action");
@@ -1766,7 +1759,7 @@ async function decodeStep(
   snapshot: string,
   clusterDirectory: string,
   sourceImporter: SourceImporter,
-  schema: 1 | 2 | 3 | 4,
+  schema: 2 | 3 | 4,
 ): Promise<PlanStep> {
   const value = objectValue(raw, "plan step");
   expectKeysOptional(
@@ -1809,7 +1802,7 @@ async function decodeStep(
       "ssh_user",
       "ssh_port",
       "ssh_private_key",
-      schema === 1 ? "python" : "script_runtime",
+      "script_runtime",
       "environments",
     ],
     schema >= 3 ? ["secrets_dir"] : [],
@@ -1850,23 +1843,15 @@ async function decodeStep(
   const secretsDir = definition.secrets_dir === null || definition.secrets_dir === undefined
     ? undefined
     : requiredString(definition.secrets_dir, "secrets_dir");
-  let scriptRuntime: ScriptRuntime;
-  if (schema === 1) {
-    scriptRuntime = Object.freeze({
-      kind: "python",
-      executable: requiredString(definition.python, "python"),
-    });
-  } else {
-    const runtime = objectValue(definition.script_runtime, "script_runtime");
-    expectKeys(runtime, ["kind", "executable"], "script_runtime");
-    if (runtime.kind !== "deno") {
-      throw new ConfigurationError("execution-plan v2/v3/v4 运行时 kind 必须是 deno");
-    }
-    scriptRuntime = Object.freeze({
-      kind: "deno",
-      executable: runtimeExecutable(runtime.executable),
-    });
+  const runtime = objectValue(definition.script_runtime, "script_runtime");
+  expectKeys(runtime, ["kind", "executable"], "script_runtime");
+  if (runtime.kind !== "deno") {
+    throw new ConfigurationError("execution-plan v2/v3/v4 运行时 kind 必须是 deno");
   }
+  const scriptRuntime: ScriptRuntime = Object.freeze({
+    kind: "deno",
+    executable: runtimeExecutable(runtime.executable),
+  });
   const privateIp = ipAddresses(definition.private_ip, "private_ip", schema < 3);
   const publicIp = ipAddresses(definition.public_ip, "public_ip", schema < 3);
   const machine: Machine = Object.freeze({
@@ -1897,45 +1882,25 @@ async function decodeStep(
     addressKind,
     addresses,
   });
-  let scripts: readonly ScriptInvocation[];
-  if (schema === 1) {
-    scripts = freezeArray(
-      await Promise.all(
-        uniqueStrings(value.scripts, "scripts").map(async (item) =>
-          Object.freeze({
-            source: await snapshotFile(snapshot, item),
-            relativePath: "",
-            permissions: Object.freeze({ run: freezeArray([]), net: freezeArray([]) }),
-          })
-        ),
-      ),
-    );
-  } else {
-    if (!Array.isArray(value.scripts) || value.scripts.length > MAX_JSON_ITEMS) {
-      throw new ConfigurationError("scripts 必须是有界列表");
-    }
-    scripts = freezeArray(
-      await Promise.all(value.scripts.map(async (rawScript) => {
-        const item = objectValue(rawScript, "script invocation");
-        expectKeysOptional(item, ["source", "permissions"], ["relative_path"], "script invocation");
-        const permissions = objectValue(item.permissions, "script permissions");
-        expectKeys(permissions, ["run", "net"], "script permissions");
-        return Object.freeze({
-          source: await snapshotFile(snapshot, item.source),
-          relativePath: typeof item.relative_path === "string" ? item.relative_path : "",
-          permissions: Object.freeze({
-            run: validateRunPermissions(uniqueStrings(permissions.run, "permissions.run")),
-            net: validateNetPermissions(uniqueStrings(permissions.net, "permissions.net")),
-          }),
-        });
-      })),
-    );
+  if (!Array.isArray(value.scripts) || value.scripts.length > MAX_JSON_ITEMS) {
+    throw new ConfigurationError("scripts 必须是有界列表");
   }
+  const scripts: readonly ScriptInvocation[] = freezeArray(
+    await Promise.all(value.scripts.map(async (rawScript) => {
+      const item = objectValue(rawScript, "script invocation");
+      expectKeysOptional(item, ["source", "permissions"], ["relative_path"], "script invocation");
+      return Object.freeze({
+        source: await snapshotFile(snapshot, item.source),
+        relativePath: typeof item.relative_path === "string" ? item.relative_path : "",
+        permissions: decodePermissions(item.permissions, "script permissions"),
+      });
+    })),
+  );
   if (!scripts.length && schema < 4) {
     throw new ConfigurationError("legacy 计划步骤必须包含至少一个脚本调用");
   }
   let bundleScripts: readonly ScriptInvocation[] | undefined;
-  if (schema >= 2 && value.bundle_scripts !== null && value.bundle_scripts !== undefined) {
+  if (value.bundle_scripts !== null && value.bundle_scripts !== undefined) {
     if (!Array.isArray(value.bundle_scripts) || value.bundle_scripts.length > MAX_JSON_ITEMS) {
       throw new ConfigurationError("bundle_scripts 必须是有界列表");
     }
@@ -1948,15 +1913,10 @@ async function decodeStep(
           ["relative_path"],
           "bundle script invocation",
         );
-        const permissions = objectValue(item.permissions, "bundle script permissions");
-        expectKeys(permissions, ["run", "net"], "bundle script permissions");
         return Object.freeze({
           source: await snapshotFile(snapshot, item.source),
           relativePath: typeof item.relative_path === "string" ? item.relative_path : "",
-          permissions: Object.freeze({
-            run: validateRunPermissions(uniqueStrings(permissions.run, "permissions.run")),
-            net: validateNetPermissions(uniqueStrings(permissions.net, "permissions.net")),
-          }),
+          permissions: decodePermissions(item.permissions, "bundle script permissions"),
         });
       })),
     );
@@ -3399,6 +3359,26 @@ function validateRunPermissions(values: readonly string[]): readonly string[] {
   });
   if (new Set(result).size !== result.length) {
     throw new ConfigurationError("permissions.run 包含重复值");
+  }
+  return freezeArray(result);
+}
+
+function validatePathPermissions(
+  values: readonly string[],
+  label: string,
+): readonly string[] {
+  const result = values.map((value, index) => {
+    const text = permissionText(value, `${label}[${index}]`);
+    if (
+      !text.startsWith("/") || text.startsWith("//") || text === "/" || text.includes("\\") ||
+      text.split("/").some((part, partIndex) =>
+        partIndex > 0 && (!part || part === "." || part === "..")
+      )
+    ) throw new ConfigurationError(`${label}[${index}] 必须是规范绝对 POSIX 文件路径`);
+    return text;
+  });
+  if (new Set(result).size !== result.length) {
+    throw new ConfigurationError(`${label} 包含重复值`);
   }
   return freezeArray(result);
 }

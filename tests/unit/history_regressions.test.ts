@@ -218,7 +218,7 @@ Deno.test("unit/history nlink: identity replacement during settle fails closed",
   });
 });
 
-Deno.test("unit/history codec: checked-in v1/v2/v3 JSON fixtures decode from files", async () => {
+Deno.test("unit/history codec: checked-in Deno v2/v3 JSON fixtures decode from files", async () => {
   await withTempDir(async (root) => {
     const cluster = join(root, "demo");
     const snapshot = join(root, "snapshot");
@@ -227,19 +227,72 @@ Deno.test("unit/history codec: checked-in v1/v2/v3 JSON fixtures decode from fil
     await Deno.writeTextFile(join(snapshot, "files", "action.py"), "raise SystemExit(0)\n");
     await Deno.writeTextFile(join(snapshot, "files", "action.ts"), "Deno.exit(0);\n");
     const fixtureRoot = fromFileUrl(new URL("../fixtures/history/", import.meta.url));
-    for (const schema of [1, 2, 3] as const) {
+    for (const schema of [2, 3] as const) {
       const fixture = join(fixtureRoot, `plan-v${schema}.json`);
       const raw = await __internal.readJson(fixture, 1024 * 1024);
       const decoded = await __internal.decodePlan(raw, snapshot, cluster, importer);
       assertEquals(decoded.schemaVersion, 3);
       assertEquals(decoded.requestedAction, "deploy");
-      assertEquals(
-        decoded.steps[0].machine.machine.scriptRuntime.kind,
-        schema === 1 ? "python" : "deno",
-      );
+      assertEquals(decoded.steps[0].machine.machine.scriptRuntime.kind, "deno");
       assertEquals(decoded.steps[0].machine.addresses[0], "10.0.0.1");
       assertEquals(decoded.steps[0].machine.addresses.length, schema === 3 ? 2 : 1);
     }
+  });
+});
+
+Deno.test("unit/history codec: Python v1 fixture is explicitly rejected", async () => {
+  await withTempDir(async (root) => {
+    const cluster = join(root, "demo");
+    const snapshot = join(root, "snapshot");
+    await Deno.mkdir(join(snapshot, "files"), { recursive: true });
+    await Deno.mkdir(cluster);
+    await Deno.writeTextFile(join(snapshot, "files", "action.py"), "raise SystemExit(0)\n");
+    const fixture = join(
+      fromFileUrl(new URL("../fixtures/history/", import.meta.url)),
+      "plan-v1.json",
+    );
+    const raw = await __internal.readJson(fixture, 1024 * 1024);
+    const error = await assertRejects(
+      () => __internal.decodePlan(raw, snapshot, cluster, importer),
+      ConfigurationError,
+    );
+    assertStringIncludes(error.message, "execution-plan v1 Python 快照不再支持");
+  });
+});
+
+Deno.test("unit/history codec: legacy v2 snapshot rearchives without a relative path", async () => {
+  await withTempDir(async (root) => {
+    const cluster = join(root, "demo");
+    const snapshot = join(root, "snapshot");
+    await Deno.mkdir(join(snapshot, "files"), { recursive: true });
+    await Deno.mkdir(cluster);
+    const snapshotAction = join(snapshot, "files", "action.ts");
+    await Deno.writeTextFile(snapshotAction, "Deno.exit(0);\n");
+    const fixture = join(
+      fromFileUrl(new URL("../fixtures/history/", import.meta.url)),
+      "plan-v2.json",
+    );
+    const decoded = await __internal.decodePlan(
+      await __internal.readJson(fixture, 1024 * 1024),
+      snapshot,
+      cluster,
+      importer,
+    );
+    assertEquals(decoded.steps[0].scripts[0].relativePath, "");
+
+    const archive = {
+      add: () => Promise.resolve("files/action.ts"),
+    } as unknown as Parameters<typeof __internal.encodePlan>[1];
+    const encoded = await __internal.encodePlan(
+      decoded,
+      archive,
+      (_provider, source) => ({ schema: "fixture.v1", payload: source }),
+    );
+    assertEquals(encoded.schema_version, 4);
+    const step = (encoded.steps as Array<{
+      scripts: Array<{ relative_path: string }>;
+    }>)[0];
+    assertEquals(step.scripts[0].relative_path, "");
   });
 });
 

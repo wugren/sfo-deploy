@@ -222,20 +222,12 @@ export class FakeSession implements RemoteSession {
     return Promise.resolve(`${workspace}/secrets`);
   }
 
-  preflightPython(): Promise<CommandResult> {
-    return Promise.resolve(commandResult(0));
-  }
-
   preflightDeno(): Promise<CommandResult> {
     return Promise.resolve(commandResult(0));
   }
 
   preflightPrivilege(): Promise<void> {
     return Promise.resolve();
-  }
-
-  executePython(): Promise<CommandResult> {
-    return Promise.resolve(commandResult(0));
   }
 
   executeDeno(

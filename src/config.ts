@@ -731,6 +731,18 @@ function runPermission(value: unknown, label: string): string {
   return text;
 }
 
+function pathPermission(value: unknown, label: string): string {
+  const text = permissionText(value, label);
+  if (
+    text.includes("\\") || !posix.isAbsolute(text) || text.startsWith("//") ||
+    posix.normalize(text) !== text || text === "/" ||
+    text.split("/").some((part) => part === "." || part === "..")
+  ) {
+    throw new ConfigurationError(`${label} 必须是规范绝对 POSIX 文件路径`);
+  }
+  return text;
+}
+
 function validatePort(value: string, label: string): void {
   if (!/^[0-9]+$/.test(value) || Number(value) < 1 || Number(value) > 65535) {
     throw new ConfigurationError(`${label} 端口必须在 1..65535`);
@@ -831,10 +843,12 @@ async function scriptInvocation(
   const entry = mapping(value, label);
   fields(entry, ["path", "permissions"], ["path", "permissions"], label);
   const permissionData = mapping(entry.permissions, `${label}.permissions`);
-  fields(permissionData, ["run", "net"], [], `${label}.permissions`);
+  fields(permissionData, ["run", "net", "read", "write"], ["run", "net"], `${label}.permissions`);
   const permissions: ScriptPermissions = Object.freeze({
     run: permissionList(permissionData.run ?? [], `${label}.permissions.run`, runPermission),
     net: permissionList(permissionData.net ?? [], `${label}.permissions.net`, netPermission),
+    read: permissionList(permissionData.read ?? [], `${label}.permissions.read`, pathPermission),
+    write: permissionList(permissionData.write ?? [], `${label}.permissions.write`, pathPermission),
   });
   const rawPath = stringValue(entry.path, `${label}.path`);
   return Object.freeze({
@@ -1225,7 +1239,7 @@ async function managedConfigFiles(
 
 function appServiceManagement(
   item: StringRecord,
-  directory: string,
+  _directory: string,
   installDirectory: string | undefined,
   label: string,
 ): Promise<AppServiceManagement> {

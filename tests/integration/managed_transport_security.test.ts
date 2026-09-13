@@ -180,7 +180,7 @@ Deno.test("integration/managed-transport: 真实 OpenSSH 路径的部署成员�
   });
 });
 
-Deno.test("integration/managed-transport: Python/Deno 在 root 与非 root 下使用已验证 HOME 和内层协议环境", async () => {
+Deno.test("integration/managed-transport: Deno 在 root 与非 root 下使用已验证 HOME 和内层协议环境", async () => {
   await withTempDir(async (root) => {
     const knownHosts = join(root, "known_hosts");
     await Deno.writeTextFile(knownHosts, "fixture\n");
@@ -222,16 +222,9 @@ Deno.test("integration/managed-transport: Python/Deno 在 root 与非 root 下�
       permissions: Object.freeze({ run: Object.freeze([]), net: Object.freeze([]) }),
       runAs: "deploy",
     });
-    await rootSession.executePython("/usr/bin/python3", `${workspace}/lifecycle.py`, {
-      metadataPath: metadata,
-      secretDir: secrets,
-      runAs: "deploy",
-    });
     assert(rootCalls.some((call) => call.includes("'getent' 'passwd' 'deploy'")));
-    const lifecycleCalls = rootCalls.filter((call) =>
-      call.includes("'/usr/bin/deno' 'run'") || call.includes("'/usr/bin/python3'")
-    );
-    assertEquals(lifecycleCalls.length, 2);
+    const lifecycleCalls = rootCalls.filter((call) => call.includes("'/usr/bin/deno' 'run'"));
+    assertEquals(lifecycleCalls.length, 1);
     for (const call of lifecycleCalls) {
       const sudo = call.indexOf("exec 'sudo' '-n' '-H' '-u' 'deploy' '--'");
       const innerEnv = call.indexOf("'env'", sudo);

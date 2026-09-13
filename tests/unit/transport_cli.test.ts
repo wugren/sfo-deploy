@@ -315,6 +315,36 @@ Deno.test("unit/transport: remote /usr/bin/test argv does not use --", async () 
   });
 });
 
+Deno.test("unit/transport: executeDeno merges workspace and configured file paths", async () => {
+  await withTempDir(async (root) => {
+    const knownHosts = join(root, "known_hosts");
+    await Deno.writeTextFile(knownHosts, "fixture\n");
+    const remoteCalls: string[] = [];
+    const factory = (_command: string, args: readonly string[]): SpawnedCommand => {
+      const rendered = String(args.at(-1) ?? "");
+      remoteCalls.push(rendered);
+      return { output: () => Promise.resolve(output()), kill: () => undefined };
+    };
+    const transport = new OpenSshTransport({ knownHosts, commandFactory: factory });
+    const session = await transport.connect(resolved("node-a"));
+    const workspace = await session.createWorkspace();
+    await session.executeDeno("/usr/bin/deno", `${workspace}/action.ts`, {
+      workspace,
+      metadataPath: `${workspace}/metadata.json`,
+      permissions: Object.freeze({
+        run: Object.freeze([]),
+        net: Object.freeze([]),
+        read: Object.freeze(["/etc/demo/input.json"]),
+        write: Object.freeze(["/srv/demo/state"]),
+      }),
+    });
+    const execution = remoteCalls.find((call) => call.includes("'/usr/bin/deno' 'run'"))!;
+    assertStringIncludes(execution, `--allow-read=${workspace},/etc/demo/input.json`);
+    assertStringIncludes(execution, `--allow-write=${workspace},/srv/demo/state`);
+    await session.close();
+  });
+});
+
 Deno.test("unit/cli: help, argument errors, stable JSON and exit codes", async () => {
   const stdout = new BufferWriter();
   const stderr = new BufferWriter();

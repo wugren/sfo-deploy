@@ -8,7 +8,7 @@ export interface JsonObject {
 
 export type ResourceKind = "environment" | "app";
 export type AddressKind = "private" | "public";
-export type ScriptRuntimeKind = "deno" | "python";
+export type ScriptRuntimeKind = "deno";
 export type PlanAction =
   | "check"
   | "install"
@@ -46,6 +46,10 @@ export interface ConfigTemplate {
 export interface ScriptPermissions {
   readonly run: readonly string[];
   readonly net: readonly string[];
+  /** Deno --allow-read 扩展路径；空数组保持默认 workspace。 */
+  readonly read?: readonly string[];
+  /** Deno --allow-write 扩展路径；空数组保持默认 workspace。 */
+  readonly write?: readonly string[];
 }
 
 export interface ScriptRuntime {

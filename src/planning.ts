@@ -11,7 +11,6 @@ import type {
   AppDefinition,
   AppManagementDefinition,
   ClusterConfig,
-  EnvironmentDefinition,
   EnvironmentInstance,
   ExecutionPlan,
   PlanRequest,

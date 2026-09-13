@@ -1,5 +1,5 @@
 import { join } from "jsr:@std/path@1.1.6";
-import { assertEquals, assertMatch, withTempDir } from "../_support/assert.ts";
+import { assertEquals, withTempDir } from "../_support/assert.ts";
 
 const DENO_LOADER = "src/secret_loader/deno.ts";
 
@@ -90,35 +90,5 @@ Deno.test("integration/secret loader: Deno loader rejects missing, empty, invali
       stderr: "piped",
     }).output();
     assertEquals(output.code, 0, new TextDecoder().decode(output.stderr));
-  });
-});
-
-Deno.test("integration/secret loader: Python loader mirrors the same contract", async () => {
-  await withTempDir(async (root) => {
-    const secretsDir = join(root, "secrets");
-    await Deno.mkdir(secretsDir);
-    await Deno.writeTextFile(join(secretsDir, "DB_PASSWORD"), "db-secret", { mode: 0o600 });
-    await Deno.writeTextFile(join(secretsDir, "TLS_KEY"), "key-bytes\n", { mode: 0o600 });
-    const consumer = join(root, "consumer.py");
-    await Deno.writeTextFile(
-      consumer,
-      `import sys\nsys.path.insert(0, ${JSON.stringify(join(Deno.cwd(), "src/secret_loader"))})\n` +
-        `from python import load_secrets\n` +
-        `result = load_secrets(dir=${
-          JSON.stringify(secretsDir)
-        }, values=["DB_PASSWORD"], files=["TLS_KEY"])\n` +
-        `assert result["values"]["DB_PASSWORD"] == "db-secret"\n` +
-        `assert result["files"]["TLS_KEY"] == ${JSON.stringify(join(secretsDir, "TLS_KEY"))}\n`,
-    );
-    const output = await new Deno.Command("python3", {
-      args: [consumer],
-      stdout: "piped",
-      stderr: "piped",
-    }).output();
-    assertMatch(
-      new TextDecoder().decode(output.stderr) + new TextDecoder().decode(output.stdout),
-      /^$/,
-    );
-    assertEquals(output.code, 0);
   });
 });

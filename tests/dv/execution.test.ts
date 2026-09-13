@@ -149,10 +149,6 @@ class MemorySession implements RemoteSession {
     return Promise.resolve(`${workspace}/secrets`);
   }
 
-  preflightPython(): Promise<CommandResult> {
-    return Promise.resolve(commandResult(0));
-  }
-
   preflightDeno(): Promise<CommandResult> {
     this.events.push(`${this.machine}:preflight`);
     return Promise.resolve(commandResult(0));
@@ -160,10 +156,6 @@ class MemorySession implements RemoteSession {
 
   preflightPrivilege(): Promise<void> {
     return Promise.resolve();
-  }
-
-  executePython(): Promise<CommandResult> {
-    return Promise.resolve(commandResult(0));
   }
 
   executeDeno(

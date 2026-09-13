@@ -1,0 +1,114 @@
+schema_version: 1
+task_manifest: task.yaml
+risk_profile: risk-profile.yaml
+api_impact:
+  public_api: migration-required
+  crate_root_export_change: false
+  build_surface_change: true
+  documentation_examples_affected: true
+evidence_inputs: ["src","tests","README.md","docs/guides","examples","skills/sfo-deploy-cluster"]
+contract_checks:
+  mode: enabled
+  steps:
+    - id: C1
+      kind: external-positive
+      assertion: new-path-compiles
+      name: External ScriptPermissions consumer compiles
+      change_ids: ["CHG-lifecycle-file-permissions", "CHG-remove-python-runtime"]
+      run: ["deno", "check", "--frozen", "tests/contract/script_permissions_consumer.ts"]
+    - id: C2
+      kind: documentation-examples
+      assertion: documentation-examples-compile
+      name: README guide example and skill permission contract
+      change_ids: ["CHG-lifecycle-file-permissions", "CHG-remove-python-runtime"]
+      run: ["deno", "run", "--allow-read", "tests/contract/verify_deno_contract.ts", "docs"]
+    - id: C3
+      kind: removed-symbol-scan
+      assertion: no-unallowlisted-old-symbol-references
+      name: removed Python runtime consumer closure
+      change_ids: ["CHG-lifecycle-file-permissions", "CHG-remove-python-runtime"]
+      run: ["python3", "harness/scripts/consumer-closure-check.py", "--version", "v0.1", "--module", "sfo-deploy", "--task-name", "089-lifecycle-file-permissions"]
+    - id: C4
+      kind: repository-compile-closure
+      assertion: repository-consumers-compile
+      name: Deno repository compile closure
+      change_ids: ["CHG-lifecycle-file-permissions", "CHG-remove-python-runtime"]
+      run: ["deno", "run", "--allow-read", "--allow-run=deno", "tests/contract/verify_deno_contract.ts", "closure"]
+defaults:
+  workdir: .
+  timeout_sec: 600
+  env: {}
+manual_gaps:
+  - "已获 run 权限的子进程可绕过 Deno 文件权限；提案将其定为非目标，本任务不验证操作系统级隔离。"
+  - "测试不连接真实部署节点；远端目录、软链接与账号前提由部署环境保证。"
+levels:
+  unit:
+    mode: enabled
+    summary: 覆盖权限装载、快照编解码、Python v1 拒绝和 Deno argv 合并
+    test_targets:
+      - tests/unit/app_management_config.test.ts
+      - tests/unit/environment_management_config.test.ts
+      - tests/unit/history.test.ts
+      - tests/unit/history_regressions.test.ts
+      - tests/unit/transport_cli.test.ts
+    preconditions:
+      tools: ["deno>=2"]
+      env: []
+      services: []
+      notes: ["使用本地临时目录，不连接部署节点。"]
+    steps:
+      - id: U1
+        name: script permission loaders and snapshot codecs
+        change_ids: ["CHG-lifecycle-file-permissions"]
+        run: ["deno", "test", "--frozen", "--allow-read", "--allow-write", "--allow-env", "--allow-net", "--allow-run", "tests/unit/app_management_config.test.ts", "tests/unit/environment_management_config.test.ts", "tests/unit/history.test.ts", "tests/unit/history_regressions.test.ts"]
+      - id: U2
+        name: Deno execution argv permission merge
+        change_ids: ["CHG-lifecycle-file-permissions"]
+        run: ["deno", "test", "--frozen", "--allow-read", "--allow-write", "--allow-env", "--allow-net", "--allow-run", "tests/unit/transport_cli.test.ts"]
+      - id: U3
+        name: Deno-only runtime removal regressions
+        change_ids: ["CHG-remove-python-runtime"]
+        run: ["deno", "test", "--frozen", "--allow-read", "--allow-write", "--allow-env", "--allow-net", "--allow-run", "tests/unit/history_regressions.test.ts"]
+  dv:
+    mode: enabled
+    summary: 覆盖执行器权限传递与既有失败清理路径
+    test_targets:
+      - tests/dv/execution.test.ts
+      - tests/dv/app_management_execution.test.ts
+    preconditions:
+      tools: ["deno>=2"]
+      env: []
+      services: []
+      notes: ["使用 RemoteSession 测试替身，不连接 SSH。"]
+    steps:
+      - id: D1
+        name: execution permission handoff and failure paths
+        change_ids: ["CHG-lifecycle-file-permissions", "CHG-remove-python-runtime"]
+        run: ["deno", "test", "--frozen", "--allow-read", "--allow-write", "--allow-env", "--allow-net", "--allow-run", "tests/dv/execution.test.ts", "tests/dv/app_management_execution.test.ts"]
+  integration:
+    mode: enabled
+    summary: 覆盖真实 Deno 允许/拒绝、loader 契约、managed transport 和文档一致性
+    test_targets:
+      - tests/integration/script_file_permissions.test.ts
+      - tests/integration/secret_loader_contract.test.ts
+      - tests/integration/managed_transport_security.test.ts
+      - tests/integration/environment_management_history.test.ts
+      - tests/contract/verify_deno_contract.ts
+    preconditions:
+      tools: ["deno>=2"]
+      env: []
+      services: []
+      notes: ["真实 Deno 子进程只在本地临时目录运行。"]
+    steps:
+      - id: I1
+        name: actual Deno read write and deny behavior
+        change_ids: ["CHG-lifecycle-file-permissions"]
+        run: ["deno", "test", "--frozen", "--allow-read", "--allow-write", "--allow-env", "--allow-net", "--allow-run", "tests/integration/script_file_permissions.test.ts"]
+      - id: I2
+        name: runtime loader managed transport and snapshot integration
+        change_ids: ["CHG-lifecycle-file-permissions", "CHG-remove-python-runtime"]
+        run: ["deno", "test", "--frozen", "--allow-read", "--allow-write", "--allow-env", "--allow-net", "--allow-run", "tests/integration/secret_loader_contract.test.ts", "tests/integration/managed_transport_security.test.ts", "tests/integration/environment_management_history.test.ts"]
+      - id: I3
+        name: Python runtime removal integration checks
+        change_ids: ["CHG-remove-python-runtime"]
+        run: ["deno", "test", "--frozen", "--allow-read", "--allow-write", "--allow-env", "--allow-net", "--allow-run", "tests/integration/secret_loader_contract.test.ts", "tests/integration/managed_transport_security.test.ts"]

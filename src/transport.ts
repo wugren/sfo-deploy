@@ -140,20 +140,12 @@ export interface RemoteSession extends AsyncDisposable {
   ): Promise<readonly DeploySecretResult[]>;
   removeSecret(name: string, directory: string, signal?: AbortSignal): Promise<void>;
   checkSecrets(directory: string, signal?: AbortSignal): Promise<RemoteSecretState>;
-  preflightPython(interpreter: string, signal?: AbortSignal): Promise<CommandResult>;
   preflightDeno(
     executable: string,
     signal?: AbortSignal,
     minimumMajor?: number,
   ): Promise<CommandResult>;
   preflightPrivilege(signal?: AbortSignal): Promise<void>;
-  executePython(interpreter: string, script: string, options?: {
-    readonly metadataPath?: string;
-    readonly secretDir?: string;
-    readonly privileged?: boolean;
-    readonly runAs?: string;
-    readonly signal?: AbortSignal;
-  }): Promise<CommandResult>;
   executeDeno(executable: string, script: string, options: {
     readonly workspace: string;
     readonly metadataPath: string;
@@ -1689,18 +1681,6 @@ export class OpenSshRemoteSession implements RemoteSession {
     return copyDirectory;
   }
 
-  async preflightPython(interpreter: string, signal?: AbortSignal): Promise<CommandResult> {
-    const executable = runtimeExecutable(interpreter);
-    const result = await this.run([executable, "--version"], { signal });
-    const version = `${result.stdout}\n${result.stderr}`.trim();
-    if (result.exitCode !== 0 || !version.startsWith("Python 3.")) {
-      throw new PreflightError(
-        `远端 Python 3 解释器不可用 ${JSON.stringify(interpreter)}: ${version}`,
-      );
-    }
-    return result;
-  }
-
   async preflightDeno(
     executable: string,
     signal?: AbortSignal,
@@ -1734,77 +1714,6 @@ export class OpenSshRemoteSession implements RemoteSession {
     this.#privilegePrefix = Object.freeze(["sudo", "-n", "--"]);
   }
 
-  async executePython(
-    interpreter: string,
-    script: string,
-    options: {
-      readonly metadataPath?: string;
-      readonly secretDir?: string;
-      readonly privileged?: boolean;
-      readonly runAs?: string;
-      readonly signal?: AbortSignal;
-    } = {},
-  ): Promise<CommandResult> {
-    const remoteScript = workspaceMemberOfAny(this.#workspaces, script, "Python 脚本");
-    const environment: Record<string, string> = {};
-    if (options.metadataPath !== undefined) {
-      environment.DEPLOYMENT_METADATA_PATH = safeRemotePath(options.metadataPath);
-    }
-    if (options.secretDir !== undefined) {
-      environment.DEPLOYMENT_SECRETS_DIR = workspaceMemberOfAny(
-        this.#workspaces,
-        options.secretDir,
-        "步骤秘密副本目录",
-      );
-    }
-    const executable = runtimeExecutable(interpreter);
-    if (options.runAs !== undefined) {
-      const workspace = containingWorkspace(this.#workspaces, remoteScript, "Python 脚本");
-      const identity = await this.#validatedAppIdentity(options.runAs, options.signal);
-      const scope = await this.#createAppScope(
-        identity,
-        workspace,
-        "lifecycle-python",
-        options.signal,
-      );
-      try {
-        const scopedScript = `${scope}/script.py`;
-        await this.#installAppInput(identity, remoteScript, scopedScript, "0500", options.signal);
-        if (options.metadataPath !== undefined) {
-          const scopedMetadata = `${scope}/metadata.json`;
-          await this.#installAppInput(
-            identity,
-            environment.DEPLOYMENT_METADATA_PATH,
-            scopedMetadata,
-            "0400",
-            options.signal,
-          );
-          environment.DEPLOYMENT_METADATA_PATH = scopedMetadata;
-        }
-        await this.#installOptionalAppInput(
-          identity,
-          `${workspace}/sfo_secret_loader.py`,
-          `${scope}/sfo_secret_loader.py`,
-          options.signal,
-        );
-        return await this.runAsApp(options.runAs, [executable, scopedScript], {
-          signal: options.signal,
-          environment: Object.keys(environment).length > 0 ? environment : undefined,
-        });
-      } finally {
-        await this.run(["rm", "-rf", "--", scope], { privileged: identity.requiresSudo }).catch(
-          () => undefined,
-        );
-      }
-    }
-    const argv = [executable, remoteScript];
-    const runOptions = {
-      signal: options.signal,
-      environment: Object.keys(environment).length > 0 ? environment : undefined,
-    };
-    return await this.run(argv, { ...runOptions, privileged: options.privileged });
-  }
-
   async executeDeno(
     executable: string,
     script: string,
@@ -1826,6 +1735,16 @@ export class OpenSshRemoteSession implements RemoteSession {
       : workspaceMember(workspace, options.secretDir, "步骤秘密副本目录");
     const run = permissionValues(options.permissions.run, "Deno run 权限", true);
     const net = permissionValues(options.permissions.net, "Deno net 权限", false);
+    const read = filePermissionPaths(
+      workspace,
+      options.permissions.read ?? [],
+      "Deno read 权限",
+    );
+    const write = filePermissionPaths(
+      workspace,
+      options.permissions.write ?? [],
+      "Deno write 权限",
+    );
     net.forEach(validateNetPermission);
     const executablePath = runtimeExecutable(executable);
     let executionScript = remoteScript;
@@ -1868,8 +1787,8 @@ export class OpenSshRemoteSession implements RemoteSession {
         "--no-npm",
         "--deny-ffi",
         "--allow-env=DEPLOYMENT_METADATA_PATH,DEPLOYMENT_SECRETS_DIR,HOME",
-        `--allow-read=${workspace}`,
-        `--allow-write=${workspace}`,
+        `--allow-read=${read.join(",")}`,
+        `--allow-write=${write.join(",")}`,
         run.length > 0 ? `--allow-run=${run.join(",")}` : "--deny-run",
         net.length > 0 ? `--allow-net=${net.join(",")}` : "--deny-net",
         executionScript,
@@ -2386,17 +2305,6 @@ function workspaceMemberOfAny(
   return path;
 }
 
-function containingWorkspace(
-  workspaces: ReadonlySet<string>,
-  rawPath: string,
-  label: string,
-): string {
-  const path = workspaceMemberOfAny(workspaces, rawPath, label);
-  const workspace = [...workspaces].find((candidate) => path.startsWith(`${candidate}/`));
-  if (workspace === undefined) throw new TransportError(`${label}不在当前会话工作目录内`);
-  return workspace;
-}
-
 function runtimeExecutable(value: string): string {
   if (
     typeof value !== "string" || value.length === 0 || value.trim() !== value ||
@@ -2452,6 +2360,15 @@ function permissionValues(
     result.push(value);
   }
   return Object.freeze(result);
+}
+
+function filePermissionPaths(
+  workspace: string,
+  values: readonly string[],
+  label: string,
+): readonly string[] {
+  const userPaths = permissionValues(values, label, true);
+  return Object.freeze([...new Set([safeRemotePath(workspace), ...userPaths])]);
 }
 
 function validateNetPermission(value: string): void {

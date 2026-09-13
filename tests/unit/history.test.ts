@@ -59,7 +59,7 @@ async function archived(root: string): Promise<{
   return { store, releaseId, snapshot: join(store.root, releaseId, "snapshot"), plan };
 }
 
-Deno.test("unit/history: new writes use v4 and v1/v2/v3 snapshots remain readable", async () => {
+Deno.test("unit/history: new writes use v4 and Deno v2/v3 snapshots remain readable", async () => {
   await withTempDir(async (root) => {
     const { snapshot } = await archived(root);
     const current = JSON.parse(await Deno.readTextFile(join(snapshot, "actual-plan.json")));
@@ -68,6 +68,8 @@ Deno.test("unit/history: new writes use v4 and v1/v2/v3 snapshots remain readabl
     assertEquals(current.steps[0].run_as, null);
     assertEquals(current.steps[0].lifecycle_secret_values, []);
     assertEquals(current.steps[0].lifecycle_secret_files, []);
+    assertEquals(current.steps[0].scripts[0].permissions.read, []);
+    assertEquals(current.steps[0].scripts[0].permissions.write, []);
     const currentDecoded = await __internal.decodePlan(
       current,
       snapshot,
@@ -108,13 +110,11 @@ Deno.test("unit/history: new writes use v4 and v1/v2/v3 snapshots remain readabl
 
     const v1 = structuredClone(v3);
     v1.schema_version = 1;
-    for (const step of v1.steps) {
-      step.machine.definition.python = "python3";
-      delete step.machine.definition.script_runtime;
-      step.scripts = step.scripts.map((item: { source: string }) => item.source);
-    }
-    const decodedV1 = await __internal.decodePlan(v1, snapshot, join(root, "demo"), importer);
-    assertEquals(decodedV1.steps[0].machine.machine.scriptRuntime.kind, "python");
+    const v1Error = await assertRejects(
+      () => __internal.decodePlan(v1, snapshot, join(root, "demo"), importer),
+      ConfigurationError,
+    );
+    assertStringIncludes(v1Error.message, "execution-plan v1 Python 快照不再支持");
   });
 });
 
@@ -220,6 +220,8 @@ Deno.test("unit/history: v4 codec round-trips install_directory and delivery inp
               permissions: Object.freeze({
                 run: Object.freeze(["/usr/bin/sudo"]),
                 net: Object.freeze([] as string[]),
+                read: Object.freeze(["/etc/demo/config.json"] as string[]),
+                write: Object.freeze(["/srv/demo/state"] as string[]),
               }),
             })])
             : undefined,
@@ -268,6 +270,8 @@ Deno.test("unit/history: v4 codec round-trips install_directory and delivery inp
     assertEquals(deployStep?.installDirectory, "/srv/demo");
     assertEquals(deployStep?.bundleScripts?.[0].relativePath, "scripts/start.ts");
     assertEquals(deployStep?.bundleScripts?.[0].permissions.run, ["/usr/bin/sudo"]);
+    assertEquals(deployStep?.bundleScripts?.[0].permissions.read, ["/etc/demo/config.json"]);
+    assertEquals(deployStep?.bundleScripts?.[0].permissions.write, ["/srv/demo/state"]);
     assertEquals(deployStep?.runAs, "deploy");
     assertEquals(deployStep?.management?.runAs, "deploy");
     assertEquals(deployStep?.lifecycleSecretValues, []);

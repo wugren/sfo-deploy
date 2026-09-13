@@ -26,19 +26,6 @@ const serviceManager: EnvironmentSystemManager = Object.freeze({
   timeoutMs: 30000,
 });
 
-const scriptInvocation: ScriptInvocation = Object.freeze({
-  source: "/fixture/stop.ts",
-  relativePath: "scripts/stop.ts",
-  permissions: Object.freeze({ run: Object.freeze([]), net: Object.freeze([]) }),
-});
-
-const scriptManager: EnvironmentScriptManager = Object.freeze({
-  kind: "script",
-  start: scriptInvocation,
-  stop: scriptInvocation,
-  restart: scriptInvocation,
-});
-
 Deno.test("dv/environment management: prepare runs package install then system manager start", async () => {
   await withTempDir(async (_root) => {
     const session = new FakeSession(

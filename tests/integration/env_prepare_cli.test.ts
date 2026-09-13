@@ -177,17 +177,11 @@ class IntegrationSession implements RemoteSession {
   ): Promise<string> {
     return Promise.resolve("/tmp/sfo-deploy-integration/secrets");
   }
-  preflightPython(): Promise<CommandResult> {
-    return Promise.resolve(commandResult(0));
-  }
   preflightDeno(): Promise<CommandResult> {
     return Promise.resolve(commandResult(0));
   }
   preflightPrivilege(): Promise<void> {
     return Promise.resolve();
-  }
-  executePython(): Promise<CommandResult> {
-    return Promise.resolve(commandResult(0));
   }
   executeDeno(
     _executable: string,

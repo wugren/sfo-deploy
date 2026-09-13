@@ -69,7 +69,6 @@ machines:
       plan,
       archive,
       (_provider, source) => ({ schema: "fixture.v1", payload: source }),
-      4,
     ) as Record<string, unknown>;
     const encodedSteps = encoded.steps as Array<Record<string, Record<string, unknown>>>;
     assertEquals(encodedSteps[0].environment_install.kind, "package");
@@ -149,7 +148,6 @@ machines:
       plan,
       archive,
       (_provider, source) => ({ schema: "fixture.v1", payload: source }),
-      4,
     ) as Record<string, unknown>;
     const step = (encoded.steps as Array<Record<string, Record<string, unknown>>>)[0];
     assertEquals(step.environment_manager.kind, "script");

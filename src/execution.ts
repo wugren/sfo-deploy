@@ -58,9 +58,7 @@ import type {
 } from "./types.ts";
 
 const DENO_LOADER_SOURCE = new URL("./secret_loader/deno.ts", import.meta.url).pathname;
-const PYTHON_LOADER_SOURCE = new URL("./secret_loader/python.py", import.meta.url).pathname;
 const DENO_LOADER_REMOTE_NAME = "sfo-secret-loader.ts";
-const PYTHON_LOADER_REMOTE_NAME = "sfo_secret_loader.py";
 const UNSAFE_REDACTORS = new WeakSet<Redactor>();
 
 export interface PreparedStep {
@@ -176,7 +174,6 @@ export async function prepareExecution(
   const directory = await Deno.makeTempDir({ prefix: "sfo-deploy-prepared-" });
   await Deno.chmod(directory, 0o700);
   const prepared = new Map<string, PreparedStep>();
-  const runtimeKinds = new Map<string, string>();
   const privateKeys = new Map<string, string>();
   const artifacts: VerifiedArtifact[] = [];
   const planSteps: PlanStep[] = [];
@@ -330,14 +327,8 @@ export async function prepareExecution(
         });
       }
       const runtime = step.machine.machine.scriptRuntime;
-      if (runtime.kind !== "deno" && runtime.kind !== "python") {
+      if (runtime.kind !== "deno") {
         throw new PreflightError(`步骤 ${step.id} 使用不支持的脚本运行时: ${runtime.kind}`);
-      }
-      const machineName = step.machine.machine.name;
-      const existingRuntimeKind = runtimeKinds.get(machineName);
-      if (existingRuntimeKind === undefined) runtimeKinds.set(machineName, runtime.kind);
-      else if (existingRuntimeKind !== runtime.kind) {
-        throw new PreflightError(`机器 ${machineName} 在同一计划中混用了脚本运行时`);
       }
       prepared.set(
         step.id,
@@ -933,9 +924,7 @@ export class DeploymentExecutor {
         );
       }
       if (!options.runtimeChecked.has(runtimeKey)) {
-        if (runtime.kind === "deno") {
-          await options.session.preflightDeno(runtime.executable, options.signal, 2);
-        } else await options.session.preflightPython(runtime.executable, options.signal);
+        await options.session.preflightDeno(runtime.executable, options.signal, 2);
         options.runtimeChecked.add(runtimeKey);
       }
       if (
@@ -974,13 +963,6 @@ export class DeploymentExecutor {
           errorCategory = cause instanceof PreflightError ? "preflight" : "runtime";
         }
       }
-      if (managedConfigs.length > 0 && runtime.kind !== "deno") {
-        const updaterRuntimeKey = `${machine.name}\0deno\0deno`;
-        if (!options.runtimeChecked.has(updaterRuntimeKey)) {
-          await options.session.preflightDeno("deno", options.signal, 2);
-          options.runtimeChecked.add(updaterRuntimeKey);
-        }
-      }
       if (needsLegacySecrets) {
         const secretsDir = machine.secretsDir ?? DEFAULT_SECRETS_DIR;
         secretCopyDir = await options.session.exposeStepSecrets(
@@ -991,14 +973,14 @@ export class DeploymentExecutor {
         );
       }
       if (lifecycleSecretNames.length > 0) {
-        const localLoader = runtime.kind === "deno" ? DENO_LOADER_SOURCE : PYTHON_LOADER_SOURCE;
-        const remoteLoader = `${options.workspace}/${
-          runtime.kind === "deno" ? DENO_LOADER_REMOTE_NAME : PYTHON_LOADER_REMOTE_NAME
-        }`;
-        await options.session.uploadFile(localLoader, remoteLoader, {
-          signal: options.signal,
-          mode: 0o600,
-        });
+        await options.session.uploadFile(
+          DENO_LOADER_SOURCE,
+          `${options.workspace}/${DENO_LOADER_REMOTE_NAME}`,
+          {
+            signal: options.signal,
+            mode: 0o600,
+          },
+        );
       }
       const metadata: Record<string, unknown> = {
         machine: machine.name,
@@ -1087,9 +1069,7 @@ export class DeploymentExecutor {
             throw new PreflightError(`部署包缺少执行脚本成员: ${invocation.relativePath}`);
           }
           const remoteScript = member ??
-            `${options.workspace}/script-${options.index}-${invocationIndex++}.${
-              runtime.kind === "deno" ? "ts" : "py"
-            }`;
+            `${options.workspace}/script-${options.index}-${invocationIndex++}.ts`;
           if (member === undefined) {
             await options.session.uploadFile(invocation.source, remoteScript, {
               signal: options.signal,
@@ -1109,23 +1089,15 @@ export class DeploymentExecutor {
               }, options.signal);
             }
             const invocationSecretDir = invocationSecrets?.path ?? secretCopyDir;
-            command = runtime.kind === "deno"
-              ? await options.session.executeDeno(runtime.executable, remoteScript, {
-                workspace: options.workspace,
-                metadataPath: metadataRemote,
-                secretDir: invocationSecretDir,
-                permissions: invocation.permissions,
-                privileged: runAs === undefined ? privileged : undefined,
-                runAs,
-                signal: options.signal,
-              })
-              : await options.session.executePython(runtime.executable, remoteScript, {
-                metadataPath: metadataRemote,
-                secretDir: invocationSecretDir,
-                privileged: runAs === undefined ? privileged : undefined,
-                runAs,
-                signal: options.signal,
-              });
+            command = await options.session.executeDeno(runtime.executable, remoteScript, {
+              workspace: options.workspace,
+              metadataPath: metadataRemote,
+              secretDir: invocationSecretDir,
+              permissions: invocation.permissions,
+              privileged: runAs === undefined ? privileged : undefined,
+              runAs,
+              signal: options.signal,
+            });
           } catch (cause) {
             invocationError = cause;
           }

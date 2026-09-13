@@ -146,9 +146,8 @@ SSH 主机密钥采用严格校验：目标必须已存在于系统 known-hosts 
 文件中，未知主机密钥会被拒绝。首次部署前应通过可信渠道核对并登记目标指纹。
 
 目标机必须预装 Deno，且主版本不低于
-2。框架在执行新集群的第一个生命周期脚本前预检版本；命令缺失、输出异常或版本过低都会失败关闭。新集群不再以远端
-Python 作为运行时依赖；历史发布中已有的 Python v1 快照仍可按原权限模型回退，且不会被静默转换成
-Deno。
+2。框架在执行新集群的第一个生命周期脚本前预检版本；命令缺失、输出异常或版本过低都会失败关闭。当前
+版本只支持 Deno；Python v1 历史快照会被明确拒绝，不再回放或静默转换。
 
 如果需要让框架自己完成运行时引导，可以在目标机可 SSH 直连、主机指纹已登记后使用
 `install-deno`：它复用与部署相同的 OpenSSH 传输，通过纯 SSH（ssh/scp）在远端安装固定版本的 Deno
@@ -309,9 +308,11 @@ manager:
 外不导入 sfo-deploy 源码；纯动作脚本不需要读取 context，需要步骤输入的脚本按第 7
 节在本文件内解析普通 JSON。
 
-`permissions.run` 的每一项必须是规范绝对 POSIX
-可执行路径；空列表表示脚本不能直接启动子进程。`permissions.net` 默认空，只接受无
-scheme、凭据、路径或通配符的主机/IP，可附带端口，例如 `127.0.0.1:8080`。不要为使用 `apt-get`
+`permissions.run` 的每一项必须是规范绝对 POSIX 可执行路径；空列表表示脚本不能直接启动子进程。
+`permissions.read` 与 `permissions.write` 分别列出 Deno 直接 API 的扩展路径；每项必须是规范绝对
+POSIX 路径，不含根、`.`、`..`、逗号、空白或控制字符。workspace 始终在两类权限中，扩展路径按 Deno
+路径前缀语义展开；只读路径不能写入或删除。`permissions.net` 默认空，只接受无 scheme、凭据、路径或
+通配符的主机/IP，可附带端口，例如 `127.0.0.1:8080`。不要为使用 `apt-get`
 等子进程访问软件源而授予 Deno `net`：网络是该子进程自己的能力，不是 Deno 直接 API 的能力。
 
 下面的脚本只是展示动作契约，生产环境应换成幂等且能正确处理失败的实现。
@@ -633,8 +634,9 @@ regular/directory 类型、重复成员、成员数或总展开大小超限，�
 
 legacy App 脚本默认以 SSH 用户权限执行；managed App 脚本固定以 `run_as` 执行。App 没有环境的
 `requires_privilege` 开关。需要写系统目录时，应在机器初始化阶段建立明确的用户、目录和权限边界，
-不要在 App 脚本中假定拥有 root 权限。持久路径写入应通过经过审查且在 `permissions.run`
-中声明的子进程完成，Deno 自身的文件 API 不应直接访问步骤工作区之外。
+不要在 App 脚本中假定拥有 root 权限。若 Deno 直接 API 需要访问 workspace 之外的持久数据，必须在
+`permissions.read`/`permissions.write` 中精确授权；涉及系统目录或特权操作时，仍应通过经过审查且在
+`permissions.run` 中声明的子进程完成。
 
 ## 7. 秘密装载与步骤元数据
 
@@ -642,7 +644,7 @@ legacy App 脚本默认以 SSH 用户权限执行；managed App 脚本固定以 
 节）把本机 `cluster.yaml.secrets` 已声明放置秘密的受限副本放进 0700 workspace 的 `secrets/`
 子目录，并只注入 `DEPLOYMENT_SECRETS_DIR`；秘密副本目录的内容是机器范围集合（本机全部已声明
 秘密，值与文件分集），不是某个 App 或脚本单独声明的子集。同一目录里还有上传好的
-`sfo-secret-loader.ts`（Python 历史快照为 `sfo_secret_loader.py`）。loader 文件只存在于上传后的远端
+`sfo-secret-loader.ts`。loader 文件只存在于上传后的远端
 workspace，集群目录不得定义或复制它。脚本用与自身同目录的相对导入取得 loader，再按名读取密钥；
 `loadSecrets` 的 `values`/`files` 参数只是读取过滤器，名称必须真实存在于副本目录中，不构成新的
 声明面。秘密副本目录不存在的步骤不得读取 `DEPLOYMENT_SECRETS_DIR`。
@@ -711,9 +713,9 @@ const templates = mapping(metadata.templates, "step metadata templates");
 | `templates`    | 仅 legacy/回滚步骤                | 顶层 `templates` 字段已移除；该映射恒为空，仅为兼容旧发布快照执行保留。   |
 
 每个脚本步骤都有独立的远端资源工作区；声明的脚本、步骤元数据、秘密副本、模板和包只在该步骤中可见，步骤成功或失败后都会清理。
-工作区中没有 `sfo_deploy.ts`；除受限 loader 外，也没有其它框架源码。Deno
-固定只获准直接读写这个工作区，默认拒绝网络和
-FFI；脚本必须通过已声明的子进程把需要保留的包、配置或数据复制到持久目录。
+工作区中没有 `sfo_deploy.ts`；除受限 loader 外，也没有其它框架源码。Deno 始终获准直接读写
+workspace，并可通过 `permissions.read`/`permissions.write` 追加精确路径；默认拒绝网络和 FFI。
+未授权路径不能写入或删除。需要把包、配置或数据复制到未授权持久目录时，使用已声明的子进程。
 
 该权限边界只限制 Deno 直接 API。`permissions.run` 允许的原生子进程以目标机运行身份执行，不继承 Deno
 的文件或网络限制；因此它不是针对恶意脚本的 OS 级沙箱，不能替代容器、namespace、seccomp
@@ -1005,8 +1007,7 @@ sfo-deploy rollback --config-root ./clusters --cluster production \
 partial/recovery 结果，需要人工按实际状态处理。框架不会重试有副作用的脚本，也无法自动撤销 App deploy
 脚本已完成的数据库或外部系统写入。
 
-当前执行器不会为脚本上传兼容运行库。任何仍导入 `./sfo_deploy.ts`（或 Python
-同类辅助文件）的现有集群脚本
+当前执行器不会为脚本上传兼容运行库。任何仍导入 `./sfo_deploy.ts` 的现有集群脚本
 都必须先迁移为自包含程序。包含此类导入的历史发布快照也不保证能由当前版本直接回放：应迁移快照，或保留并使用
 与快照协议匹配的旧版执行器；框架不会自动检测导入并注入 shim。
 

@@ -55,6 +55,7 @@ async function repositoryClosure(): Promise<void> {
   const files: string[] = [];
   for (const root of roots) {
     for await (const entry of walk(root)) {
+      if (entry.includes("app_schema1_removed")) continue;
       if (entry.endsWith(".ts")) files.push(entry);
     }
   }

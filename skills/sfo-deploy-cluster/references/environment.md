@@ -22,11 +22,13 @@ scripts:
       permissions:
         run: [/usr/bin/test]
         net: []
+        read: [/opt/example-runtime/state]
   install:
     - path: scripts/install.ts
       permissions:
         run: [/usr/bin/apt-get]
         net: []
+        write: [/opt/example-runtime]
 ```
 
 `assets/environment-nginx/` 是 Ubuntu/Debian apt 的具体示例：检查 `/usr/sbin/nginx`
@@ -64,7 +66,8 @@ manager:
 - 每个脚本自包含；框架不会上传任意兄弟模块，不导入过去的 `sfo_deploy.ts` 辅助文件。秘密 loader
   是特殊框架资源，见 secrets 参考。
 - run 权限列出实际子进程的规范绝对路径；net 列出实际 Deno 网络目标，不能写 URL
-  或通配符。子进程自身网络行为不由 Deno net 列表限制。
+  或通配符。read/write 分别列出 Deno 直接读/写 API 的规范绝对扩展路径；workspace 始终授权，只读路径
+  不能删除或写入。子进程自身网络行为不由 Deno net 列表限制。
 - check 使用真实状态判断，成功返回 0，不满足返回非零。install/configure
   实现实际需求并可重复执行，不生成始终成功的空实现。
 - 通过 `Deno.Command` 的固定 argv 传参；参数需要从框架上下文读取时，使用 `DEPLOYMENT_METADATA_PATH`

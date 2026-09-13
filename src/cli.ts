@@ -786,6 +786,8 @@ export function serializeResult(result: RunResult): Record<string, unknown> {
         permissions: {
           run: [...invocation.permissions.run],
           net: [...invocation.permissions.net],
+          read: [...invocation.permissions.read ?? []],
+          write: [...invocation.permissions.write ?? []],
         },
       })),
       package_provider: step.package?.provider ?? null,

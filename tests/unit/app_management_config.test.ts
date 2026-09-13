@@ -167,6 +167,8 @@ configs:
     permissions:
       run: [/usr/bin/test]
       net: []
+      read: [/etc/demo/input.json]
+      write: [/srv/demo/state]
   - kind: file
     source: templates/application.json
     target: /etc/demo/application.json
@@ -195,7 +197,71 @@ management:
       "activate",
     ]);
     assertEquals(plan.steps[0].scripts[0]?.relativePath, "scripts/configure.ts");
+    assertEquals(plan.steps[0].scripts[0]?.permissions.read, ["/etc/demo/input.json"]);
+    assertEquals(plan.steps[0].scripts[0]?.permissions.write, ["/srv/demo/state"]);
   });
+});
+
+Deno.test("unit/app schema 1: script file permissions fail closed", async () => {
+  const cases: readonly [string, string, string][] = [
+    [
+      "relative read path",
+      "      read: [etc/demo/input.json]\n      write: []\n",
+      "必须是规范绝对 POSIX 文件路径",
+    ],
+    [
+      "root write path",
+      "      read: []\n      write: [/]\n",
+      "必须是规范绝对 POSIX 文件路径",
+    ],
+    [
+      "comma-containing path",
+      "      read: []\n      write: ['/srv/a,b']\n",
+      "包含空白、控制字符或逗号",
+    ],
+    [
+      "duplicate read paths",
+      "      read: [/etc/a, /etc/a]\n      write: []\n",
+      "包含重复值",
+    ],
+    [
+      "unknown permission field",
+      "      file: []\n",
+      "包含未知字段: file",
+    ],
+  ];
+  for (const [label, permissionExtra, message] of cases) {
+    await withTempDir(async (root) => {
+      const body = `schema_version: 1
+name: demo
+install_directory: /srv/demo
+configs:
+  - kind: script
+    path: scripts/configure.ts
+    permissions:
+      run: [/usr/bin/test]
+      net: []
+${permissionExtra}management:
+  run_as: deploy
+  kind: service
+  name: demo.service
+  tool: systemctl
+`;
+      const directory = await schemaApp(root, body, [{
+        path: "scripts/configure.ts",
+        content: "Deno.exit(0);\n",
+      }]);
+      const error = await assertRejects(
+        () => loadCluster(directory),
+        ConfigurationError,
+      );
+      assertStringIncludes(
+        error.message,
+        message,
+        `${label}: ${error.message}`,
+      );
+    });
+  }
 });
 
 Deno.test("unit/app schema 1: directory variables bind managed config targets", async () => {
@@ -669,7 +735,7 @@ Deno.test("unit/app schema 1: ownership, duplicate and invalid service rules fai
       `management:\n  run_as: deploy\n  kind: service\n  name: demo.service\n  tool: service\n  unit_config:\n    working_directory: latest\n    command: bin/server\n`,
     ],
   ];
-  for (const [label, extra] of cases) {
+  for (const [_label, extra] of cases) {
     await withTempDir(async (root) => {
       const body = `schema_version: 1\nname: demo\ninstall_directory: /srv/demo\n${extra}`;
       const directory = await schemaApp(root, body);

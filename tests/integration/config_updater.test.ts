@@ -238,9 +238,9 @@ Deno.test("integration/config-updater: 无效候选按格式复解析失败且�
     yaml: "value: [unterminated\n",
     json: '{"value":\n',
     toml: "value = [\n",
-  ini: "[unterminated\nvalue=x\n",
-  nginx: "server { __SFO_SECRET_V1_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA__ }\n",
-});
+    ini: "[unterminated\nvalue=x\n",
+    nginx: "server { __SFO_SECRET_V1_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA__ }\n",
+  });
   for (const format of ["yaml", "json", "toml", "ini"] as const) {
     await withTempDir(async (root) => {
       const input = join(root, `invalid.${format}`);

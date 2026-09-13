@@ -112,7 +112,7 @@ if (import.meta.main) Deno.exitCode = await cli(Deno.args);
 - 执行 app/environment 脚本时，框架在开启秘密交付的步骤（环境 `configure`、App `configure`/`deploy`
   及含 updater/hook 的动作）把本机 `cluster.yaml.secrets` 已声明放置秘密的 机器范围副本放进 0700
   workspace，注入 `DEPLOYMENT_SECRETS_DIR`；脚本用框架随步骤上传的
-  `sfo-secret-loader.ts`/`sfo_secret_loader.py`
+  `sfo-secret-loader.ts`
   按名读取（值密钥返回字符串，文件密钥返回受限绝对路径）， 密钥不进入环境变量、argv 或长期进程。
 - 旧 `config_secrets`/`file_secrets` 与 `DEPLOYMENT_CONTEXT_PATH` context JSON 机制已移除；
   非秘密步骤元数据改由 `DEPLOYMENT_METADATA_PATH` 指向的 0600 JSON 提供。
@@ -393,7 +393,7 @@ Environment 还可以在 schema v1 中声明顶层 `install` 和可选 `manager`
 
 生命周期脚本是自包含的普通 TypeScript 程序，不导入任何 sfo-deploy
 框架源码。框架只投递配置声明的脚本、该步骤需要的普通数据文件，以及框架提供的受限 loader
-（`sfo-secret-loader.ts`/`sfo_secret_loader.py`）。密钥只经 `DEPLOYMENT_SECRETS_DIR` 指向的
+（`sfo-secret-loader.ts`）。密钥只经 `DEPLOYMENT_SECRETS_DIR` 指向的
 步骤副本目录读取，非秘密步骤元数据（模板路径、包路径、安装目录、参数等）由
 `DEPLOYMENT_METADATA_PATH` 指向的 0600 JSON 提供；纯动作脚本可以完全忽略这两个变量。
 例如配置脚本先经 loader 取得密钥，再在步骤工作区渲染模板并通过显式允许的子进程发布：
@@ -429,9 +429,11 @@ if (!result.success) throw new Error("configuration install failed");
 `sfo_deploy.ts`；除受限 loader 外，也不部署其它框架源码。
 
 目标机必须提供 Deno 2；`machines[].deno`
-可指定裸命令名或规范绝对路径。每个脚本只获得当前步骤远端资源工作区的直接读写权限，默认拒绝网络、FFI
-和未声明的子进程；`permissions.run` 必须列出绝对可执行文件路径，`permissions.net`
-只在脚本确实直接联网时列出精确主机及可选端口。白名单子进程以目标机身份运行，不继承 Deno
+可指定裸命令名或规范绝对路径。每个脚本始终获得当前步骤远端资源工作区的直接读写权限；可通过
+`permissions.read` 与 `permissions.write` 分别追加规范绝对 POSIX 路径。Deno 按路径前缀展开授权，
+且不解析符号链接或限制子进程。默认拒绝网络、FFI 和未声明的子进程；`permissions.run` 必须列出
+绝对可执行文件路径，`permissions.net` 只在脚本确实直接联网时列出精确主机及可选端口。白名单子进程以
+目标机身份运行，不继承 Deno
 文件或网络沙箱保证，因此持久目录和系统目录操作必须由运维方审查这些可执行文件及参数。
 
 也可以让 sfo-deploy 自己完成运行时引导：`install-deno` 使用与部署相同的严格 OpenSSH 传输
@@ -595,9 +597,9 @@ rollback plan。回退重放快照中的 App `deploy` 和已声明的 `configure
 `succeeded`、快照完整且校验通过的记录可以回退；失败、取消、仍在执行或因进程中断而缺少终态的
 `incomplete` 记录均不可回退。回退本身也会产生新的发布记录，可以继续审计和作为后续回退来源。
 
-新发布快照保存 Deno 运行时以及逐脚本 `run`/`net` 权限。迁移前已有的 Python v1
-快照仍可读取和回退，并继续采用其原有 Python 权限模型；框架不会把旧快照改写为
-Deno，也不会允许新集群配置创建 Python 计划。
+新发布快照保存 Deno 运行时以及逐脚本 `run`/`net`/`read`/`write` 权限。当前版本只支持 Deno，
+也不再读取或回放 Python v1 快照；遇到该类历史快照会明确拒绝。需要恢复其内容时，应使用与快照匹配的
+旧版执行器，或先用旧版导出并重建为当前 Deno 计划。
 
 曾导入 `./sfo_deploy.ts`（或 Python 同类辅助文件）的 TypeScript
 脚本必须改为自包含脚本后才能由当前执行器运行。

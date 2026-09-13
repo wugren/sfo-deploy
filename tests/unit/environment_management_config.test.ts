@@ -82,6 +82,8 @@ install:
   permissions:
     run: [/usr/bin/apt-get]
     net: []
+    read: [/etc/runtime/config.toml]
+    write: [/var/lib/runtime]
 manager:
   kind: script
   start:
@@ -103,8 +105,10 @@ manager:
     const directory = await writeLifecycleCluster(root, lifecycle);
     const cluster = await loadCluster(directory);
     const definition = cluster.environments.get("node-a/runtime")!;
-    assertEquals(definition.install?.kind, "script");
+    if (definition.install?.kind !== "script") throw new Error("expected script install");
     assertEquals(definition.manager?.kind, "script");
+    assertEquals(definition.install.invocation.permissions.read, ["/etc/runtime/config.toml"]);
+    assertEquals(definition.install.invocation.permissions.write, ["/var/lib/runtime"]);
     assertEquals(
       definition.manager?.kind === "script"
         ? definition.manager.start.source.endsWith("action.ts")
