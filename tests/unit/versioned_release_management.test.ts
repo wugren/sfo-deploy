@@ -296,7 +296,7 @@ Deno.test("unit/versioned-release: committed marker is readable by app and real 
       script,
     ], { DEPLOYMENT_METADATA_PATH: metadataPath, DENO_DIR: `${app}/deno-cache` });
     assertEquals(staged.code, 0, decoder.decode(staged.stderr));
-    assert(decoder.decode(staged.stdout).includes("跳过暂存"));
+    assert(decoder.decode(staged.stdout).includes("skipping staging"));
     assertEquals(await Deno.readLink(state.latestPath), "v2");
     assertEquals(await Deno.readTextFile(state.markerPath), "v2\n");
   });

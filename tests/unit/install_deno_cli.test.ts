@@ -71,17 +71,17 @@ Deno.test("unit/cli: install-deno rejects app/environment/with-dependencies filt
   assertThrows(
     () => new RunOptions({ ...base, apps: ["demo"] }),
     ConfigurationError,
-    "仅支持 --machine",
+    "supports only --machine",
   );
   assertThrows(
     () => new RunOptions({ ...base, environments: ["jre"] }),
     ConfigurationError,
-    "仅支持 --machine",
+    "supports only --machine",
   );
   assertThrows(
     () => new RunOptions({ ...base, withDependencies: true }),
     ConfigurationError,
-    "仅支持 --machine",
+    "supports only --machine",
   );
   assertThrows(
     () =>
@@ -92,7 +92,7 @@ Deno.test("unit/cli: install-deno rejects app/environment/with-dependencies filt
         denoVersion: "2.2.11",
       }),
     ConfigurationError,
-    "只适用于 install-deno",
+    "apply only to install-deno",
   );
 });
 
@@ -113,8 +113,8 @@ Deno.test("unit/cli: install-deno help documents pure SSH semantics", async () =
   assertStringIncludes(text, "install-deno");
   assertStringIncludes(text, "--deno-version");
   assertStringIncludes(text, "--install-to");
-  assertStringIncludes(text, "最新稳定版");
-  assertStringIncludes(text, "纯 SSH");
+  assertStringIncludes(text, "latest stable version");
+  assertStringIncludes(text, "plain SSH");
   assert(stderr.text().length === 0);
 });
 
@@ -143,7 +143,7 @@ Deno.test("unit/cli: InstallDenoResult maps preflight failures to exit 3", () =>
     status: "failed",
     denoPath: "/usr/local/bin/deno",
     errorCategory: "preflight",
-    message: "known_hosts 不可用",
+    message: "known_hosts unavailable",
     cleanupErrors: Object.freeze([]),
   });
   const transportFailure: MachineDenoOutcome = Object.freeze({
@@ -151,7 +151,7 @@ Deno.test("unit/cli: InstallDenoResult maps preflight failures to exit 3", () =>
     status: "failed",
     denoPath: "/usr/local/bin/deno",
     errorCategory: "transport",
-    message: "SSH 连接失败",
+    message: "SSH connection failed",
     cleanupErrors: Object.freeze([]),
   });
   assertEquals(new InstallDenoResult({ cluster: "demo", machines: [preflight] }).exitCode, 3);

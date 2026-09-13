@@ -26,17 +26,17 @@ export interface InstallDenoOptions {
 /** 接受 `2.2.11` 或 `v2.2.11`，规范化并强制 Deno 2+。 */
 export function normalizeDenoVersion(value: string): string {
   if (typeof value !== "string") {
-    throw new ConfigurationError("--deno-version 必须是字符串");
+    throw new ConfigurationError("--deno-version must be a string");
   }
   const match = VERSION_RE.exec(value.trim());
   if (!match) {
     throw new ConfigurationError(
-      `--deno-version 必须是 x.y.z 或 vx.y.z: ${JSON.stringify(value)}`,
+      `--deno-version must be x.y.z or vx.y.z: ${JSON.stringify(value)}`,
     );
   }
   const major = Number(match[1]);
   if (major < 2) {
-    throw new ConfigurationError("install-deno 只支持 Deno 2 及以上版本");
+    throw new ConfigurationError("install-deno supports only Deno 2 or later");
   }
   return `${match[1]}.${match[2]}.${match[3]}`;
 }
@@ -46,11 +46,13 @@ export function validateInstallTo(value: string | undefined): string | undefined
   if (value === undefined) return undefined;
   if (typeof value !== "string" || value.length === 0 || !INSTALL_ROOT_RE.test(value)) {
     throw new ConfigurationError(
-      `--install-to 必须是绝对 POSIX 路径且不含空白/控制字符: ${JSON.stringify(value)}`,
+      `--install-to must be an absolute POSIX path without whitespace/control characters: ${
+        JSON.stringify(value)
+      }`,
     );
   }
   if (value.split("/").includes("..")) {
-    throw new ConfigurationError("--install-to 不允许包含 .. 路径段");
+    throw new ConfigurationError("--install-to must not contain a .. path segment");
   }
   return value;
 }
@@ -75,7 +77,7 @@ async function remoteHome(
     !home.startsWith("/") || /\s/.test(home)
   ) {
     throw new TransportError(
-      `无法确定远端用户主目录: ${result.stdout}${result.stderr}`.trim(),
+      `Failed to determine the remote user home directory: ${result.stdout}${result.stderr}`.trim(),
     );
   }
   return home;
@@ -94,7 +96,7 @@ function installerScript(
     "set -eu",
     `requested_version='${requestedVersion}'`,
     `existing_version='${existing}'`,
-    'case "$(uname -m)" in x86_64) target=x86_64-unknown-linux-gnu;; aarch64|arm64) target=aarch64-unknown-linux-gnu;; *) echo "install-deno: 不支持的远端架构 $(uname -m)" >&2; exit 1;; esac',
+    'case "$(uname -m)" in x86_64) target=x86_64-unknown-linux-gnu;; aarch64|arm64) target=aarch64-unknown-linux-gnu;; *) echo "install-deno: unsupported remote architecture $(uname -m)" >&2; exit 1;; esac',
     `base_url='${baseURL}'`,
     'archive_name="deno-${target}.zip"',
     'archive_url="${base_url}/${archive_name}"',
@@ -102,15 +104,15 @@ function installerScript(
     'tmp_dir="$(mktemp -d)"',
     "cleanup_binary=",
     'trap \'test -z "$cleanup_binary" || rm -f "$cleanup_binary"; rm -rf "$tmp_dir"\' EXIT HUP INT TERM',
-    `if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then echo "install-deno: 目标机缺少 curl 或 wget" >&2; exit 1; fi`,
-    `if ! command -v unzip >/dev/null 2>&1 && ! command -v 7z >/dev/null 2>&1; then echo "install-deno: 目标机缺少 unzip 或 7z" >&2; exit 1; fi`,
-    'if ! command -v sha256sum >/dev/null 2>&1; then echo "install-deno: 目标机缺少 sha256sum" >&2; exit 1; fi',
+    `if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then echo "install-deno: target machine is missing curl or wget" >&2; exit 1; fi`,
+    `if ! command -v unzip >/dev/null 2>&1 && ! command -v 7z >/dev/null 2>&1; then echo "install-deno: target machine is missing unzip or 7z" >&2; exit 1; fi`,
+    'if ! command -v sha256sum >/dev/null 2>&1; then echo "install-deno: target machine is missing sha256sum" >&2; exit 1; fi',
     'archive_path="${tmp_dir}/${archive_name}"',
     'if command -v curl >/dev/null 2>&1; then curl -fL "$archive_url" -o "$archive_path" && curl -fL "$checksum_url" -o "${archive_path}.sha256sum"; else wget -q -O "$archive_path" "$archive_url" && wget -q -O "${archive_path}.sha256sum" "$checksum_url"; fi',
     '(cd "$tmp_dir" && sha256sum -c "${archive_name}.sha256sum")',
     'if command -v unzip >/dev/null 2>&1; then unzip -q "$archive_path" -d "$tmp_dir"; else 7z x -y "-o$tmp_dir" "$archive_path" >/dev/null; fi',
     'staged_version="$("$tmp_dir/deno" --version)"',
-    'case "$staged_version" in deno\\ [0-9]*.[0-9]*.[0-9]*\\ *|deno\\ [0-9]*.[0-9]*.[0-9]*) ;; *) echo "install-deno: 无法识别待装 Deno 版本: $staged_version" >&2; exit 1;; esac',
+    'case "$staged_version" in deno\\ [0-9]*.[0-9]*.[0-9]*\\ *|deno\\ [0-9]*.[0-9]*.[0-9]*) ;; *) echo "install-deno: cannot recognize the staged Deno version: $staged_version" >&2; exit 1;; esac',
     'staged_version="${staged_version#deno }"',
     'staged_version="${staged_version%% *}"',
     'if test -z "$requested_version" && test -n "$existing_version" && test "$staged_version" = "$existing_version"; then echo "sfo-deno-present:$staged_version"; exit 0; fi',
@@ -137,7 +139,7 @@ async function probeTools(
     { signal },
   );
   if (result.exitCode !== 0) {
-    throw new TransportError(`远端工具探测失败: ${diagnostic(result)}`);
+    throw new TransportError(`Remote tool probe failed: ${diagnostic(result)}`);
   }
   return Object.freeze(
     result.stdout.trim().split(/\s+/).filter((line) => line.length > 0),
@@ -184,7 +186,7 @@ async function installRemotePackages(
     });
     if (updated.exitCode !== 0) {
       throw new TransportError(
-        `刷新 apt 软件源失败 ${manager.binary}: ${diagnostic(updated)}`,
+        `Failed to refresh the apt package index ${manager.binary}: ${diagnostic(updated)}`,
       );
     }
   }
@@ -194,7 +196,7 @@ async function installRemotePackages(
   });
   if (installed.exitCode !== 0) {
     throw new TransportError(
-      `安装远端基础工具失败（${manager.name}）: ${diagnostic(installed)}`,
+      `Failed to install remote base tools (${manager.name}): ${diagnostic(installed)}`,
     );
   }
 }
@@ -216,9 +218,9 @@ async function ensureRemoteTools(
   const manager = await detectPackageManager(session, signal);
   if (manager === undefined) {
     throw new TransportError(
-      `目标机没有可用的包管理器（支持 apt-get/apk/dnf/yum）；请手工安装 ${
-        packages.join("、")
-      } 后重试`,
+      `The target machine has no usable package manager (supported: apt-get/apk/dnf/yum); install ${
+        packages.join(", ")
+      } manually and retry`,
     );
   }
 
@@ -236,13 +238,15 @@ async function ensureRemoteTools(
       ...(stillMissingUnarchiver ? ["unzip/7z"] : []),
     ];
     throw new TransportError(
-      `自动安装远端基础工具后仍缺失 ${missing.join("、")}（${manager.name}）；请手工安装后重试`,
+      `Remote base tools are still missing after automatic installation: ${
+        missing.join(", ")
+      } (${manager.name}); install them manually and retry`,
     );
   }
 }
 
 function diagnostic(result: { stdout: string; stderr: string }): string {
-  return `${result.stdout}\n${result.stderr}`.trim() || "未知远端错误";
+  return `${result.stdout}\n${result.stderr}`.trim() || "Unknown remote error";
 }
 
 /** 在一台已连接机器上探测并安装 Deno；失败时抛出 TransportError。 */
@@ -283,7 +287,7 @@ export async function installDenoOnMachine(
   );
   if (installed.exitCode !== 0) {
     throw new TransportError(
-      `安装 Deno 失败 ${machine}: ${diagnostic(installed)}`,
+      `Failed to install Deno ${machine}: ${diagnostic(installed)}`,
     );
   }
 
@@ -296,17 +300,17 @@ export async function installDenoOnMachine(
   const verified = verify.exitCode === 0 ? versionFromOutput(verify.stdout) : undefined;
   if (verify.exitCode !== 0 || verified === undefined) {
     throw new TransportError(
-      `安装后验证失败 ${machine}: ${diagnostic(verify)}`,
+      `Post-install verification failed ${machine}: ${diagnostic(verify)}`,
     );
   }
   if (version !== undefined && verified !== version) {
     throw new TransportError(
-      `安装后版本不匹配 ${machine}: expected ${version}, got ${verified}`,
+      `Post-install version mismatch ${machine}: expected ${version}, got ${verified}`,
     );
   }
   if (version === undefined && unchangedVersion !== undefined && verified !== unchangedVersion) {
     throw new TransportError(
-      `安装后版本不匹配 ${machine}: expected ${unchangedVersion}, got ${verified}`,
+      `Post-install version mismatch ${machine}: expected ${unchangedVersion}, got ${verified}`,
     );
   }
   return Object.freeze({

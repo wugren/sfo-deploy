@@ -137,7 +137,7 @@ Deno.test("integration/versioned release: same version makes no remote changes",
       }),
     );
     assertEquals(result.code, 0, result.output);
-    assertStringIncludes(result.output, "版本无变化");
+    assertStringIncludes(result.output, "version unchanged");
     await assertRejects(() => Deno.stat(join(work, "latest")), Deno.errors.NotFound);
     assertEquals(await Deno.readTextFile(join(work, ".demo.version")), "1.0.0\n");
     assertEquals(await Deno.readTextFile(join(work, "1.0.0", "app.txt")), "old\n");
@@ -384,6 +384,6 @@ Deno.test("integration/versioned release: Multipass apps use builtin layout and 
   assertStringIncludes(liveWeb, "on_deploy: none");
   assertEquals(/enabled: true/u.test(liveWeb), false);
   assertStringIncludes(release, "validated-directory");
-  assertStringIncludes(release, "唯一顶层目录");
+  assertStringIncludes(release, "single top-level directory");
   assertStringIncludes(release, "原子切换 latest");
 });

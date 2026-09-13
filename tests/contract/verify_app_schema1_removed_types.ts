@@ -6,7 +6,7 @@ const output = await command.output();
 const stderr = new TextDecoder().decode(output.stderr);
 
 if (output.success) {
-  throw new Error("App schema 1 已移除的 scripts/management.service 类型意外通过编译");
+  throw new Error("removed App schema 1 scripts/management.service types unexpectedly compiled");
 }
 const required = [
   "Property 'scripts' does not exist",
@@ -14,6 +14,6 @@ const required = [
 ];
 for (const message of required) {
   if (!stderr.includes(message)) {
-    throw new Error(`旧 App 类型路径未按预期失败，缺少 ${message}:\n${stderr}`);
+    throw new Error(`old App type path did not fail as expected; missing ${message}:\n${stderr}`);
   }
 }

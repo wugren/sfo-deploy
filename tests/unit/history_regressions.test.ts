@@ -145,7 +145,7 @@ Deno.test("unit/history write-all: zero progress fails before atomic target publ
       await assertRejects(
         () => __internal.atomicJson(destination, { status: "complete" }, { exclusive: true }),
         ConfigurationError,
-        "写入未取得有效进展",
+        "write made no valid progress",
       );
     } finally {
       Deno.FsFile.prototype.write = originalWrite;
@@ -183,14 +183,14 @@ Deno.test("unit/history nlink: transient hard-link window converges and persiste
           sleep: () => Promise.resolve(),
         }),
       ConfigurationError,
-      "未在期限内收敛",
+      "did not converge within the deadline",
     );
     const third = join(root, "component.third");
     await Deno.link(path, third);
     await assertRejects(
       () => __internal.readRegularBytes(path, 1024, "fixture"),
       ConfigurationError,
-      "单链接普通文件",
+      "single-link regular file",
     );
   });
 });
@@ -213,7 +213,7 @@ Deno.test("unit/history nlink: identity replacement during settle fails closed",
           },
         }),
       ConfigurationError,
-      "身份发生变化",
+      "identity changed",
     );
   });
 });
@@ -256,7 +256,10 @@ Deno.test("unit/history codec: Python v1 fixture is explicitly rejected", async 
       () => __internal.decodePlan(raw, snapshot, cluster, importer),
       ConfigurationError,
     );
-    assertStringIncludes(error.message, "execution-plan v1 Python 快照不再支持");
+    assertStringIncludes(
+      error.message,
+      "execution-plan v1 Python snapshots are no longer supported",
+    );
   });
 });
 
@@ -377,7 +380,7 @@ Deno.test("unit/history codec: deploy whitelist still rejects unknown managed ac
     const error = await assertRejects(
       () => pending.archivePlans(invalid),
       ConfigurationError,
-      "计划步骤与 requested_action 不匹配",
+      "Plan step does not match requested_action",
     );
     assertStringIncludes(error.message, "app:node-a/demo:configure app/stop vs deploy");
     await pending.closeIncomplete();
@@ -437,7 +440,7 @@ Deno.test("unit/history codec: versioned stage keeps run_as without management",
     await assertRejects(
       () => invalidPending.archivePlans(invalidRunAsPlan),
       ConfigurationError,
-      "非 managed plan-v4 步骤不能声明 run_as",
+      "non-managed plan-v4 step must not declare run_as",
     );
     await invalidPending.closeIncomplete();
 
@@ -455,7 +458,7 @@ Deno.test("unit/history codec: versioned stage keeps run_as without management",
       await assertRejects(
         () => invalidStagePending.archivePlans(invalidStagePlan),
         ConfigurationError,
-        runAs === undefined ? "versioned stage 步骤缺少 run_as" : "非 root",
+        runAs === undefined ? "versioned stage step is missing run_as" : "non-root",
       );
       await invalidStagePending.closeIncomplete();
     }
@@ -527,7 +530,7 @@ Deno.test("unit/history codec: versioned activate accepts empty management run-a
       () =>
         invalidPending.archivePlans(Object.freeze({ ...plan, steps: Object.freeze([invalid]) })),
       ConfigurationError,
-      "management 声明不能为空",
+      "management declaration must not be empty",
     );
     await invalidPending.closeIncomplete();
   });
@@ -540,7 +543,7 @@ Deno.test("unit/history integrity: extra, missing, symlink and outcome mismatch 
     await assertRejects(
       () => extra.store.verifySnapshot(extra.snapshot, extra.pending.releaseId),
       ConfigurationError,
-      "未登记文件",
+      "unregistered file",
     );
     await extra.pending.closeIncomplete();
 
@@ -553,7 +556,7 @@ Deno.test("unit/history integrity: extra, missing, symlink and outcome mismatch 
     await assertRejects(
       () => missing.store.verifySnapshot(missing.snapshot, missing.pending.releaseId),
       ConfigurationError,
-      "缺少文件",
+      "is missing files",
     );
     await missing.pending.closeIncomplete();
 
@@ -562,7 +565,7 @@ Deno.test("unit/history integrity: extra, missing, symlink and outcome mismatch 
     await assertRejects(
       () => linked.store.verifySnapshot(linked.snapshot, linked.pending.releaseId),
       ConfigurationError,
-      "禁止符号链接",
+      "must not contain symlinks",
     );
     await linked.pending.closeIncomplete();
 
@@ -574,7 +577,7 @@ Deno.test("unit/history integrity: extra, missing, symlink and outcome mismatch 
           requestedAction: "rollback",
         }),
       ConfigurationError,
-      "动作与实际执行计划不一致",
+      "Deployment result action does not match the actual execution plan",
     );
     assert(
       await pathMissing(

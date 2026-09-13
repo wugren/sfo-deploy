@@ -63,7 +63,7 @@ Deno.test("unit/secrets source: rejects wrong mode, missing keys, unknown keys a
     await assertRejects(
       () => loadClusterSecretSource(cluster, directory),
       Error,
-      "权限必须是 0600",
+      "permissions must be 0600",
     );
 
     const secretsPath = clusterSecretSourcePath(directory);
@@ -72,7 +72,7 @@ Deno.test("unit/secrets source: rejects wrong mode, missing keys, unknown keys a
     await assertRejects(
       () => loadClusterSecretSource(cluster, directory),
       Error,
-      "缺少密钥: TLS_KEY",
+      "is missing secrets: TLS_KEY",
     );
 
     await Deno.writeTextFile(
@@ -82,7 +82,7 @@ Deno.test("unit/secrets source: rejects wrong mode, missing keys, unknown keys a
     await assertRejects(
       () => loadClusterSecretSource(cluster, directory),
       Error,
-      "未声明密钥",
+      "contains an undeclared secret",
     );
 
     await Deno.writeTextFile(
@@ -92,7 +92,7 @@ Deno.test("unit/secrets source: rejects wrong mode, missing keys, unknown keys a
     await assertRejects(
       () => loadClusterSecretSource(cluster, directory),
       Error,
-      "不允许 ..",
+      "must not contain ..",
     );
   });
 });
@@ -108,7 +108,7 @@ Deno.test("unit/secrets source: missing source is a configuration error", async 
     await assertRejects(
       () => loadClusterSecretSource(cluster, directory),
       Error,
-      "缺少集群秘密来源",
+      "Missing cluster secret source",
     );
   });
 });
@@ -126,7 +126,7 @@ Deno.test("unit/secrets source: discovers regular cluster known_hosts", async ()
     await assertRejects(
       () => discoverClusterKnownHosts(directory),
       Error,
-      "普通文件",
+      "regular file",
     );
   });
 });

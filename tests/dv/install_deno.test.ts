@@ -136,7 +136,7 @@ Deno.test("dv/install-deno: preflight failure maps to documented exit code 3", a
     await writeCluster(root);
     const transport = new FakeTransport(
       () => new FakeSession(127, "", 0, 0, "deno 2.7.8\n"),
-      new PreflightError("known_hosts 不可用"),
+      new PreflightError("known_hosts unavailable"),
     );
     const result = await run(
       {
@@ -165,7 +165,7 @@ Deno.test("dv/install-deno: default all machines respects confirmation gate", as
           { transport, confirmMachines: () => Promise.resolve(false) },
         ),
       CancelledError,
-      "已取消",
+      "Cancelled",
     );
     assertEquals(transport.connectCalls, 0);
   });
@@ -215,7 +215,7 @@ Deno.test("dv/install-deno: unsupported package manager maps to transport failur
     assertEquals(result.exitCode, 4);
     assertEquals(result.machines[0].status, "failed");
     assertEquals(result.machines[0].errorCategory, "transport");
-    assertStringIncludes(String(result.machines[0].message), "没有可用的包管理器");
+    assertStringIncludes(String(result.machines[0].message), "has no usable package manager");
     assert(session.closed);
   });
 });
@@ -235,7 +235,7 @@ Deno.test("dv/install-deno: privilege failure while ensuring tools maps to prefl
       0,
       0,
       true,
-      new PreflightError("远端身份既不是 root，也不能使用非交互 sudo"),
+      new PreflightError("Remote identity is neither root nor able to use non-interactive sudo"),
     );
     const transport = new FakeTransport(() => session);
     const result = await run(

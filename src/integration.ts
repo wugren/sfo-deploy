@@ -73,10 +73,10 @@ export async function discoverClusterKnownHosts(
     info = await Deno.lstat(path);
   } catch (cause) {
     if (cause instanceof Deno.errors.NotFound) return undefined;
-    throw new PreflightError(`无法读取集群 known_hosts ${path}`, { cause });
+    throw new PreflightError(`Failed to read cluster known_hosts ${path}`, { cause });
   }
   if (!info.isFile || info.isSymlink) {
-    throw new PreflightError(`集群 known_hosts 必须是普通文件: ${path}`);
+    throw new PreflightError(`Cluster known_hosts must be a regular file: ${path}`);
   }
   return path;
 }
@@ -163,23 +163,25 @@ export class RunOptions {
 
   constructor(options: RunOptionsInit) {
     const rawRoot = options.configRoot instanceof URL
-      ? fileUrlPath(options.configRoot, "配置根目录")
+      ? fileUrlPath(options.configRoot, "config root")
       : options.configRoot;
     if (typeof rawRoot !== "string" || rawRoot.length === 0) {
-      throw new ConfigurationError("配置根目录必须是非空路径");
+      throw new ConfigurationError("Config root must be a non-empty path");
     }
     if (typeof options.cluster !== "string" || !NAME_RE.test(options.cluster)) {
-      throw new ConfigurationError(`集群选择名称不合法: ${JSON.stringify(options.cluster)}`);
+      throw new ConfigurationError(
+        `Invalid cluster selection name: ${JSON.stringify(options.cluster)}`,
+      );
     }
     if (!(CLI_ACTIONS as readonly string[]).includes(options.action)) {
-      throw new ConfigurationError(`不支持的 CLI 动作: ${JSON.stringify(options.action)}`);
+      throw new ConfigurationError(`Unsupported CLI action: ${JSON.stringify(options.action)}`);
     }
     if (
       options.addressKind !== undefined && options.addressKind !== "private" &&
       options.addressKind !== "public"
     ) {
       throw new ConfigurationError(
-        `地址类型只支持 private/public: ${JSON.stringify(options.addressKind)}`,
+        `Address kind supports only private/public: ${JSON.stringify(options.addressKind)}`,
       );
     }
     const machines = uniqueNames(options.machines ?? [], "machine");
@@ -189,24 +191,24 @@ export class RunOptions {
     const removeNames: string[] = [];
     for (const rawName of options.removeNames ?? []) {
       if (typeof rawName !== "string" || rawName.length === 0) {
-        throw new ConfigurationError("--remove 需要一个非空密钥名");
+        throw new ConfigurationError("--remove requires a non-empty secret name");
       }
       if (removeNames.includes(rawName)) {
-        throw new ConfigurationError(`--remove 密钥名重复: ${rawName}`);
+        throw new ConfigurationError(`--remove secret name is duplicated: ${rawName}`);
       }
       const name = rawName;
       if (!SECRET_NAME_RE.test(name)) {
-        throw new ConfigurationError(`--remove 密钥名不合法: ${JSON.stringify(name)}`);
+        throw new ConfigurationError(`Invalid --remove secret name: ${JSON.stringify(name)}`);
       }
       removeNames.push(name);
     }
     const check = options.check ?? false;
-    if (typeof check !== "boolean") throw new ConfigurationError("check 必须是布尔值");
+    if (typeof check !== "boolean") throw new ConfigurationError("check must be a boolean");
     if (options.action === "secrets-deploy" && check && removeNames.length > 0) {
-      throw new ConfigurationError("secrets-deploy 的 --check 不能与 --remove 同时使用");
+      throw new ConfigurationError("secrets-deploy --check cannot be combined with --remove");
     }
     if (typeof withDependencies !== "boolean") {
-      throw new ConfigurationError("withDependencies 必须是布尔值");
+      throw new ConfigurationError("withDependencies must be a boolean");
     }
     if (HISTORY_ACTIONS.has(options.action)) {
       if (
@@ -215,20 +217,20 @@ export class RunOptions {
         withDependencies
       ) {
         throw new ConfigurationError(
-          `${options.action} 不能与机器、App、环境、执行区域、地址类型或依赖过滤器同时使用`,
+          `${options.action} cannot be combined with machine, App, environment, executor region, address kind, or dependency filters`,
         );
       }
       if (
         options.releaseId !== undefined &&
         (typeof options.releaseId !== "string" || options.releaseId.length === 0)
       ) {
-        throw new ConfigurationError("发布 ID 必须是非空字符串");
+        throw new ConfigurationError("Release ID must be a non-empty string");
       }
       if (options.action === "rollback" && options.releaseId === undefined) {
-        throw new ConfigurationError("rollback 必须指定发布 ID");
+        throw new ConfigurationError("rollback requires a release ID");
       }
     } else if (options.releaseId !== undefined) {
-      throw new ConfigurationError(`动作 ${options.action} 不支持发布 ID`);
+      throw new ConfigurationError(`Action ${options.action} does not support a release ID`);
     }
     if (options.action === "fetch") {
       if (
@@ -237,7 +239,7 @@ export class RunOptions {
         withDependencies
       ) {
         throw new ConfigurationError(
-          "fetch 仅支持 --app 筛选，不能与机器、环境、区域、地址或依赖过滤器同时使用",
+          "fetch supports only --app filtering and cannot be combined with machine, environment, region, address, or dependency filters",
         );
       }
     }
@@ -245,40 +247,42 @@ export class RunOptions {
       (options.action === "check" || options.action === "install" ||
         options.action === "prepare") && apps.length > 0
     ) {
-      throw new ConfigurationError(`环境动作 ${options.action} 不能与 --app 同时使用`);
+      throw new ConfigurationError(
+        `Environment action ${options.action} cannot be combined with --app`,
+      );
     }
     if (options.action === "install-deno") {
       if (apps.length > 0 || environments.length > 0 || withDependencies) {
         throw new ConfigurationError(
-          "install-deno 仅支持 --machine 筛选，不能与 --app、--environment 或 --with-dependencies 混用",
+          "install-deno supports only --machine filtering and cannot be combined with --app, --environment, or --with-dependencies",
         );
       }
       if (
         options.denoVersion !== undefined &&
         (typeof options.denoVersion !== "string" || options.denoVersion.length === 0)
       ) {
-        throw new ConfigurationError("--deno-version 必须是非空字符串");
+        throw new ConfigurationError("--deno-version must be a non-empty string");
       }
       if (
         options.installTo !== undefined &&
         (typeof options.installTo !== "string" || options.installTo.length === 0)
       ) {
-        throw new ConfigurationError("--install-to 必须是非空字符串");
+        throw new ConfigurationError("--install-to must be a non-empty string");
       }
     } else if (options.denoVersion !== undefined || options.installTo !== undefined) {
-      throw new ConfigurationError("--deno-version/--install-to 只适用于 install-deno");
+      throw new ConfigurationError("--deno-version/--install-to apply only to install-deno");
     }
     if (options.action === "deploy" || options.action === "plan") {
       if (environments.length > 0 || withDependencies) {
         throw new ConfigurationError(
-          "deploy/plan 只处理 App；环境请先使用 prepare，不能与 --environment/--with-dependencies 同时使用",
+          "deploy/plan handle only Apps; prepare environments first and do not combine with --environment/--with-dependencies",
         );
       }
     }
     if (options.action === "secrets-deploy") {
       if (apps.length > 0 || environments.length > 0 || withDependencies) {
         throw new ConfigurationError(
-          "secrets-deploy 不支持 --app/--environment/--with-dependencies",
+          "secrets-deploy does not support --app/--environment/--with-dependencies",
         );
       }
     }
@@ -391,8 +395,8 @@ export async function run(
   dependencies: RunDependencies = {},
 ): Promise<RunResult> {
   const request = options instanceof RunOptions ? options : new RunOptions(options);
-  await requireDirectory(request.configRoot, "配置根目录");
-  await requireDirectory(request.clusterDirectory, "配置根目录下不存在集群");
+  await requireDirectory(request.configRoot, "config root");
+  await requireDirectory(request.clusterDirectory, "No cluster exists under the config root");
   throwIfAborted(dependencies.signal);
 
   const discoveredKnownHosts = dependencies.knownHosts ??
@@ -406,7 +410,9 @@ export async function run(
     : new PackageCache({ packagesDir: dependencies.packagesDir, registry: providers });
   const keepVersions = dependencies.keepVersions ?? DEFAULT_KEEP_VERSIONS;
   if (!Number.isInteger(keepVersions) || keepVersions < 1 || keepVersions > MAX_KEEP_VERSIONS) {
-    throw new ConfigurationError(`keep_versions 必须是 1-${MAX_KEEP_VERSIONS} 的整数`);
+    throw new ConfigurationError(
+      `keep_versions must be an integer between 1 and ${MAX_KEEP_VERSIONS}`,
+    );
   }
 
   if (HISTORY_ACTIONS.has(request.action)) {
@@ -487,7 +493,7 @@ export async function run(
     let primary: unknown;
     try {
       if (!(await dependencies.confirmPlan(plan))) {
-        throw new CancelledError("已取消：未确认缺省全量安装");
+        throw new CancelledError("Cancelled: default full install was not confirmed");
       }
       return await executePrepared(
         prepared,
@@ -542,7 +548,7 @@ async function runLifecycleAttempt(
 ): Promise<DeploymentResult> {
   const operation = options.action as ReleaseOperation;
   if (!RECORDED_LIFECYCLE_ACTIONS.has(operation)) {
-    throw new ConfigurationError(`不是可记录的生命周期动作: ${operation}`);
+    throw new ConfigurationError(`Not a recordable lifecycle action: ${operation}`);
   }
   const pending = await releaseStore(options, providers).beginAttempt({
     operation,
@@ -583,12 +589,12 @@ async function runSecretsDeploy(
   }
   const requested = options.machines.length > 0 ? [...options.machines] : [];
   const unknown = requested.filter((machine) => !cluster.machines.has(machine)).sort();
-  if (unknown.length > 0) throw new PlanningError(`未知机器过滤器: ${unknown.join(", ")}`);
+  if (unknown.length > 0) throw new PlanningError(`Unknown machine filter: ${unknown.join(", ")}`);
   const targets = requested.length > 0
     ? [...new Set(requested)].sort().filter((machine) => declaredMachines.has(machine))
     : [...declaredMachines].sort();
   if (targets.length === 0) {
-    throw new PlanningError("集群没有声明密钥放置的机器");
+    throw new PlanningError("Cluster declares no machines for secret placement");
   }
   const operation = options.check ? "check" : options.removeNames.length > 0 ? "remove" : "deploy";
   const deploymentBindings = operation === "deploy"
@@ -598,7 +604,7 @@ async function runSecretsDeploy(
     !options.check && options.machines.length === 0 && confirmMachines !== undefined &&
     !(await confirmMachines(targets))
   ) {
-    throw new CancelledError("已取消：未确认缺省全量密钥部署");
+    throw new CancelledError("Cancelled: default full secret deployment was not confirmed");
   }
   const directory = await Deno.makeTempDir({ prefix: "sfo-secrets-deploy-" });
   await Deno.chmod(directory, 0o700);
@@ -641,7 +647,7 @@ async function runSecretsDeploy(
           continue;
         }
         if (deploymentBindings === undefined) {
-          throw new PreflightError("缺少集群秘密来源");
+          throw new PreflightError("Missing cluster secret source");
         }
         const files = await prepareSecretDeployments(
           cluster.secrets,
@@ -710,7 +716,7 @@ function buildSecretCheckIssues(
     issues.push(Object.freeze({
       name: "directory",
       kind: "bad-mode",
-      detail: `安全目录权限必须为 0700，实际 ${state.dirMode}`,
+      detail: `Secure directory permissions must be 0700; actual ${state.dirMode}`,
     }));
   }
   const expected = declaredSecretNamesForMachine(cluster.secrets, machineName);
@@ -720,24 +726,30 @@ function buildSecretCheckIssues(
     const entry = manifestByName.get(name);
     const remoteSha = state.sha256[name];
     if (entry === undefined || remoteSha === undefined) {
-      issues.push(Object.freeze({ name, kind: "missing", detail: "节点未部署该密钥" }));
+      issues.push(
+        Object.freeze({ name, kind: "missing", detail: "Secret is not deployed on the node" }),
+      );
       continue;
     }
     if (entry.kind !== declaration!.kind) {
       issues.push(Object.freeze({
         name,
         kind: "drifted",
-        detail: `类型漂移：清单 ${entry.kind}，声明 ${declaration!.kind}`,
+        detail: `Type drift: manifest ${entry.kind}, declaration ${declaration!.kind}`,
       }));
     }
     if (entry.sha256 !== remoteSha) {
-      issues.push(Object.freeze({ name, kind: "drifted", detail: "文件哈希与清单不一致" }));
+      issues.push(
+        Object.freeze({ name, kind: "drifted", detail: "File hash does not match the manifest" }),
+      );
     }
   }
   const expectedNames = new Set(expected);
   for (const name of state.entries) {
     if (!expectedNames.has(name)) {
-      issues.push(Object.freeze({ name, kind: "extra", detail: "声明外残留密钥" }));
+      issues.push(
+        Object.freeze({ name, kind: "extra", detail: "Secret remains outside the declaration" }),
+      );
     }
   }
   return Object.freeze(issues);
@@ -757,7 +769,7 @@ async function runDeploy(
   const cluster = await loadCluster(options.clusterDirectory);
   const plan = buildRequestedPlan(cluster, options, "deploy");
   if (confirmPlan !== undefined && !(await confirmPlan(plan))) {
-    throw new CancelledError("已取消：未确认部署");
+    throw new CancelledError("Cancelled: deployment was not confirmed");
   }
   if (cache) {
     for (const step of plan.steps) {
@@ -803,8 +815,8 @@ async function runFetch(
   throwIfAborted(signal);
   if (!cache) {
     throw new ConfigurationError(
-      "fetch 需要本地部署包缓存目录：CLI 会自动读取 ~/.sfo-deploy/config.yaml，" +
-        "公共 API 需传入 packagesDir",
+      "fetch requires a local deployment package cache directory: the CLI reads ~/.sfo-deploy/config.yaml automatically, " +
+        "the public API must be given packagesDir",
     );
   }
   const cluster = await loadCluster(options.clusterDirectory);
@@ -816,20 +828,20 @@ async function runFetch(
   for (const [index, appName] of appNames.entries()) {
     throwIfAborted(signal);
     const app = cluster.apps.get(appName);
-    if (!app) throw new PlanningError(`未知 App: ${appName}`);
+    if (!app) throw new PlanningError(`Unknown App: ${appName}`);
     if (!app.package) {
       appsWithoutPackage.push(appName);
       continue;
     }
     const version = app.version;
-    if (version === undefined) throw new PlanningError(`App ${appName} 缺少版本`);
+    if (version === undefined) throw new PlanningError(`App ${appName} has no version`);
     const fetched = await cache.fetch(app.package, {
       kind: "app",
       name: app.name,
       version,
       cluster: cluster.name,
     }, signal);
-    await assertGzipTar(fetched.path, `App ${app.name} 安装包`);
+    await assertGzipTar(fetched.path, `installer package for App ${app.name}`);
     packages.push(Object.freeze({
       app: app.name,
       version,
@@ -872,10 +884,10 @@ async function runInstallDeno(
   const names = options.machines.length > 0
     ? Object.freeze([...options.machines])
     : Object.freeze([...cluster.machines.keys()].sort());
-  if (names.length === 0) throw new PlanningError("集群没有可用机器");
+  if (names.length === 0) throw new PlanningError("Cluster has no usable machines");
   if (options.machines.length === 0 && confirmMachines) {
     if (!(await confirmMachines(names))) {
-      throw new CancelledError("已取消：未确认缺省全量安装 Deno");
+      throw new CancelledError("Cancelled: default full Deno install was not confirmed");
     }
   }
 
@@ -885,7 +897,7 @@ async function runInstallDeno(
     let session: RemoteSession | undefined;
     try {
       const machine = cluster.machines.get(name);
-      if (!machine) throw new PlanningError(`未知机器: ${name}`);
+      if (!machine) throw new PlanningError(`Unknown machine: ${name}`);
       const resolved = resolveMachine(cluster, name, {
         executorRegion: options.executorRegion,
         addressKind: options.addressKind,
@@ -918,7 +930,7 @@ async function runInstallDeno(
               ...previous,
               status: "failed",
               errorCategory: "transport",
-              message: previous.message === undefined ? message : `${previous.message}；${message}`,
+              message: previous.message === undefined ? message : `${previous.message}; ${message}`,
               cleanupErrors: Object.freeze([...previous.cleanupErrors, message]),
             }));
           }
@@ -1023,7 +1035,7 @@ async function finishAttemptError(pending: PendingRelease, cause: unknown): Prom
     await pending.finishError({
       status: cancelled ? "cancelled" : "failed",
       category: errorCategory(cause),
-      message: cancelled ? "操作已取消" : historyErrorMessage(cause),
+      message: cancelled ? "Operation cancelled" : historyErrorMessage(cause),
     });
   } catch {
     await pending.closeIncomplete().catch(() => undefined);
@@ -1048,15 +1060,15 @@ function errorCategory(cause: unknown): string {
 function historyErrorMessage(cause: unknown): string {
   switch (errorCategory(cause)) {
     case "configuration":
-      return "配置或执行计划校验失败";
+      return "Config or execution plan verification failed";
     case "preflight":
-      return "本地或远端预检失败";
+      return "Local or remote preflight failed";
     case "download":
-      return "部署工件准备失败";
+      return "Deployment artifact preparation failed";
     case "transport":
-      return "远端传输失败";
+      return "Remote transport failed";
     default:
-      return "部署执行失败";
+      return "Deployment execution failed";
   }
 }
 
@@ -1143,18 +1155,22 @@ function uniqueNames(values: Iterable<string>, label: string, allowQualified = f
     const parts = typeof value === "string" ? value.split("/") : [];
     const valid = parts.length === 1 && NAME_RE.test(value) ||
       allowQualified && parts.length === 2 && parts.every((part) => NAME_RE.test(part));
-    if (!valid) throw new ConfigurationError(`${label} 过滤器名称不合法: ${JSON.stringify(value)}`);
-    if (result.includes(value)) throw new ConfigurationError(`${label} 过滤器重复: ${value}`);
+    if (!valid) {
+      throw new ConfigurationError(`Invalid ${label} filter name: ${JSON.stringify(value)}`);
+    }
+    if (result.includes(value)) throw new ConfigurationError(`Duplicate ${label} filter: ${value}`);
     result.push(value);
   }
   return result;
 }
 
 function fileUrlPath(value: URL, label: string): string {
-  if (value.protocol !== "file:") throw new ConfigurationError(`${label} 必须是本地文件路径`);
+  if (value.protocol !== "file:") {
+    throw new ConfigurationError(`${label} must be a local file path`);
+  }
   return decodeURIComponent(value.pathname);
 }
 
 function throwIfAborted(signal?: AbortSignal): void {
-  if (signal?.aborted) throw new CancelledError("用户取消", { cause: signal.reason });
+  if (signal?.aborted) throw new CancelledError("User cancelled", { cause: signal.reason });
 }

@@ -169,7 +169,7 @@ export class ReleaseSelection {
     this.addressKind = optionalString(options.addressKind, "address_kind");
     this.withDependencies = options.withDependencies ?? false;
     if (typeof this.withDependencies !== "boolean") {
-      throw new ConfigurationError("with_dependencies 必须是布尔值");
+      throw new ConfigurationError("with_dependencies must be a boolean");
     }
     Object.freeze(this);
   }
@@ -320,12 +320,14 @@ class OperationLock {
       created = true;
     } catch (cause) {
       if (!(cause instanceof Deno.errors.AlreadyExists)) {
-        throw new ConfigurationError("无法创建发布操作锁", { cause });
+        throw new ConfigurationError("Failed to create the release operation lock", { cause });
       }
       try {
         file = await Deno.open(this.path, { read: true, write: true });
       } catch (openCause) {
-        throw new ConfigurationError("发布操作锁不是安全普通文件", { cause: openCause });
+        throw new ConfigurationError("Release operation lock is not a safe regular file", {
+          cause: openCause,
+        });
       }
     }
     try {
@@ -335,14 +337,16 @@ class OperationLock {
         !current.isFile || current.isSymlink || current.nlink !== 1 ||
         !opened.isFile || opened.nlink !== 1 || !sameFileIdentity(current, opened)
       ) {
-        throw new ConfigurationError("发布操作锁不是安全普通文件");
+        throw new ConfigurationError("Release operation lock is not a safe regular file");
       }
       if (created) {
         await Deno.chmod(this.path, 0o600);
-        await writeAll(file, new Uint8Array([0]), "发布操作锁");
+        await writeAll(file, new Uint8Array([0]), "release operation lock");
         await file.sync();
       } else if (opened.size === 0) {
-        throw new ConfigurationError("现有发布操作锁为空，拒绝不安全地修改");
+        throw new ConfigurationError(
+          "Existing release operation lock is empty; refusing to modify it unsafely",
+        );
       }
     } catch (cause) {
       file.close();
@@ -357,11 +361,13 @@ class OperationLock {
         }
       } catch (cause) {
         file.close();
-        throw new ConfigurationError("无法获取发布操作锁", { cause });
+        throw new ConfigurationError("Failed to acquire the release operation lock", { cause });
       }
       if (performance.now() >= deadline) {
         file.close();
-        throw new ConfigurationError("同一集群已有发布或回退操作正在执行");
+        throw new ConfigurationError(
+          "Another release or rollback operation is already running for this cluster",
+        );
       }
       await new Promise((resolvePromise) => setTimeout(resolvePromise, 50));
     }
@@ -409,7 +415,7 @@ export class ReleaseStore {
     if (
       typeof options?.sourceExporter !== "function" || typeof options?.sourceImporter !== "function"
     ) {
-      throw new TypeError("ReleaseStore 需要 sourceExporter 和 sourceImporter");
+      throw new TypeError("ReleaseStore requires sourceExporter and sourceImporter");
     }
     this.sourceExporter = options.sourceExporter;
     this.sourceImporter = options.sourceImporter;
@@ -425,16 +431,16 @@ export class ReleaseStore {
   }): Promise<PendingRelease> {
     const { operation, selection, sourceReleaseId } = options;
     if (!RELEASE_OPERATIONS.has(operation)) {
-      throw new ConfigurationError(`发布历史不支持的操作: ${operation}`);
+      throw new ConfigurationError(`Unsupported release history operation: ${operation}`);
     }
     if (!(selection instanceof ReleaseSelection)) {
-      throw new TypeError("selection 必须是 ReleaseSelection");
+      throw new TypeError("selection must be a ReleaseSelection");
     }
     if ((operation === "rollback") !== (sourceReleaseId !== undefined)) {
       throw new ConfigurationError(
         operation === "rollback"
-          ? "rollback attempt 必须关联来源发布 ID"
-          : `${operation} attempt 不能关联来源发布 ID`,
+          ? "rollback attempt must reference a source release ID"
+          : `${operation} attempt must not reference a source release ID`,
       );
     }
     if (sourceReleaseId !== undefined) validateReleaseId(sourceReleaseId);
@@ -456,7 +462,7 @@ export class ReleaseStore {
     };
     try {
       if (await pathExists(releaseDirectory)) {
-        throw new ConfigurationError(`发布 ID 已经存在: ${releaseId}`);
+        throw new ConfigurationError(`Release ID already exists: ${releaseId}`);
       }
       await Deno.mkdir(stagingDirectory, { mode: 0o700 });
       await atomicJson(join(stagingDirectory, "intent.json"), intent, { exclusive: true });
@@ -481,7 +487,9 @@ export class ReleaseStore {
     for (const entry of entries) {
       if (entry.name.startsWith(".")) continue;
       if (!entry.isDirectory || entry.isSymlink) {
-        throw new ConfigurationError(`发布历史包含非法目录项: ${entry.name}`);
+        throw new ConfigurationError(
+          `Release history contains an invalid directory entry: ${entry.name}`,
+        );
       }
       validateReleaseId(entry.name);
       records.push(await this.readRecord(join(this.root, entry.name)));
@@ -495,7 +503,7 @@ export class ReleaseStore {
     const path = join(this.root, releaseId);
     const info = await safeLstat(path);
     if (!info?.isDirectory || info.isSymlink) {
-      throw new ConfigurationError(`发布记录不存在: ${releaseId}`);
+      throw new ConfigurationError(`Release record does not exist: ${releaseId}`);
     }
     return await this.readRecord(path);
   }
@@ -503,7 +511,9 @@ export class ReleaseStore {
   async loadRollbackPlan(releaseId: string): Promise<ExecutionPlan> {
     const record = await this.get(releaseId);
     if (!record.rollbackEligible) {
-      throw new ConfigurationError(`发布记录不可回退: ${releaseId} status=${record.status}`);
+      throw new ConfigurationError(
+        `Release record cannot be rolled back: ${releaseId} status=${record.status}`,
+      );
     }
     const snapshot = join(this.root, releaseId, "snapshot");
     await this.verifySnapshot(snapshot, releaseId);
@@ -525,19 +535,21 @@ export class ReleaseStore {
       "selection",
     ], "intent.json");
     if (intent.schema_version !== RELEASE_SCHEMA_VERSION) {
-      throw new ConfigurationError(`不支持的发布记录 schema: ${String(intent.schema_version)}`);
+      throw new ConfigurationError(
+        `Unsupported release record schema: ${String(intent.schema_version)}`,
+      );
     }
     const releaseId = basename(releaseDirectory);
     if (intent.release_id !== releaseId || intent.cluster !== this.cluster) {
-      throw new ConfigurationError(`发布记录身份不匹配: ${releaseId}`);
+      throw new ConfigurationError(`Release record identity does not match: ${releaseId}`);
     }
     const operation = requiredString(intent.operation, "operation");
     if (!RELEASE_OPERATIONS.has(operation)) {
-      throw new ConfigurationError(`发布记录 operation 非法: ${operation}`);
+      throw new ConfigurationError(`Invalid release record operation: ${operation}`);
     }
     const sourceReleaseId = optionalString(intent.source_release_id, "source_release_id");
     if ((operation === "rollback") !== (sourceReleaseId !== undefined)) {
-      throw new ConfigurationError("发布记录 operation/source_release_id 绑定非法");
+      throw new ConfigurationError("Invalid release record operation/source_release_id binding");
     }
     if (sourceReleaseId) validateReleaseId(sourceReleaseId);
     const selection = selectionFromData(intent.selection);
@@ -574,11 +586,11 @@ export class ReleaseStore {
       "error",
     ], "outcome.json");
     if (outcome.schema_version !== RELEASE_SCHEMA_VERSION) {
-      throw new ConfigurationError("不支持的 outcome schema");
+      throw new ConfigurationError("Unsupported outcome schema");
     }
     const status = requiredString(outcome.status, "status");
     if (!(["succeeded", "failed", "cancelled"] as string[]).includes(status)) {
-      throw new ConfigurationError(`发布记录状态非法: ${status}`);
+      throw new ConfigurationError(`Invalid release record status: ${status}`);
     }
     const executionResult = executionSummaryFromData(outcome.execution_result);
     const error = errorFromData(outcome.error);
@@ -597,14 +609,18 @@ export class ReleaseStore {
     const appVersions = stringMapping(outcome.app_versions, "app_versions");
     if (actualPlan) {
       if (actualPlan.requestedAction !== operation) {
-        throw new ConfigurationError("发布记录 operation 与实际执行计划 requested_action 不一致");
+        throw new ConfigurationError(
+          "Release record operation does not match the actual execution plan requested_action",
+        );
       }
       const expected = planSummary(actualPlan);
       if (
         !equalJson(apps, expected.apps) || !equalJson(machines, expected.machines) ||
         !equalJson(appVersions, expected.appVersions)
       ) {
-        throw new ConfigurationError("发布结果元数据与实际执行计划不一致");
+        throw new ConfigurationError(
+          "Release result metadata does not match the actual execution plan",
+        );
       }
       if (executionResult) validateExecutionAgainstPlan(executionResult, actualPlan);
     }
@@ -630,7 +646,7 @@ export class ReleaseStore {
   async verifySnapshot(snapshot: string, releaseId?: string): Promise<ExecutionPlan> {
     const info = await safeLstat(snapshot);
     if (!info?.isDirectory || info.isSymlink) {
-      throw new ConfigurationError("发布快照不存在或不是安全目录");
+      throw new ConfigurationError("Release snapshot does not exist or is not a safe directory");
     }
     const manifest = objectValue(
       await readJson(join(snapshot, "manifest.json"), MAX_JSON_BYTES),
@@ -638,16 +654,16 @@ export class ReleaseStore {
     );
     expectKeys(manifest, ["schema_version", "release_id", "cluster", "files"], "snapshot manifest");
     if (manifest.schema_version !== RELEASE_SCHEMA_VERSION || !Array.isArray(manifest.files)) {
-      throw new ConfigurationError("发布快照 manifest 非法");
+      throw new ConfigurationError("Invalid release snapshot manifest");
     }
     const manifestReleaseId = validateReleaseId(
       requiredString(manifest.release_id, "snapshot release_id"),
     );
     if (releaseId !== undefined && manifestReleaseId !== releaseId) {
-      throw new ConfigurationError("发布快照与 attempt ID 不匹配");
+      throw new ConfigurationError("Release snapshot does not match the attempt ID");
     }
     if (requiredString(manifest.cluster, "snapshot cluster") !== this.cluster) {
-      throw new ConfigurationError("发布快照与当前集群不匹配");
+      throw new ConfigurationError("Release snapshot does not match the current cluster");
     }
     const expected = new Map<string, readonly [string, number]>();
     let total = 0;
@@ -657,45 +673,55 @@ export class ReleaseStore {
       const path = safeRelative(requiredString(item.path, "snapshot path"));
       const digest = sha256Text(item.sha256);
       const size = boundedInteger(item.size, "snapshot size", 0, MAX_ARCHIVE_FILE_BYTES);
-      if (expected.has(path)) throw new ConfigurationError(`快照文件重复: ${path}`);
+      if (expected.has(path)) throw new ConfigurationError(`Duplicate snapshot file: ${path}`);
       expected.set(path, [digest, size]);
       total += size;
     }
     if (expected.size > MAX_ARCHIVE_FILES || total > MAX_SNAPSHOT_BYTES) {
-      throw new ConfigurationError("发布快照超过容量限制");
+      throw new ConfigurationError("Release snapshot exceeds the capacity limit");
     }
     const actual = new Set<string>();
     await walkSnapshot(snapshot, async (path, entry) => {
       const rel = relative(snapshot, path).split(SEPARATOR).join("/");
       if (rel === "manifest.json") return;
-      if (entry.isSymlink) throw new ConfigurationError(`快照禁止符号链接: ${rel}`);
+      if (entry.isSymlink) {
+        throw new ConfigurationError(`Snapshot must not contain symlinks: ${rel}`);
+      }
       if (entry.isDirectory) {
-        if (rel !== "files") throw new ConfigurationError(`快照包含未登记目录: ${rel}`);
+        if (rel !== "files") {
+          throw new ConfigurationError(`Snapshot contains an unregistered directory: ${rel}`);
+        }
         return;
       }
-      if (!entry.isFile) throw new ConfigurationError(`快照包含非普通文件: ${rel}`);
+      if (!entry.isFile) {
+        throw new ConfigurationError(`Snapshot contains a non-regular file: ${rel}`);
+      }
       actual.add(rel);
       const wanted = expected.get(rel);
-      if (!wanted) throw new ConfigurationError(`快照包含未登记文件: ${rel}`);
+      if (!wanted) throw new ConfigurationError(`Snapshot contains an unregistered file: ${rel}`);
       const found = await hashRegularFile(path);
       if (wanted[0] !== found.hash || wanted[1] !== found.size) {
-        throw new ConfigurationError(`快照文件完整性失败: ${rel}`);
+        throw new ConfigurationError(`Snapshot file integrity failed: ${rel}`);
       }
     });
     const missing = [...expected.keys()].filter((path) => !actual.has(path)).sort();
-    if (missing.length) throw new ConfigurationError(`快照缺少文件: ${missing.join(", ")}`);
-    if (!expected.has("actual-plan.json")) throw new ConfigurationError("发布快照缺少实际执行计划");
+    if (missing.length) {
+      throw new ConfigurationError(`Snapshot is missing files: ${missing.join(", ")}`);
+    }
+    if (!expected.has("actual-plan.json")) {
+      throw new ConfigurationError("Release snapshot is missing the actual execution plan");
+    }
     const actualPlan = await this.readPlan(snapshot, "actual-plan.json");
     if (actualPlan.cluster !== this.cluster) {
-      throw new ConfigurationError("发布快照执行计划集群不匹配");
+      throw new ConfigurationError("Release snapshot execution plan cluster does not match");
     }
     if (expected.has("rollback-plan.json")) {
       const rollbackPlan = await this.readPlan(snapshot, "rollback-plan.json");
       if (rollbackPlan.cluster !== this.cluster) {
-        throw new ConfigurationError("发布快照回退计划集群不匹配");
+        throw new ConfigurationError("Release snapshot rollback plan cluster does not match");
       }
       if (rollbackPlan.requestedAction !== "rollback") {
-        throw new ConfigurationError("发布快照回退计划动作非法");
+        throw new ConfigurationError("Invalid release snapshot rollback plan action");
       }
     }
     return actualPlan;
@@ -713,7 +739,7 @@ export class ReleaseStore {
   async #ensureReady(): Promise<void> {
     const info = await safeLstat(this.clusterDirectory);
     if (!info?.isDirectory || info.isSymlink) {
-      throw new ConfigurationError(`集群目录不存在: ${this.clusterDirectory}`);
+      throw new ConfigurationError(`Cluster directory does not exist: ${this.clusterDirectory}`);
     }
     await ensurePrivateDirectory(join(this.clusterDirectory, ".sfo-deploy"));
     await ensurePrivateDirectory(this.root);
@@ -765,7 +791,7 @@ export class PendingRelease implements AsyncDisposable {
       executedPlan.requestedAction !== "stop" &&
       executedPlan.requestedAction !== "restart"
     ) {
-      throw new ConfigurationError("非发布 attempt 计划动作非法");
+      throw new ConfigurationError("Invalid plan action for a non-release attempt");
     }
     return await this.#archiveSnapshot(executedPlan);
   }
@@ -776,16 +802,20 @@ export class PendingRelease implements AsyncDisposable {
   ): Promise<ExecutionPlan> {
     this.#requireOpen();
     if (requiredString(this.intent.operation, "operation") !== executedPlan.requestedAction) {
-      throw new ConfigurationError("attempt operation 与实际执行计划动作不一致");
+      throw new ConfigurationError(
+        "Attempt operation does not match the actual execution plan action",
+      );
     }
     if (executedPlan.cluster !== this.store.cluster) {
-      throw new ConfigurationError("实际执行计划与当前集群不匹配");
+      throw new ConfigurationError("Actual execution plan does not match the current cluster");
     }
     if (
       rollback !== undefined &&
       (rollback.cluster !== this.store.cluster || rollback.requestedAction !== "rollback")
     ) {
-      throw new ConfigurationError("回退计划必须绑定当前集群且 requested_action=rollback");
+      throw new ConfigurationError(
+        "Rollback plan must bind the current cluster and use requested_action=rollback",
+      );
     }
     const temporary = join(this.releaseDirectory, `.snapshot-${randomHex(8)}`);
     await Deno.mkdir(join(temporary, "files"), { recursive: true, mode: 0o700 });
@@ -823,7 +853,7 @@ export class PendingRelease implements AsyncDisposable {
       await this.store.verifySnapshot(temporary, this.releaseId);
       const destination = join(this.releaseDirectory, "snapshot");
       if (await pathExists(destination)) {
-        throw new ConfigurationError("发布 attempt 已经包含 snapshot");
+        throw new ConfigurationError("Release attempt already contains a snapshot");
       }
       await Deno.rename(temporary, destination);
       const decoded = await this.store.readPlan(destination, "actual-plan.json");
@@ -842,7 +872,7 @@ export class PendingRelease implements AsyncDisposable {
     this.#requireOpen();
     const plan = await this.store.loadRollbackPlan(sourceReleaseId);
     if (plan.steps.some((step) => step.machine.machine.scriptRuntime.kind !== "deno")) {
-      throw new ConfigurationError("回退计划包含混合或未知脚本运行时");
+      throw new ConfigurationError("Rollback plan contains mixed or unknown script runtimes");
     }
     return await this.archivePlans(plan, plan);
   }
@@ -850,7 +880,7 @@ export class PendingRelease implements AsyncDisposable {
   async finishResult(result: DeploymentResultLike): Promise<ReleaseRecord> {
     this.#requireOpen();
     if (result.cluster !== this.store.cluster) {
-      throw new ConfigurationError("部署结果与发布 attempt 集群不匹配");
+      throw new ConfigurationError("Deployment result does not match the release attempt cluster");
     }
     const actualPlan = await this.store.verifySnapshot(
       join(this.releaseDirectory, "snapshot"),
@@ -861,7 +891,9 @@ export class PendingRelease implements AsyncDisposable {
       requiredString(this.intent.operation, "operation"),
     );
     if (result.requestedAction !== actualPlan.requestedAction) {
-      throw new ConfigurationError("部署结果动作与实际执行计划不一致");
+      throw new ConfigurationError(
+        "Deployment result action does not match the actual execution plan",
+      );
     }
     const summary = executionSummary(result);
     validateExecutionAgainstPlan(summary, actualPlan);
@@ -882,7 +914,7 @@ export class PendingRelease implements AsyncDisposable {
     },
   ): Promise<ReleaseRecord> {
     if (options.status !== "failed" && options.status !== "cancelled") {
-      throw new TypeError("错误终态必须是 failed 或 cancelled");
+      throw new TypeError("Error terminal state must be failed or cancelled");
     }
     return await this.#finish(options.status, null, {
       category: bounded(options.category),
@@ -922,7 +954,10 @@ export class PendingRelease implements AsyncDisposable {
         maxBytes: MAX_OUTCOME_BYTES,
       });
     } catch (cause) {
-      throw new ExecutionError(`无法终结发布历史 ${this.releaseId}: ${String(cause)}`, { cause });
+      throw new ExecutionError(
+        `Failed to finalize release history ${this.releaseId}: ${String(cause)}`,
+        { cause },
+      );
     } finally {
       this.#closed = true;
       await this.#lock.release();
@@ -930,14 +965,19 @@ export class PendingRelease implements AsyncDisposable {
     try {
       return await this.store.get(this.releaseId);
     } catch (cause) {
-      throw new ExecutionError(`发布历史终态校验失败 ${this.releaseId}: ${String(cause)}`, {
-        cause,
-      });
+      throw new ExecutionError(
+        `Release history terminal state verification failed ${this.releaseId}: ${String(cause)}`,
+        {
+          cause,
+        },
+      );
     }
   }
 
   #requireOpen(): void {
-    if (this.#closed) throw new ExecutionError(`发布 attempt 已终结: ${this.releaseId}`);
+    if (this.#closed) {
+      throw new ExecutionError(`Release attempt already finalized: ${this.releaseId}`);
+    }
   }
 }
 
@@ -955,7 +995,7 @@ class ArchiveWriter {
   }
 
   async add(source: string): Promise<string> {
-    const data = await readRegularBytes(source, MAX_ARCHIVE_FILE_BYTES, "发布快照来源");
+    const data = await readRegularBytes(source, MAX_ARCHIVE_FILE_BYTES, "release snapshot source");
     const digest = await sha256(data);
     const key = `${digest}:${data.byteLength}`;
     const existing = this.files.get(key);
@@ -966,13 +1006,13 @@ class ArchiveWriter {
       this.count++;
       this.total += data.byteLength;
       if (this.count > MAX_ARCHIVE_FILES || this.total > MAX_SNAPSHOT_BYTES) {
-        throw new ConfigurationError("发布快照超过容量限制");
+        throw new ConfigurationError("Release snapshot exceeds the capacity limit");
       }
       const rel = `files/${digest}`;
       const target = join(this.snapshot, "files", digest);
       const file = await Deno.open(target, { createNew: true, write: true, mode: 0o600 });
       try {
-        await writeAll(file, data, "发布快照文件");
+        await writeAll(file, data, "release snapshot file");
         await file.sync();
       } finally {
         file.close();
@@ -992,10 +1032,12 @@ class ArchiveWriter {
 /** 从实际 deploy 计划派生只检查环境并重放 App 的安全计划。 */
 export function deriveRollbackPlan(plan: ExecutionPlan): ExecutionPlan {
   if (!Array.isArray(plan.steps) || plan.steps.length === 0 || plan.steps.length > MAX_STEPS) {
-    throw new ConfigurationError("执行计划为空或超过步骤限制");
+    throw new ConfigurationError("Execution plan is empty or exceeds the step limit");
   }
   const byId = new Map<string, PlanStep>(plan.steps.map((step) => [step.id, step]));
-  if (byId.size !== plan.steps.length) throw new ConfigurationError("执行计划包含重复步骤 ID");
+  if (byId.size !== plan.steps.length) {
+    throw new ConfigurationError("Execution plan contains a duplicate step ID");
+  }
   const packagelessResources = new Set(
     plan.steps.filter((step) => step.kind === "app").map((step) => step.resource)
       .filter((resource) =>
@@ -1018,14 +1060,16 @@ export function deriveRollbackPlan(plan: ExecutionPlan): ExecutionPlan {
     !packagelessResources.size &&
     ![...appIds].some((id) => ["deploy", "stage", "activate"].includes(byId.get(id)?.action ?? ""))
   ) {
-    throw new ConfigurationError("发布计划不包含可回退的 App deploy 步骤");
+    throw new ConfigurationError("Release plan contains no rollback-capable App deploy step");
   }
   const environmentCheck = (dependency: string): string => {
     const index = dependency.lastIndexOf(":");
     const candidate = `${index < 0 ? dependency : dependency.slice(0, index)}:check`;
     const step = byId.get(candidate);
     if (!step || step.kind !== "environment" || step.action !== "check") {
-      throw new ConfigurationError(`回退计划缺少环境检查步骤: ${candidate}`);
+      throw new ConfigurationError(
+        `Rollback plan is missing an environment check step: ${candidate}`,
+      );
     }
     return candidate;
   };
@@ -1045,7 +1089,9 @@ export function deriveRollbackPlan(plan: ExecutionPlan): ExecutionPlan {
     for (const dependency of step.dependsOn) {
       if (keep.has(dependency)) dependencies.add(dependency);
       else if (dependency.startsWith("env:")) dependencies.add(environmentCheck(dependency));
-      else throw new ConfigurationError(`回退计划包含无法映射的依赖: ${dependency}`);
+      else {throw new ConfigurationError(
+          `Rollback plan contains an unmappable dependency: ${dependency}`,
+        );}
     }
     return Object.freeze({ ...step, dependsOn: freezeArray([...dependencies].sort()) });
   });
@@ -1065,7 +1111,7 @@ async function encodePlan(
 ): Promise<JsonObject> {
   if (
     !plan || !Array.isArray(plan.steps) || plan.steps.length === 0 || plan.steps.length > MAX_STEPS
-  ) throw new ConfigurationError("执行计划为空或超过步骤限制");
+  ) throw new ConfigurationError("Execution plan is empty or exceeds the step limit");
   validateStepGraph(plan.steps);
   validatePlanSemantics(plan.requestedAction, plan.steps);
   return {
@@ -1085,9 +1131,9 @@ async function encodeStep(
 ): Promise<JsonObject> {
   const machine = step.machine.machine;
   const runtime = machine.scriptRuntime;
-  if (!runtime) throw new ConfigurationError("计划机器缺少显式脚本运行时");
+  if (!runtime) throw new ConfigurationError("Plan machine is missing an explicit script runtime");
   if (runtime.kind !== "deno") {
-    throw new ConfigurationError("execution-plan v4 只接受 Deno 运行时");
+    throw new ConfigurationError("execution-plan v4 accepts only the Deno runtime");
   }
   const declaredRunAs = step.management?.runAs;
   const runAs = step.runAs ?? declaredRunAs;
@@ -1095,29 +1141,31 @@ async function encodeStep(
     (step.action === "stage" || step.action === "activate") &&
     step.deployment?.kind === "versioned";
   if (step.management !== undefined) {
-    if (runAs === undefined) throw new ConfigurationError("managed plan-v4 步骤缺少 run_as");
+    if (runAs === undefined) throw new ConfigurationError("managed plan-v4 step is missing run_as");
     validateAppRunAs(runAs);
     if (declaredRunAs !== undefined && declaredRunAs !== runAs) {
-      throw new ConfigurationError("managed plan-v4 步骤包含不一致的 run_as");
+      throw new ConfigurationError("managed plan-v4 step contains an inconsistent run_as");
     }
     if (
       step.lifecycleSecretValues === undefined ||
       step.lifecycleSecretFiles === undefined
     ) {
-      throw new ConfigurationError("managed plan-v4 步骤缺少生命周期秘密声明");
+      throw new ConfigurationError("managed plan-v4 step is missing lifecycle secret declarations");
     }
   } else if (isVersionedStage) {
-    if (runAs === undefined) throw new ConfigurationError("versioned stage 步骤缺少 run_as");
+    if (runAs === undefined) throw new ConfigurationError("versioned stage step is missing run_as");
     validateAppRunAs(runAs);
   } else if (runAs !== undefined) {
-    throw new ConfigurationError("非 managed plan-v4 步骤不能声明 run_as");
+    throw new ConfigurationError("non-managed plan-v4 step must not declare run_as");
   }
   let sshKey: string | null = null;
   if (machine.sshPrivateKey !== undefined) {
     const rel = relative(archive.clusterDirectory, resolve(machine.sshPrivateKey)).split(SEPARATOR)
       .join("/");
     if (rel.startsWith("../") || rel === "..") {
-      throw new ConfigurationError("SSH 私钥只能保存集群目录内的逻辑相对路径");
+      throw new ConfigurationError(
+        "SSH private key must be stored as a logical relative path inside the cluster directory",
+      );
     }
     sshKey = safeRelative(rel);
   }
@@ -1129,7 +1177,9 @@ async function encodeStep(
     );
     expectKeys(envelope, ["schema", "payload"], "package source envelope");
     if (typeof envelope.schema !== "string" || !SOURCE_SCHEMA_RE.test(envelope.schema)) {
-      throw new ConfigurationError("provider source exporter 必须返回 schema/payload envelope");
+      throw new ConfigurationError(
+        "provider source exporter must return a schema/payload envelope",
+      );
     }
     validateJson(envelope.payload);
     packageData = {
@@ -1221,7 +1271,7 @@ function decodeDeployment(value: unknown): DeploymentDefinition {
   const item = objectValue(value, "deployment");
   expectKeys(item, ["kind"], "deployment");
   if (item.kind !== "versioned") {
-    throw new ConfigurationError("deployment.kind 只支持 versioned");
+    throw new ConfigurationError("deployment.kind supports only versioned");
   }
   return Object.freeze({ kind: "versioned" as const });
 }
@@ -1372,14 +1422,14 @@ async function decodeManagement(
   const value = objectValue(raw, "management");
   expectKeys(value, ["configs", "config_scripts", "manager"], "management");
   if (!Array.isArray(value.configs) || value.configs.length > MAX_JSON_ITEMS) {
-    throw new ConfigurationError("management.configs 必须是有界列表");
+    throw new ConfigurationError("management.configs must be a bounded list");
   }
   const configs = freezeArray(
     await Promise.all(value.configs.map(async (rawConfig) => {
       const config = objectValue(rawConfig, "managed config");
       if (config.updater !== undefined) {
         throw new ConfigurationError(
-          "旧发布快照包含 managed config.updater，请先在旧版本完成回滚；新契约只支持 format/secret_references",
+          "Legacy release snapshot contains managed config.updater; roll back with the old version first; the new contract supports only format/secret_references",
         );
       }
       expectKeysOptional(
@@ -1402,7 +1452,7 @@ async function decodeManagement(
         "managed config",
       );
       if (!Array.isArray(config.variables) || config.variables.length > MAX_JSON_ITEMS) {
-        throw new ConfigurationError("managed config variables 必须是有界列表");
+        throw new ConfigurationError("managed config variables must be a bounded list");
       }
       const variables = freezeArray(config.variables.map((rawBinding) => {
         const binding = objectValue(rawBinding, "managed config variable");
@@ -1418,26 +1468,26 @@ async function decodeManagement(
       }));
       const target = requiredString(config.target, "managed config.target");
       if (!isAbsolute(target) || /[\0\r\n]/u.test(target)) {
-        throw new ConfigurationError("managed config.target 必须是安全绝对路径");
+        throw new ConfigurationError("managed config.target must be a safe absolute path");
       }
       const targetRoot = config.target_root === undefined
         ? "absolute"
         : configTargetRoot(config.target_root);
       const onChange = requiredString(config.on_change, "managed config.on_change");
       if (onChange !== "none" && onChange !== "reload" && onChange !== "restart") {
-        throw new ConfigurationError("managed config.on_change 非法");
+        throw new ConfigurationError("Invalid managed config.on_change");
       }
       const format = requiredString(config.format, "managed config.format");
       if (
         format !== "yaml" && format !== "json" && format !== "toml" && format !== "ini" &&
         format !== "nginx"
       ) {
-        throw new ConfigurationError("managed config.format 非法");
+        throw new ConfigurationError("Invalid managed config.format");
       }
       if (
         !Array.isArray(config.secret_references) || config.secret_references.length > MAX_JSON_ITEMS
       ) {
-        throw new ConfigurationError("managed config.secret_references 必须是有界列表");
+        throw new ConfigurationError("managed config.secret_references must be a bounded list");
       }
       const secretReferences = immutableMap(
         new Map(
@@ -1448,7 +1498,7 @@ async function decodeManagement(
             const kind = secretKind(reference.kind);
             if (kind === "file") {
               if (reference.value_type !== "string") {
-                throw new ConfigurationError("file secret reference.value_type 必须是 string");
+                throw new ConfigurationError("file secret reference.value_type must be string");
               }
             }
             return [
@@ -1481,7 +1531,7 @@ async function decodeManagement(
     })),
   );
   if (!Array.isArray(value.config_scripts) || value.config_scripts.length > MAX_JSON_ITEMS) {
-    throw new ConfigurationError("management.config_scripts 必须是有界列表");
+    throw new ConfigurationError("management.config_scripts must be a bounded list");
   }
   const configScripts = freezeArray(
     await Promise.all(
@@ -1502,7 +1552,7 @@ async function decodeManagement(
         restart: await decodeInvocation(rawManager.restart, snapshot, "management.manager.restart"),
       });
     } else {
-      if (rawManager.kind !== "service") throw new ConfigurationError("manager.kind 非法");
+      if (rawManager.kind !== "service") throw new ConfigurationError("Invalid manager.kind");
       expectKeysOptional(
         rawManager,
         ["kind", "unit", "tool", "enabled", "daemon_reload", "on_deploy", "timeout_ms"],
@@ -1515,10 +1565,10 @@ async function decodeManagement(
       const onDeploy = requiredString(rawManager.on_deploy, "manager.on_deploy");
       const tool = requiredString(rawManager.tool, "manager.tool");
       if (!["none", "start", "reload", "restart"].includes(onDeploy)) {
-        throw new ConfigurationError("manager.on_deploy 非法");
+        throw new ConfigurationError("Invalid manager.on_deploy");
       }
       if (!["auto", "systemctl", "service"].includes(tool)) {
-        throw new ConfigurationError("manager.tool 非法");
+        throw new ConfigurationError("Invalid manager.tool");
       }
       manager = Object.freeze({
         kind: "service",
@@ -1543,7 +1593,7 @@ async function decodeManagement(
     manager === undefined &&
     !(runAs !== undefined && deployment?.kind === "versioned")
   ) {
-    throw new ConfigurationError("management 声明不能为空");
+    throw new ConfigurationError("management declaration must not be empty");
   }
   return Object.freeze({
     runAs,
@@ -1567,7 +1617,7 @@ function decodeSystemdUnitConfig(
   );
   const target = safeAbsoluteRemotePath(value.target, `${label}.target`);
   if (basename(target) !== unit) {
-    throw new ConfigurationError(`${label}.target 文件名必须与 service.unit 一致`);
+    throw new ConfigurationError(`${label}.target file name must match service.unit`);
   }
   return Object.freeze({
     target,
@@ -1579,7 +1629,7 @@ function decodeSystemdUnitConfig(
     args: freezeArray(
       uniqueStrings(value.args, `${label}.args`).map((argument) => {
         if (containsAsciiControl(argument)) {
-          throw new ConfigurationError(`${label}.args 包含控制字符`);
+          throw new ConfigurationError(`${label}.args contains control characters`);
         }
         return argument;
       }),
@@ -1607,7 +1657,7 @@ function safeAbsoluteRemotePath(raw: unknown, label: string): string {
     !isAbsolute(text) || text.includes("\\") || containsAsciiControl(text) ||
     text === "/" || text.startsWith("//") || text.split("/").includes("..")
   ) {
-    throw new ConfigurationError(`${label} 必须是安全远端绝对路径`);
+    throw new ConfigurationError(`${label} must be a safe remote absolute path`);
   }
   return text;
 }
@@ -1616,7 +1666,7 @@ function optionalRestartPolicy(value: unknown, label: string): SystemdRestartPol
   if (value === null || value === undefined) return undefined;
   const text = requiredString(value, label);
   if (!SYSTEMD_RESTART_POLICIES.has(text)) {
-    throw new ConfigurationError(`${label} 使用不支持的值`);
+    throw new ConfigurationError(`${label} uses an unsupported value`);
   }
   return text as SystemdRestartPolicy;
 }
@@ -1641,7 +1691,7 @@ async function decodeDeliveryInputs(
   if (
     !Array.isArray(value.scripts) || value.scripts.length > MAX_JSON_ITEMS ||
     !Array.isArray(value.files) || value.files.length > MAX_JSON_ITEMS
-  ) throw new ConfigurationError("delivery_inputs 必须包含有界 scripts/files 列表");
+  ) throw new ConfigurationError("delivery_inputs must contain bounded scripts/files lists");
   const scripts = freezeArray(
     await Promise.all(
       value.scripts.map((script) => decodeInvocation(script, snapshot, "delivery input script")),
@@ -1667,7 +1717,9 @@ function decodeValidator(raw: unknown): ManagedConfigFile["validator"] {
   const value = objectValue(raw, "managed config validator");
   expectKeys(value, ["argv", "timeout_ms"], "managed config validator");
   const argv = uniqueStrings(value.argv, "managed config validator.argv");
-  if (argv.length === 0) throw new ConfigurationError("managed config validator.argv 不能为空");
+  if (argv.length === 0) {
+    throw new ConfigurationError("managed config validator.argv must not be empty");
+  }
   return Object.freeze({
     argv,
     timeoutMs: boundedInteger(
@@ -1681,21 +1733,21 @@ function decodeValidator(raw: unknown): ManagedConfigFile["validator"] {
 
 function configPath(raw: unknown, label: string): readonly ManagedConfigPathSegment[] {
   if (!Array.isArray(raw) || raw.length === 0 || raw.length > MAX_JSON_ITEMS) {
-    throw new ConfigurationError(`${label} 必须是非空有界列表`);
+    throw new ConfigurationError(`${label} must be a non-empty bounded list`);
   }
   return freezeArray(raw.map((segment) => {
     if (typeof segment === "string" && segment.length > 0) return requiredString(segment, label);
     if (typeof segment === "number" && Number.isSafeInteger(segment) && segment >= 0) {
       return segment;
     }
-    throw new ConfigurationError(`${label} 包含非法段`);
+    throw new ConfigurationError(`${label} contains an invalid segment`);
   }));
 }
 
 function configValueType(raw: unknown): "string" | "integer" | "number" | "boolean" {
   const value = requiredString(raw, "managed config value_type");
   if (!["string", "integer", "number", "boolean"].includes(value)) {
-    throw new ConfigurationError("managed config value_type 非法");
+    throw new ConfigurationError("Invalid managed config value_type");
   }
   return value as "string" | "integer" | "number" | "boolean";
 }
@@ -1703,19 +1755,19 @@ function configValueType(raw: unknown): "string" | "integer" | "number" | "boole
 function configTargetRoot(raw: unknown): ManagedConfigTargetRoot {
   const value = requiredString(raw, "managed config target_root");
   if (!["absolute", "install", "current", "latest"].includes(value)) {
-    throw new ConfigurationError("managed config target_root 非法");
+    throw new ConfigurationError("Invalid managed config target_root");
   }
   return value as ManagedConfigTargetRoot;
 }
 
 function secretKind(raw: unknown): "value" | "file" {
   const value = requiredString(raw, "secret_kind");
-  if (value !== "value" && value !== "file") throw new ConfigurationError("secret_kind 非法");
+  if (value !== "value" && value !== "file") throw new ConfigurationError("Invalid secret_kind");
   return value;
 }
 
 function booleanValue(raw: unknown, label: string): boolean {
-  if (typeof raw !== "boolean") throw new ConfigurationError(`${label} 必须是布尔值`);
+  if (typeof raw !== "boolean") throw new ConfigurationError(`${label} must be a boolean`);
   return raw;
 }
 
@@ -1730,16 +1782,16 @@ async function decodePlan(
   const schema = plan.schema_version;
   if (schema === 1) {
     throw new ConfigurationError(
-      "execution-plan v1 Python 快照不再支持；请使用匹配旧快照的旧版执行器或重新部署为 Deno 计划",
+      "execution-plan v1 Python snapshots are no longer supported; use an old executor that matches the snapshot or redeploy as a Deno plan",
     );
   }
   if (
     (schema !== 2 && schema !== 3 && schema !== 4) || !Array.isArray(plan.steps) ||
     plan.steps.length === 0 || plan.steps.length > MAX_STEPS
-  ) throw new ConfigurationError("执行计划 schema 非法");
+  ) throw new ConfigurationError("Invalid execution plan schema");
   const requestedAction = requiredString(plan.requested_action, "requested_action");
   if (!PLAN_ACTIONS.has(requestedAction)) {
-    throw new ConfigurationError(`执行计划 requested_action 非法: ${requestedAction}`);
+    throw new ConfigurationError(`Invalid execution plan requested_action: ${requestedAction}`);
   }
   const steps = await Promise.all(
     plan.steps.map((item) => decodeStep(item, snapshot, clusterDirectory, sourceImporter, schema)),
@@ -1809,7 +1861,7 @@ async function decodeStep(
     "machine",
   );
   if (!Array.isArray(definition.environments)) {
-    throw new ConfigurationError("machine.environments 必须是列表");
+    throw new ConfigurationError("machine.environments must be a list");
   }
   const environments: EnvironmentInstance[] = definition.environments.map((rawEnvironment) => {
     const item = objectValue(rawEnvironment, "environment instance");
@@ -1822,7 +1874,7 @@ async function decodeStep(
       "requires_privilege",
     ], "environment instance");
     if (item.requires_privilege !== null && typeof item.requires_privilege !== "boolean") {
-      throw new ConfigurationError("requires_privilege 必须是布尔值或 null");
+      throw new ConfigurationError("requires_privilege must be a boolean or null");
     }
     return Object.freeze({
       name: requiredString(item.name, "environment.name"),
@@ -1846,7 +1898,7 @@ async function decodeStep(
   const runtime = objectValue(definition.script_runtime, "script_runtime");
   expectKeys(runtime, ["kind", "executable"], "script_runtime");
   if (runtime.kind !== "deno") {
-    throw new ConfigurationError("execution-plan v2/v3/v4 运行时 kind 必须是 deno");
+    throw new ConfigurationError("execution-plan v2/v3/v4 runtime kind must be deno");
   }
   const scriptRuntime: ScriptRuntime = Object.freeze({
     kind: "deno",
@@ -1869,12 +1921,14 @@ async function decodeStep(
   });
   const addressKind = requiredString(machineValue.address_kind, "address_kind");
   if (addressKind !== "private" && addressKind !== "public") {
-    throw new ConfigurationError("address_kind 非法");
+    throw new ConfigurationError("Invalid address_kind");
   }
   const addresses = addressKind === "private" ? privateIp : publicIp;
   const address = requiredString(machineValue.address, "address");
   if (!addresses.length || address !== addresses[0]) {
-    throw new ConfigurationError("resolved machine 主地址与候选地址不匹配");
+    throw new ConfigurationError(
+      "Resolved machine primary address does not match the candidate addresses",
+    );
   }
   const resolvedMachine: ResolvedMachine = Object.freeze({
     machine,
@@ -1883,7 +1937,7 @@ async function decodeStep(
     addresses,
   });
   if (!Array.isArray(value.scripts) || value.scripts.length > MAX_JSON_ITEMS) {
-    throw new ConfigurationError("scripts 必须是有界列表");
+    throw new ConfigurationError("scripts must be a bounded list");
   }
   const scripts: readonly ScriptInvocation[] = freezeArray(
     await Promise.all(value.scripts.map(async (rawScript) => {
@@ -1897,12 +1951,12 @@ async function decodeStep(
     })),
   );
   if (!scripts.length && schema < 4) {
-    throw new ConfigurationError("legacy 计划步骤必须包含至少一个脚本调用");
+    throw new ConfigurationError("legacy plan step must contain at least one script invocation");
   }
   let bundleScripts: readonly ScriptInvocation[] | undefined;
   if (value.bundle_scripts !== null && value.bundle_scripts !== undefined) {
     if (!Array.isArray(value.bundle_scripts) || value.bundle_scripts.length > MAX_JSON_ITEMS) {
-      throw new ConfigurationError("bundle_scripts 必须是有界列表");
+      throw new ConfigurationError("bundle_scripts must be a bounded list");
     }
     bundleScripts = freezeArray(
       await Promise.all(value.bundle_scripts.map(async (rawScript) => {
@@ -1923,7 +1977,7 @@ async function decodeStep(
   }
   let templates: ConfigTemplate[] = [];
   if (value.templates !== undefined) {
-    if (!Array.isArray(value.templates)) throw new ConfigurationError("templates 必须是列表");
+    if (!Array.isArray(value.templates)) throw new ConfigurationError("templates must be a list");
     templates = await Promise.all(value.templates.map(async (rawTemplate) => {
       const item = objectValue(rawTemplate, "template");
       expectKeys(item, ["relative_path", "source"], "template");
@@ -1952,7 +2006,7 @@ async function decodeStep(
     : [];
   if (legacyConfigSecrets.length > 0 || legacyFileSecrets.length > 0) {
     throw new ConfigurationError(
-      "旧发布快照使用已移除的 config_secrets/file_secrets 密钥机制；无法执行，请重新部署后再回滚",
+      "Legacy release snapshot uses the removed config_secrets/file_secrets mechanism; it cannot be executed, redeploy and then roll back",
     );
   }
   const secretValues = value.secret_values === undefined
@@ -1969,7 +2023,7 @@ async function decodeStep(
     schema === 4 && currentV4 &&
     (!hasRunAs || !hasLifecycleValues || !hasLifecycleFiles)
   ) {
-    throw new ConfigurationError("plan-v4 新字段组不完整");
+    throw new ConfigurationError("plan-v4 new field group is incomplete");
   }
   const runAs = !currentV4 || value.run_as === null
     ? undefined
@@ -1983,9 +2037,11 @@ async function decodeStep(
   const kind = requiredString(value.kind, "kind");
   const action = requiredString(value.action, "action");
   if (kind !== "app" && kind !== "environment") {
-    throw new ConfigurationError(`计划步骤 kind 非法: ${kind}`);
+    throw new ConfigurationError(`Invalid plan step kind: ${kind}`);
   }
-  if (!STEP_ACTIONS.has(action)) throw new ConfigurationError(`计划步骤 action 非法: ${action}`);
+  if (!STEP_ACTIONS.has(action)) {
+    throw new ConfigurationError(`Invalid plan step action: ${action}`);
+  }
   const installDirectory = value.install_directory === null || value.install_directory === undefined
     ? undefined
     : requiredString(value.install_directory, "install_directory");
@@ -2008,28 +2064,28 @@ async function decodeStep(
     !scripts.length && management === undefined &&
     environmentInstall === undefined && environmentManager === undefined
   ) {
-    throw new ConfigurationError("无脚本步骤必须包含 managed 声明");
+    throw new ConfigurationError("A step without scripts must contain a managed declaration");
   }
   if (deployment !== undefined) {
     if (kind !== "app" || !["deploy", "stage", "activate"].includes(action)) {
       throw new ConfigurationError(
-        "只有 App deploy/stage/activate 步骤可以声明 versioned deployment",
+        "Only App deploy/stage/activate steps can declare a versioned deployment",
       );
     }
     if (runAs === undefined) {
-      throw new ConfigurationError("versioned deployment 步骤缺少 run_as");
+      throw new ConfigurationError("versioned deployment step is missing run_as");
     }
     if (installDirectory === undefined) {
-      throw new ConfigurationError("versioned deployment 步骤缺少 install_directory");
+      throw new ConfigurationError("versioned deployment step is missing install_directory");
     }
   }
   if (currentV4 && management !== undefined && runAs === undefined) {
-    throw new ConfigurationError("managed plan-v4 步骤缺少 run_as");
+    throw new ConfigurationError("managed plan-v4 step is missing run_as");
   }
   const isVersionedStage = kind === "app" && (action === "stage" || action === "activate") &&
     deployment?.kind === "versioned";
   if (currentV4 && management === undefined && runAs !== undefined && !isVersionedStage) {
-    throw new ConfigurationError("非 managed plan-v4 步骤不能声明 run_as");
+    throw new ConfigurationError("non-managed plan-v4 step must not declare run_as");
   }
   if (schema === 4) {
     validatePersistedManagementStep(
@@ -2099,11 +2155,11 @@ async function decodeEnvironmentInstall(
         : [],
     );
     if (packages.length === 0) {
-      throw new ConfigurationError("environment_install.packages 不能为空");
+      throw new ConfigurationError("environment_install.packages must not be empty");
     }
     const manager = requiredString(value.manager, "environment_install.manager");
     if (!["auto", "apt-get", "yum"].includes(manager)) {
-      throw new ConfigurationError("environment_install.manager 非法");
+      throw new ConfigurationError("Invalid environment_install.manager");
     }
     return Object.freeze({
       kind: "package",
@@ -2124,7 +2180,7 @@ async function decodeEnvironmentInstall(
     });
     return result;
   }
-  throw new ConfigurationError("environment_install.kind 非法");
+  throw new ConfigurationError("Invalid environment_install.kind");
 }
 
 async function encodeEnvironmentManager(
@@ -2165,7 +2221,7 @@ async function decodeEnvironmentManager(
     );
     const tool = requiredString(value.tool, "environment_manager.tool");
     if (!["auto", "systemctl", "service"].includes(tool)) {
-      throw new ConfigurationError("environment_manager.tool 非法");
+      throw new ConfigurationError("Invalid environment_manager.tool");
     }
     const enabled = value.enabled === null
       ? undefined
@@ -2205,7 +2261,7 @@ async function decodeEnvironmentManager(
     );
     return result;
   }
-  throw new ConfigurationError("environment_manager.kind 非法");
+  throw new ConfigurationError("Invalid environment_manager.kind");
 }
 
 function validatePersistedManagementStep(
@@ -2219,17 +2275,21 @@ function validatePersistedManagementStep(
   lifecycleSecretFiles?: readonly string[],
 ): void {
   if (management === undefined) return;
-  if (kind !== "app") throw new ConfigurationError("只有 App 步骤可以包含 management");
+  if (kind !== "app") throw new ConfigurationError("Only App steps can contain management");
   const values = new Set(secretValues);
   const files = new Set(secretFiles);
   for (const name of lifecycleSecretValues ?? []) {
     if (!values.has(name)) {
-      throw new ConfigurationError(`生命周期值秘密未进入步骤秘密集合: ${name}`);
+      throw new ConfigurationError(
+        `Lifecycle value secret did not enter the step secret set: ${name}`,
+      );
     }
   }
   for (const name of lifecycleSecretFiles ?? []) {
     if (!files.has(name)) {
-      throw new ConfigurationError(`生命周期文件秘密未进入步骤秘密集合: ${name}`);
+      throw new ConfigurationError(
+        `Lifecycle file secret did not enter the step secret set: ${name}`,
+      );
     }
   }
   const requiredScripts: ScriptInvocation[] = [];
@@ -2237,7 +2297,9 @@ function validatePersistedManagementStep(
     for (const [name, reference] of config.secretReferences) {
       const declared = reference.kind === "value" ? values : files;
       if (!declared.has(name)) {
-        throw new ConfigurationError(`managed secret 未进入步骤最小秘密集合: ${name}`);
+        throw new ConfigurationError(
+          `managed secret did not enter the step minimal secret set: ${name}`,
+        );
       }
     }
   }
@@ -2258,13 +2320,15 @@ function validatePersistedManagementStep(
     requiredScripts.length > 0
   ) {
     if (deliveryInputs === undefined) {
-      throw new ConfigurationError("managed 步骤缺少 delivery_inputs");
+      throw new ConfigurationError("managed step is missing delivery_inputs");
     }
   }
   const delivered = new Set(deliveryInputs?.scripts.map((script) => script.relativePath) ?? []);
   for (const script of requiredScripts) {
     if (!delivered.has(script.relativePath)) {
-      throw new ConfigurationError(`managed 脚本未进入 delivery_inputs: ${script.relativePath}`);
+      throw new ConfigurationError(
+        `managed script did not enter delivery_inputs: ${script.relativePath}`,
+      );
     }
   }
 }
@@ -2277,7 +2341,7 @@ function decodePackage(raw: unknown, sourceImporter: SourceImporter): PackageSpe
   const envelope = objectValue(value.source, "package source envelope");
   expectKeys(envelope, ["schema", "payload"], "package source envelope");
   const schema = requiredString(envelope.schema, "package source schema");
-  if (!SOURCE_SCHEMA_RE.test(schema)) throw new ConfigurationError("package source schema 非法");
+  if (!SOURCE_SCHEMA_RE.test(schema)) throw new ConfigurationError("Invalid package source schema");
   const imported = jsonMapping(
     sourceImporter(provider, { schema, payload: envelope.payload }),
     "imported package source",
@@ -2292,16 +2356,18 @@ function decodePackage(raw: unknown, sourceImporter: SourceImporter): PackageSpe
 
 function validateStepGraph(steps: readonly PlanStep[]): void {
   const ids = steps.map((step) => requiredString(step.id, "step id"));
-  if (new Set(ids).size !== ids.length) throw new ConfigurationError("执行计划包含重复步骤 ID");
+  if (new Set(ids).size !== ids.length) {
+    throw new ConfigurationError("Execution plan contains a duplicate step ID");
+  }
   const known = new Set(ids);
   const incoming = new Map<string, Set<string>>();
   for (const step of steps) {
     const dependencies = new Set(step.dependsOn);
     if (dependencies.size !== step.dependsOn.length) {
-      throw new ConfigurationError(`步骤依赖重复: ${step.id}`);
+      throw new ConfigurationError(`Duplicate step dependency: ${step.id}`);
     }
     if (dependencies.has(step.id) || [...dependencies].some((item) => !known.has(item))) {
-      throw new ConfigurationError(`步骤依赖非法: ${step.id}`);
+      throw new ConfigurationError(`Invalid step dependency: ${step.id}`);
     }
     incoming.set(step.id, dependencies);
   }
@@ -2322,18 +2388,20 @@ function validateStepGraph(steps: readonly PlanStep[]): void {
       }
     }
   }
-  if (visited.size !== steps.length) throw new ConfigurationError("执行计划依赖存在循环");
+  if (visited.size !== steps.length) {
+    throw new ConfigurationError("Execution plan dependencies contain a cycle");
+  }
 }
 
 function validatePlanSemantics(requestedAction: string, steps: readonly PlanStep[]): void {
   if (!PLAN_ACTIONS.has(requestedAction)) {
-    throw new ConfigurationError(`执行计划 requested_action 非法: ${requestedAction}`);
+    throw new ConfigurationError(`Invalid execution plan requested_action: ${requestedAction}`);
   }
   const allowed = PLAN_STEP_ACTIONS[requestedAction];
   for (const step of steps) {
     if (!allowed?.[step.kind]?.has(step.action)) {
       throw new ConfigurationError(
-        `计划步骤与 requested_action 不匹配: ${step.id} ${step.kind}/${step.action} vs ${requestedAction}`,
+        `Plan step does not match requested_action: ${step.id} ${step.kind}/${step.action} vs ${requestedAction}`,
       );
     }
   }
@@ -2388,14 +2456,16 @@ function executionSummaryFromData(raw: unknown): ReleaseExecutionSummary | undef
   const value = objectValue(raw, "execution summary");
   expectKeys(value, ["exit_code", "targets"], "execution summary");
   if (!Array.isArray(value.targets)) {
-    throw new ConfigurationError("execution summary targets 必须是列表");
+    throw new ConfigurationError("execution summary targets must be a list");
   }
   const targets: ReleaseTargetSummary[] = value.targets.map((rawTarget) => {
     const target = objectValue(rawTarget, "target summary");
     expectKeys(target, ["machine", "status", "steps", "cleanup_errors"], "target summary");
-    if (!Array.isArray(target.steps)) throw new ConfigurationError("target steps 必须是列表");
+    if (!Array.isArray(target.steps)) throw new ConfigurationError("target steps must be a list");
     const status = requiredString(target.status, "target status");
-    if (!STEP_STATUSES.has(status)) throw new ConfigurationError(`target status 非法: ${status}`);
+    if (!STEP_STATUSES.has(status)) {
+      throw new ConfigurationError(`Invalid target status: ${status}`);
+    }
     const cleanupErrors = uniqueStrings(target.cleanup_errors, "target cleanup_errors");
     const steps = freezeArray(target.steps.map((rawStep) => {
       const step = objectValue(rawStep, "step summary");
@@ -2426,17 +2496,23 @@ function executionSummaryFromData(raw: unknown): ReleaseExecutionSummary | undef
       if (
         (kind !== "app" && kind !== "environment") || !STEP_ACTIONS.has(action) ||
         !STEP_STATUSES.has(stepStatus)
-      ) throw new ConfigurationError("step summary kind/action/status 非法");
+      ) throw new ConfigurationError("Invalid step summary kind/action/status");
       const errors = uniqueStrings(step.cleanup_errors, "cleanup_errors");
       const errorCategory = optionalString(step.error_category, "error_category");
       const skipReason = optionalString(step.skip_reason, "skip_reason");
       if (errors.length && (stepStatus === "succeeded" || stepStatus === "skipped")) {
-        throw new ConfigurationError("包含清理错误的步骤不能标记为成功或跳过");
+        throw new ConfigurationError(
+          "A step with cleanup errors must not be marked succeeded or skipped",
+        );
       }
       if (
         stepStatus === "succeeded" &&
         (exitCode === undefined || errorCategory !== undefined || skipReason !== undefined)
-      ) throw new ConfigurationError("成功步骤必须包含退出码且不能含错误或跳过原因");
+      ) {
+        throw new ConfigurationError(
+          "A succeeded step must contain an exit code and must not contain an error or skip reason",
+        );
+      }
       const expectedReasons: Record<string, ReadonlySet<string>> = {
         skipped: new Set([
           "check-satisfied",
@@ -2452,7 +2528,11 @@ function executionSummaryFromData(raw: unknown): ReleaseExecutionSummary | undef
         expectedReasons[stepStatus] &&
         (exitCode !== undefined || errorCategory !== undefined ||
           !expectedReasons[stepStatus].has(skipReason ?? ""))
-      ) throw new ConfigurationError("未执行步骤必须包含跳过原因且不能含退出码或错误类别");
+      ) {
+        throw new ConfigurationError(
+          "A step that did not run must contain a skip reason and must not contain an exit code or error category",
+        );
+      }
       return Object.freeze({
         stepId: requiredString(step.step_id, "step_id"),
         machine: requiredString(step.machine, "machine"),
@@ -2473,24 +2553,24 @@ function executionSummaryFromData(raw: unknown): ReleaseExecutionSummary | undef
     }));
     const machine = requiredString(target.machine, "machine");
     if (steps.some((step) => step.machine !== machine)) {
-      throw new ConfigurationError("target summary 包含其他机器的步骤");
+      throw new ConfigurationError("target summary contains a step of another machine");
     }
     const expectedStatus = deriveTargetStatus(steps, cleanupErrors);
     if (status !== expectedStatus) {
       throw new ConfigurationError(
-        `target status 与步骤结果不一致: ${status} != ${expectedStatus}`,
+        `target status does not match the step results: ${status} != ${expectedStatus}`,
       );
     }
     return Object.freeze({ machine, status, steps, cleanupErrors });
   });
   if (new Set(targets.map((target) => target.machine)).size !== targets.length) {
-    throw new ConfigurationError("execution summary 包含重复目标");
+    throw new ConfigurationError("execution summary contains a duplicate target");
   }
   const exitCode = boundedInteger(value.exit_code, "exit_code", 0, 255);
   const expectedExit = deriveExecutionExitCode(targets);
   if (exitCode !== expectedExit) {
     throw new ConfigurationError(
-      `execution summary exit_code 与目标结果不一致: ${exitCode} != ${expectedExit}`,
+      `execution summary exit_code does not match the target result: ${exitCode} != ${expectedExit}`,
     );
   }
   return Object.freeze({ exitCode, targets: freezeArray(targets) });
@@ -2526,17 +2606,31 @@ function validateOutcomeConsistency(
   result?: ReleaseExecutionSummary,
   error?: ReleaseErrorSummary,
 ): void {
-  if (!result && !error) throw new ConfigurationError("终态发布记录缺少执行或错误摘要");
-  if (result && error) throw new ConfigurationError("终态发布记录不能同时包含执行和错误摘要");
+  if (!result && !error) {
+    throw new ConfigurationError(
+      "Terminal release record is missing the execution or error summary",
+    );
+  }
+  if (result && error) {
+    throw new ConfigurationError(
+      "Terminal release record must not contain both an execution and an error summary",
+    );
+  }
   if (status === "succeeded") {
     if (
       !result || result.exitCode !== 0 ||
       result.targets.some((target) => ["failed", "cancelled", "blocked"].includes(target.status))
-    ) throw new ConfigurationError("成功发布记录必须包含一致的 exit_code=0 执行摘要");
+    ) {
+      throw new ConfigurationError(
+        "A successful release record must contain a consistent exit_code=0 execution summary",
+      );
+    }
   } else if (result) {
     const expected = result.exitCode === 130 ? "cancelled" : "failed";
     if (status !== expected) {
-      throw new ConfigurationError(`发布记录状态与执行摘要不一致: ${status} != ${expected}`);
+      throw new ConfigurationError(
+        `Release record status does not match the execution summary: ${status} != ${expected}`,
+      );
     }
   }
 }
@@ -2547,17 +2641,25 @@ function validateExecutionAgainstPlan(summary: ReleaseExecutionSummary, plan: Ex
   const expectedMachines = new Set(plan.steps.map((step) => step.machine.machine.name));
   const actualMachines = new Set(summary.targets.map((target) => target.machine));
   if (!setEqual(expectedMachines, actualMachines)) {
-    throw new ConfigurationError("execution summary 目标集合与实际执行计划不一致");
+    throw new ConfigurationError(
+      "execution summary target set does not match the actual execution plan",
+    );
   }
   for (const target of summary.targets) {
-    if (!target.steps.length) throw new ConfigurationError("execution summary 目标缺少计划步骤");
+    if (!target.steps.length) {
+      throw new ConfigurationError("execution summary target is missing plan steps");
+    }
     for (const step of target.steps) {
       if (actual.has(step.stepId)) {
-        throw new ConfigurationError(`execution summary 包含重复步骤 ID: ${step.stepId}`);
+        throw new ConfigurationError(
+          `execution summary contains a duplicate step ID: ${step.stepId}`,
+        );
       }
       const planned = expected.get(step.stepId);
       if (!planned) {
-        throw new ConfigurationError(`execution summary 包含计划外步骤: ${step.stepId}`);
+        throw new ConfigurationError(
+          `execution summary contains a step outside the plan: ${step.stepId}`,
+        );
       }
       if (
         !equalJson([step.machine, step.kind, step.resource, step.action], [
@@ -2568,7 +2670,7 @@ function validateExecutionAgainstPlan(summary: ReleaseExecutionSummary, plan: Ex
         ])
       ) {
         throw new ConfigurationError(
-          `execution summary 步骤身份与实际执行计划不一致: ${step.stepId}`,
+          `execution summary step identity does not match the actual execution plan: ${step.stepId}`,
         );
       }
       actual.set(step.stepId, step);
@@ -2577,7 +2679,7 @@ function validateExecutionAgainstPlan(summary: ReleaseExecutionSummary, plan: Ex
   const missing = [...expected.keys()].filter((id) => !actual.has(id));
   if (missing.length) {
     throw new ConfigurationError(
-      `execution summary 缺少实际执行计划步骤: ${missing.sort().join(", ")}`,
+      `execution summary is missing actual execution plan steps: ${missing.sort().join(", ")}`,
     );
   }
   const positions = new Map(plan.steps.map((step, index) => [step.id, index]));
@@ -2590,12 +2692,16 @@ function validateExecutionAgainstPlan(summary: ReleaseExecutionSummary, plan: Ex
         candidate.resource === planned.resource && candidate.dependsOn.includes(planned.id)
       );
       if (!(planned.kind === "environment" && planned.action === "check" && hasInstall)) {
-        throw new ConfigurationError(`成功步骤退出码与实际执行计划动作不一致: ${planned.id}`);
+        throw new ConfigurationError(
+          `Succeeded step exit code does not match the actual execution plan action: ${planned.id}`,
+        );
       }
     }
     if (result.status === "skipped" && result.skipReason === "check-satisfied") {
       if (planned.kind !== "environment" || planned.action !== "install") {
-        throw new ConfigurationError(`check-satisfied 只能用于环境 install 步骤: ${planned.id}`);
+        throw new ConfigurationError(
+          `check-satisfied can only be used for environment install steps: ${planned.id}`,
+        );
       }
       const satisfied = planned.dependsOn.some((dependency) => {
         const dependencyPlan = expected.get(dependency);
@@ -2605,7 +2711,9 @@ function validateExecutionAgainstPlan(summary: ReleaseExecutionSummary, plan: Ex
           dependencyResult?.status === "succeeded" && dependencyResult.exitCode === 0;
       });
       if (!satisfied) {
-        throw new ConfigurationError(`check-satisfied 缺少已满足的环境 check: ${planned.id}`);
+        throw new ConfigurationError(
+          `check-satisfied is missing a satisfied environment check: ${planned.id}`,
+        );
       }
     }
     if (result.status === "skipped" && result.skipReason === "target-fail-fast") {
@@ -2614,14 +2722,16 @@ function validateExecutionAgainstPlan(summary: ReleaseExecutionSummary, plan: Ex
         (positions.get(other.stepId) ?? Infinity) < (positions.get(planned.id) ?? -1)
       );
       if (!preceding) {
-        throw new ConfigurationError(`target-fail-fast 缺少同目标前置失败: ${planned.id}`);
+        throw new ConfigurationError(
+          `target-fail-fast is missing a preceding failure on the same target: ${planned.id}`,
+        );
       }
     }
   }
   if (
     summary.exitCode === 0 &&
     plan.steps.some((step) => step.kind === "app" && actual.get(step.id)?.status !== "succeeded")
-  ) throw new ConfigurationError("成功发布的 App 步骤未实际成功");
+  ) throw new ConfigurationError("App step of a successful release did not actually succeed");
 }
 
 function planSummary(
@@ -2710,10 +2820,10 @@ function serviceSummaryFromData(raw: unknown): ReleaseStepServiceSummary {
   const action = requiredString(value.action, "service action");
   const enableAction = requiredString(value.enable_action, "service enable_action");
   if (!["none", "start", "stop", "reload", "restart"].includes(action)) {
-    throw new ConfigurationError("step service action 非法");
+    throw new ConfigurationError("Invalid step service action");
   }
   if (!["none", "enable", "disable"].includes(enableAction)) {
-    throw new ConfigurationError("step service enable_action 非法");
+    throw new ConfigurationError("Invalid step service enable_action");
   }
   const state = (rawState: unknown, label: string) => {
     const item = objectValue(rawState, label);
@@ -2761,7 +2871,7 @@ function recoverySummaryFromData(raw: unknown): ReleaseStepRecoverySummary {
     serviceAttempted: booleanValue(value.service_attempted, "recovery service_attempted"),
   });
   if (result.attempted !== (result.configAttempted || result.serviceAttempted)) {
-    throw new ConfigurationError("step recovery attempted 与分项不一致");
+    throw new ConfigurationError("step recovery attempted does not match its sub-fields");
   }
   return result;
 }
@@ -2778,7 +2888,7 @@ function bundleSummaryFromData(raw: unknown): ReleaseStepBundleSummary {
   const value = objectValue(raw, "step bundle summary");
   expectKeys(value, ["sha256", "size", "reused"], "step bundle summary");
   const sha256 = requiredString(value.sha256, "bundle sha256");
-  if (!SHA256_RE.test(sha256)) throw new ConfigurationError("bundle sha256 非法");
+  if (!SHA256_RE.test(sha256)) throw new ConfigurationError("Invalid bundle sha256");
   return Object.freeze({
     sha256,
     size: boundedInteger(value.size, "bundle size", 0, Number.MAX_SAFE_INTEGER),
@@ -2818,7 +2928,7 @@ function selectionFromData(raw: unknown): ReleaseSelection {
     "with_dependencies",
   ], "release selection");
   if (typeof value.with_dependencies !== "boolean") {
-    throw new ConfigurationError("with_dependencies 必须是布尔值");
+    throw new ConfigurationError("with_dependencies must be a boolean");
   }
   return new ReleaseSelection({
     machines: uniqueStrings(value.machines, "machines"),
@@ -2851,7 +2961,7 @@ function now(): string {
 
 function validateReleaseId(value: unknown): string {
   if (typeof value !== "string" || !RELEASE_ID_RE.test(value)) {
-    throw new ConfigurationError(`发布 ID 不合法: ${JSON.stringify(value)}`);
+    throw new ConfigurationError(`Invalid release ID: ${JSON.stringify(value)}`);
   }
   return value;
 }
@@ -2859,11 +2969,13 @@ function validateReleaseId(value: unknown): string {
 async function ensurePrivateDirectory(path: string): Promise<void> {
   const info = await safeLstat(path);
   if (info && (!info.isDirectory || info.isSymlink)) {
-    throw new ConfigurationError(`发布历史路径不是安全目录: ${path}`);
+    throw new ConfigurationError(`Release history path is not a safe directory: ${path}`);
   }
   if (!info) await Deno.mkdir(path, { recursive: false, mode: 0o700 });
   await Deno.chmod(path, 0o700).catch((cause) => {
-    throw new ConfigurationError(`无法设置发布历史目录权限: ${path}`, { cause });
+    throw new ConfigurationError(`Failed to set release history directory permissions: ${path}`, {
+      cause,
+    });
   });
 }
 
@@ -2875,13 +2987,13 @@ async function atomicJson(
   validateJson(value);
   const data = new TextEncoder().encode(`${stableJson(value)}\n`);
   if (data.byteLength > (options.maxBytes ?? MAX_JSON_BYTES)) {
-    throw new ConfigurationError(`JSON 超过容量限制: ${basename(path)}`);
+    throw new ConfigurationError(`JSON exceeds the capacity limit: ${basename(path)}`);
   }
   const temporary = join(dirname(path), `.${basename(path)}.${randomHex(8)}.tmp`);
   try {
     const file = await Deno.open(temporary, { createNew: true, write: true, mode: 0o600 });
     try {
-      await writeAll(file, data, `发布历史 JSON ${basename(path)}`);
+      await writeAll(file, data, `release history JSON ${basename(path)}`);
       await file.sync();
     } finally {
       file.close();
@@ -2891,14 +3003,21 @@ async function atomicJson(
         await Deno.link(temporary, path);
       } catch (cause) {
         if (cause instanceof Deno.errors.AlreadyExists) {
-          throw new ConfigurationError(`历史组件已经存在: ${basename(path)}`, { cause });
+          throw new ConfigurationError(`History component already exists: ${basename(path)}`, {
+            cause,
+          });
         }
-        throw new ConfigurationError(`无法原子发布历史组件: ${basename(path)}`, { cause });
+        throw new ConfigurationError(
+          `Failed to publish the history component atomically: ${basename(path)}`,
+          { cause },
+        );
       }
       await Deno.remove(temporary);
       const info = await Deno.lstat(path);
       if (!info.isFile || info.isSymlink || info.nlink !== 1) {
-        throw new ConfigurationError(`历史组件发布身份校验失败: ${basename(path)}`);
+        throw new ConfigurationError(
+          `History component publish identity verification failed: ${basename(path)}`,
+        );
       }
     } else await Deno.rename(temporary, path);
   } catch (cause) {
@@ -2908,7 +3027,7 @@ async function atomicJson(
 }
 
 async function readJson(path: string, maxBytes: number): Promise<unknown> {
-  const bytes = await readRegularBytes(path, maxBytes, "发布历史 JSON");
+  const bytes = await readRegularBytes(path, maxBytes, "release history JSON");
   try {
     const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
     const value = parseJsonStrict(text);
@@ -2916,7 +3035,7 @@ async function readJson(path: string, maxBytes: number): Promise<unknown> {
     return value;
   } catch (cause) {
     if (cause instanceof ConfigurationError) throw cause;
-    throw new ConfigurationError(`发布历史 JSON 损坏: ${basename(path)}`, { cause });
+    throw new ConfigurationError(`Release history JSON is corrupted: ${basename(path)}`, { cause });
   }
 }
 
@@ -2935,34 +3054,43 @@ async function readRegularBytes(
     try {
       candidate = await Deno.lstat(path);
     } catch (cause) {
-      throw new ConfigurationError(`${label} 不存在或不是安全普通文件: ${path}`, { cause });
+      throw new ConfigurationError(
+        `${label} does not exist or is not a safe regular file: ${path}`,
+        { cause },
+      );
     }
     if (!candidate.isFile || candidate.isSymlink) {
-      throw new ConfigurationError(`${label} 必须是单链接普通文件: ${path}`);
+      throw new ConfigurationError(`${label} must be a single-link regular file: ${path}`);
     }
     if (settlingIdentity && !sameFileIdentity(settlingIdentity, candidate)) {
-      throw new ConfigurationError(`${label} 在双链接发布窗口中身份发生变化: ${path}`);
+      throw new ConfigurationError(
+        `${label} identity changed during the two-link publish window: ${path}`,
+      );
     }
     if (candidate.nlink === 1) {
       before = candidate;
       break;
     }
     if (candidate.nlink !== 2) {
-      throw new ConfigurationError(`${label} 必须是单链接普通文件: ${path}`);
+      throw new ConfigurationError(`${label} must be a single-link regular file: ${path}`);
     }
     settlingIdentity ??= candidate;
     const delay = delays[attempt];
     if (delay === undefined) {
-      throw new ConfigurationError(`${label} 的双链接发布窗口未在期限内收敛: ${path}`);
+      throw new ConfigurationError(
+        `${label} two-link publish window did not converge within the deadline: ${path}`,
+      );
     }
     if (!Number.isFinite(delay) || delay < 0 || delay > 1000) {
-      throw new ConfigurationError(`${label} 的双链接重试参数不安全`);
+      throw new ConfigurationError(`${label} two-link retry parameters are unsafe`);
     }
     await sleep(delay);
   }
-  if (!before) throw new ConfigurationError(`${label} 无法确认安全普通文件: ${path}`);
+  if (!before) {
+    throw new ConfigurationError(`${label} cannot be confirmed as a safe regular file: ${path}`);
+  }
   if (before.size > maxBytes) {
-    throw new ConfigurationError(`${label} 超过容量限制: ${basename(path)}`);
+    throw new ConfigurationError(`${label} exceeds the capacity limit: ${basename(path)}`);
   }
   const file = await Deno.open(path, { read: true });
   try {
@@ -2970,13 +3098,13 @@ async function readRegularBytes(
     if (
       !opened.isFile || opened.nlink !== 1 || opened.size !== before.size ||
       !sameFileIdentity(before, opened)
-    ) throw new ConfigurationError(`${label} 在打开期间发生变化: ${path}`);
+    ) throw new ConfigurationError(`${label} changed while being opened: ${path}`);
     const data = new Uint8Array(before.size);
     let offset = 0;
     while (offset < data.length) {
       const count = await file.read(data.subarray(offset));
       if (count === null) break;
-      if (count === 0) throw new ConfigurationError(`${label} 读取未取得进展: ${path}`);
+      if (count === 0) throw new ConfigurationError(`${label} read made no progress: ${path}`);
       offset += count;
     }
     const after = await Deno.lstat(path);
@@ -2984,7 +3112,7 @@ async function readRegularBytes(
       !after.isFile || after.isSymlink || after.nlink !== 1 || after.size !== before.size ||
       after.mtime?.getTime() !== before.mtime?.getTime() || offset !== before.size ||
       !sameFileIdentity(before, after)
-    ) throw new ConfigurationError(`${label} 在读取期间发生变化: ${path}`);
+    ) throw new ConfigurationError(`${label} changed while being read: ${path}`);
     return data;
   } finally {
     file.close();
@@ -3005,7 +3133,7 @@ async function writeAll(writer: ByteWriter, data: Uint8Array, label: string): Pr
   while (offset < data.byteLength) {
     const count = await writer.write(data.subarray(offset));
     if (!Number.isSafeInteger(count) || count <= 0 || count > data.byteLength - offset) {
-      throw new ConfigurationError(`${label} 写入未取得有效进展`);
+      throw new ConfigurationError(`${label} write made no valid progress`);
     }
     offset += count;
   }
@@ -3018,12 +3146,12 @@ function boundedSleep(milliseconds: number): Promise<void> {
 async function snapshotFile(snapshot: string, raw: unknown): Promise<string> {
   const rel = safeRelative(requiredString(raw, "snapshot file"));
   const path = contained(snapshot, rel);
-  await readRegularBytes(path, MAX_ARCHIVE_FILE_BYTES, "快照文件");
+  await readRegularBytes(path, MAX_ARCHIVE_FILE_BYTES, "snapshot file");
   return path;
 }
 
 async function hashRegularFile(path: string): Promise<{ hash: string; size: number }> {
-  const data = await readRegularBytes(path, MAX_ARCHIVE_FILE_BYTES, "快照文件");
+  const data = await readRegularBytes(path, MAX_ARCHIVE_FILE_BYTES, "snapshot file");
   return { hash: await sha256(data), size: data.byteLength };
 }
 
@@ -3053,7 +3181,7 @@ function safeRelative(value: string): string {
   if (
     !value || value.includes("\\") || value.includes("\0") || value.startsWith("/") ||
     value.split("/").some((part) => !part || part === "." || part === "..")
-  ) throw new ConfigurationError(`快照相对路径非法: ${JSON.stringify(value)}`);
+  ) throw new ConfigurationError(`Invalid snapshot relative path: ${JSON.stringify(value)}`);
   return value;
 }
 
@@ -3061,24 +3189,24 @@ function contained(root: string, rel: string): string {
   const candidate = resolve(root, ...rel.split("/"));
   const difference = relative(resolve(root), candidate);
   if (difference === ".." || difference.startsWith(`..${SEPARATOR}`) || isAbsolute(difference)) {
-    throw new ConfigurationError(`路径逃逸集群目录: ${rel}`);
+    throw new ConfigurationError(`Path escapes the cluster directory: ${rel}`);
   }
   return candidate;
 }
 
 function validateJson(value: unknown, depth = 0, budget = { count: 0 }): void {
   if (++budget.count > MAX_JSON_ITEMS || depth > MAX_JSON_DEPTH) {
-    throw new ConfigurationError("JSON 数据超过深度或项目数限制");
+    throw new ConfigurationError("JSON data exceeds the depth or item count limit");
   }
   if (value === null || typeof value === "boolean") return;
   if (typeof value === "string") {
     if (new TextEncoder().encode(value).byteLength > MAX_STRING_BYTES) {
-      throw new ConfigurationError("JSON 字符串超过长度限制");
+      throw new ConfigurationError("JSON string exceeds the length limit");
     }
     return;
   }
   if (typeof value === "number") {
-    if (!Number.isFinite(value)) throw new ConfigurationError("JSON 不允许 NaN/Infinity");
+    if (!Number.isFinite(value)) throw new ConfigurationError("JSON must not contain NaN/Infinity");
     return;
   }
   if (Array.isArray(value)) {
@@ -3092,7 +3220,7 @@ function validateJson(value: unknown, depth = 0, budget = { count: 0 }): void {
     }
     return;
   }
-  throw new ConfigurationError(`JSON 不支持的值类型: ${typeof value}`);
+  throw new ConfigurationError(`Unsupported JSON value type: ${typeof value}`);
 }
 
 /** JSON.parse 会静默覆盖重复键；历史数据必须拒绝这种歧义。 */
@@ -3147,7 +3275,9 @@ function parseJsonStrict(source: string): unknown {
         whitespace();
         const key = parse();
         if (typeof key !== "string") throw new SyntaxError("expected key");
-        if (keys.has(key)) throw new ConfigurationError(`发布历史 JSON 包含重复键: ${key}`);
+        if (keys.has(key)) {
+          throw new ConfigurationError(`Release history JSON contains a duplicate key: ${key}`);
+        }
         keys.add(key);
         whitespace();
         if (source[index++] !== ":") throw new SyntaxError("expected colon");
@@ -3183,7 +3313,7 @@ function stableJson(value: unknown): string {
     }}`;
   }
   const encoded = JSON.stringify(value);
-  if (encoded === undefined) throw new ConfigurationError("值不是合法 JSON");
+  if (encoded === undefined) throw new ConfigurationError("Value is not valid JSON");
   return encoded;
 }
 
@@ -3193,7 +3323,7 @@ function jsonCopy(value: unknown): unknown {
 }
 function objectValue(value: unknown, label: string): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new ConfigurationError(`${label} 必须是对象`);
+    throw new ConfigurationError(`${label} must be an object`);
   }
   return value as Record<string, unknown>;
 }
@@ -3207,7 +3337,7 @@ function expectKeys(
 ): void {
   const actual = Object.keys(value).sort();
   const wanted = [...expected].sort();
-  if (!equalJson(actual, wanted)) throw new ConfigurationError(`${label} 字段不匹配`);
+  if (!equalJson(actual, wanted)) throw new ConfigurationError(`${label} fields do not match`);
 }
 function expectKeysOptional(
   value: Record<string, unknown>,
@@ -3220,20 +3350,20 @@ function expectKeysOptional(
   const unknown = actual.filter((key) => !allowed.has(key)).sort();
   const missing = required.filter((key) => !actual.includes(key)).sort();
   if (unknown.length > 0 || missing.length > 0) {
-    throw new ConfigurationError(`${label} 字段不匹配`);
+    throw new ConfigurationError(`${label} fields do not match`);
   }
 }
 function requiredString(value: unknown, label: string): string {
   if (
     typeof value !== "string" || !value ||
     new TextEncoder().encode(value).byteLength > MAX_STRING_BYTES
-  ) throw new ConfigurationError(`${label} 必须是非空有界字符串`);
+  ) throw new ConfigurationError(`${label} must be a non-empty bounded string`);
   return value;
 }
 
 function validateAppRunAs(value: string): string {
   if (value === "root" || !APP_RUN_AS_RE.test(value)) {
-    throw new ConfigurationError("run_as 必须是规范的非 root Linux 用户");
+    throw new ConfigurationError("run_as must be a canonical non-root Linux user");
   }
   return value;
 }
@@ -3245,10 +3375,12 @@ function optionalBoolean(value: unknown, label: string): boolean | undefined {
 }
 function uniqueStrings(value: unknown, label: string): readonly string[] {
   if (!Array.isArray(value) || value.length > MAX_JSON_ITEMS) {
-    throw new ConfigurationError(`${label} 必须是有界列表`);
+    throw new ConfigurationError(`${label} must be a bounded list`);
   }
   const result = value.map((item) => requiredString(item, label));
-  if (new Set(result).size !== result.length) throw new ConfigurationError(`${label} 包含重复值`);
+  if (new Set(result).size !== result.length) {
+    throw new ConfigurationError(`${label} contains duplicate values`);
+  }
   return freezeArray(result);
 }
 function stringMapping(value: unknown, label: string): Readonly<Record<string, string>> {
@@ -3261,13 +3393,13 @@ function stringMapping(value: unknown, label: string): Readonly<Record<string, s
 }
 function boundedInteger(value: unknown, label: string, minimum: number, maximum: number): number {
   if (!Number.isSafeInteger(value) || (value as number) < minimum || (value as number) > maximum) {
-    throw new ConfigurationError(`${label} 超出范围`);
+    throw new ConfigurationError(`${label} is out of range`);
   }
   return value as number;
 }
 function sha256Text(value: unknown): string {
   const text = requiredString(value, "sha256");
-  if (!SHA256_RE.test(text)) throw new ConfigurationError("sha256 格式非法");
+  if (!SHA256_RE.test(text)) throw new ConfigurationError("Invalid sha256 format");
   return text;
 }
 function bounded(value: unknown): string {
@@ -3301,7 +3433,9 @@ function ipAddresses(value: unknown, label: string, allowScalar: boolean): reado
     : value;
   const values = uniqueStrings(raw, label);
   for (const address of values) {
-    if (!isIpAddress(address)) throw new ConfigurationError(`${label} 不是合法 IP: ${address}`);
+    if (!isIpAddress(address)) {
+      throw new ConfigurationError(`${label} is not a valid IP: ${address}`);
+    }
   }
   return values;
 }
@@ -3322,7 +3456,7 @@ function isIpAddress(value: string): boolean {
 function permissionText(value: unknown, label: string): string {
   const text = requiredString(value, label);
   if (text !== text.trim() || /[\s,]/u.test(text) || containsAsciiControl(text)) {
-    throw new ConfigurationError(`${label} 包含空白、控制字符或逗号`);
+    throw new ConfigurationError(`${label} contains whitespace, control characters, or commas`);
   }
   return text;
 }
@@ -3342,7 +3476,11 @@ function runtimeExecutable(value: unknown): string {
       ? !text.startsWith("/") || text.startsWith("//") || text === "/" ||
         text.split("/").some((part, index) => index > 0 && (!part || part === "." || part === ".."))
       : !/^[A-Za-z0-9][A-Za-z0-9._+-]*$/.test(text))
-  ) throw new ConfigurationError("script_runtime.executable 必须是裸命令名或规范绝对 POSIX 路径");
+  ) {
+    throw new ConfigurationError(
+      "script_runtime.executable must be a bare command name or a canonical absolute POSIX path",
+    );
+  }
   return text;
 }
 
@@ -3354,11 +3492,15 @@ function validateRunPermissions(values: readonly string[]): readonly string[] {
       text.split("/").some((part, partIndex) =>
         partIndex > 0 && (!part || part === "." || part === "..")
       )
-    ) throw new ConfigurationError(`permissions.run[${index}] 必须是规范绝对 POSIX 可执行路径`);
+    ) {
+      throw new ConfigurationError(
+        `permissions.run[${index}] must be a canonical absolute POSIX executable path`,
+      );
+    }
     return text;
   });
   if (new Set(result).size !== result.length) {
-    throw new ConfigurationError("permissions.run 包含重复值");
+    throw new ConfigurationError("permissions.run contains duplicate values");
   }
   return freezeArray(result);
 }
@@ -3374,11 +3516,15 @@ function validatePathPermissions(
       text.split("/").some((part, partIndex) =>
         partIndex > 0 && (!part || part === "." || part === "..")
       )
-    ) throw new ConfigurationError(`${label}[${index}] 必须是规范绝对 POSIX 文件路径`);
+    ) {
+      throw new ConfigurationError(
+        `${label}[${index}] must be a canonical absolute POSIX file path`,
+      );
+    }
     return text;
   });
   if (new Set(result).size !== result.length) {
-    throw new ConfigurationError(`${label} 包含重复值`);
+    throw new ConfigurationError(`${label} contains duplicate values`);
   }
   return freezeArray(result);
 }
@@ -3387,19 +3533,21 @@ function validateNetPermissions(values: readonly string[]): readonly string[] {
   const result = values.map((value, index) => {
     const text = permissionText(value, `permissions.net[${index}]`);
     if (/[\/@*?#\\]/.test(text)) {
-      throw new ConfigurationError(`permissions.net[${index}] 网络目标不合法`);
+      throw new ConfigurationError(`Invalid permissions.net[${index}] network target`);
     }
     let host = text;
     let port: string | undefined;
     if (text.startsWith("[")) {
       const match = /^\[([^\[\]]+)\](?::(\d+))?$/.exec(text);
       if (!match || !isIpAddress(match[1]) || !match[1].includes(":")) {
-        throw new ConfigurationError("permissions.net IPv6 地址格式不合法");
+        throw new ConfigurationError("Invalid permissions.net IPv6 address format");
       }
       host = match[1];
       port = match[2];
     } else if (text.split(":").length > 2) {
-      if (!isIpAddress(text)) throw new ConfigurationError("带端口 IPv6 必须使用方括号");
+      if (!isIpAddress(text)) {
+        throw new ConfigurationError("IPv6 with a port must use square brackets");
+      }
     } else {
       const index = text.lastIndexOf(":");
       if (index > 0) {
@@ -3412,15 +3560,15 @@ function validateNetPermissions(values: readonly string[]): readonly string[] {
           host.split(".").some((part) =>
             !/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/.test(part)
           ))
-      ) throw new ConfigurationError("permissions.net 主机名不合法");
+      ) throw new ConfigurationError("Invalid permissions.net host name");
     }
     if (port !== undefined && (!/^\d+$/.test(port) || Number(port) < 1 || Number(port) > 65535)) {
-      throw new ConfigurationError("permissions.net 端口必须在 1..65535");
+      throw new ConfigurationError("permissions.net port must be within 1..65535");
     }
     return text;
   });
   if (new Set(result).size !== result.length) {
-    throw new ConfigurationError("permissions.net 包含重复值");
+    throw new ConfigurationError("permissions.net contains duplicate values");
   }
   return freezeArray(result);
 }
@@ -3449,8 +3597,8 @@ async function assertSnapshotOperation(snapshot: string, operation: string): Pro
   if (hasRollback !== expectsRollback) {
     throw new ConfigurationError(
       expectsRollback
-        ? "发布或回退快照缺少 rollback plan"
-        : "非发布生命周期快照不能包含 rollback plan",
+        ? "Release or rollback snapshot is missing the rollback plan"
+        : "Non-release lifecycle snapshot must not contain a rollback plan",
     );
   }
 }

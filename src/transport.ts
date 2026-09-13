@@ -212,15 +212,15 @@ export class OpenSshTransport implements Transport {
     this.scpExecutable = localExecutable(options.scpExecutable ?? "scp", "scp");
     this.connectTimeoutMs = positiveTimeout(
       options.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS,
-      "SSH 连接",
+      "SSH connection",
     );
     this.commandTimeoutMs = positiveTimeout(
       options.commandTimeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS,
-      "SSH 命令",
+      "SSH command",
     );
     this.terminateTimeoutMs = positiveTimeout(
       options.terminateTimeoutMs ?? DEFAULT_TERMINATE_TIMEOUT_MS,
-      "SSH 进程终止",
+      "SSH process termination",
     );
     this.#commandFactory = options.commandFactory ?? defaultCommandFactory;
   }
@@ -233,7 +233,7 @@ export class OpenSshTransport implements Transport {
     const port = sshPort(machine.sshPort);
     const key = machine.sshPrivateKey === undefined
       ? undefined
-      : await regularLocalFile(machine.sshPrivateKey, "SSH 私钥");
+      : await regularLocalFile(machine.sshPrivateKey, "SSH private key");
     const addresses = target.addresses.length > 0 ? target.addresses : [target.address];
     const failures: string[] = [];
     for (const rawAddress of addresses) {
@@ -265,13 +265,15 @@ export class OpenSshTransport implements Transport {
     }
     if (failures.length === 1) {
       throw new TransportError(
-        `SSH 连接失败 ${machine.name}@${addresses[0]}: ${
+        `SSH connection failed ${machine.name}@${addresses[0]}: ${
           failures[0].split(": ").slice(1).join(": ")
         }`,
       );
     }
     throw new TransportError(
-      `SSH 连接失败 ${machine.name}，候选地址均不可用: ${failures.join("; ")}`,
+      `SSH connection failed ${machine.name}; no candidate address is usable: ${
+        failures.join("; ")
+      }`,
     );
   }
 
@@ -282,11 +284,13 @@ export class OpenSshTransport implements Transport {
         const home = Deno.env.get(Deno.build.os === "windows" ? "USERPROFILE" : "HOME");
         if (home) raw = `${home.replace(/[\\/]+$/, "")}/.ssh/known_hosts`;
       } catch (cause) {
-        throw new PreflightError("无法读取 HOME 以定位 known_hosts", { cause });
+        throw new PreflightError("Failed to read HOME to locate known_hosts", { cause });
       }
     }
     if (!raw) {
-      throw new PreflightError("必须显式提供 known_hosts，或在 HOME/.ssh/known_hosts 创建它");
+      throw new PreflightError(
+        "known_hosts must be provided explicitly, or created at HOME/.ssh/known_hosts",
+      );
     }
     return await regularLocalFile(raw, "known_hosts");
   }
@@ -354,7 +358,7 @@ export class OpenSshRemoteSession implements RemoteSession {
       [...this.#sshOptions(false), this.#sshDestination(), rendered],
       options.signal,
       options.timeoutMs ?? this.#options.commandTimeoutMs,
-      "远端命令",
+      "remote command",
     );
   }
 
@@ -372,7 +376,7 @@ export class OpenSshRemoteSession implements RemoteSession {
       this.#workspaces.add(workspace);
       return workspace;
     }
-    throw new TransportError("无法创建唯一的远端临时工作目录");
+    throw new TransportError("Failed to create a unique remote temporary workspace");
   }
 
   stageDeploymentBundle(
@@ -394,39 +398,41 @@ export class OpenSshRemoteSession implements RemoteSession {
     if (cached !== undefined) return publicIdentity(cached);
 
     const passwd = await this.run(["getent", "passwd", runAs], { signal });
-    requireSuccess(passwd, `App 运行用户不存在: ${runAs}`);
+    requireSuccess(passwd, `App run user does not exist: ${runAs}`);
     const passwdLines = passwd.stdout.trim().split(/\r?\n/u);
     const fields = passwdLines.length === 1 ? passwdLines[0].split(":") : [];
     if (fields.length !== 7 || fields[0] !== runAs || !/^(?:0|[1-9][0-9]*)$/u.test(fields[2])) {
-      throw new PreflightError(`App 运行用户记录不合法: ${runAs}`);
+      throw new PreflightError(`Invalid App run user record: ${runAs}`);
     }
     let home: string;
     try {
       home = safeRemotePath(fields[5]);
     } catch (cause) {
-      throw new PreflightError(`App 运行用户 HOME 不合法: ${runAs}`, { cause });
+      throw new PreflightError(`Invalid App run user HOME: ${runAs}`, { cause });
     }
     const targetUidResult = await this.run(["id", "-u", runAs], { signal });
-    requireSuccess(targetUidResult, `无法确认 App 运行用户 UID: ${runAs}`);
-    const uid = parsePositiveUid(targetUidResult.stdout, "App 运行用户 UID");
-    if (String(uid) !== fields[2]) throw new PreflightError(`App 运行用户 UID 不一致: ${runAs}`);
+    requireSuccess(targetUidResult, `Failed to determine the App run user UID: ${runAs}`);
+    const uid = parsePositiveUid(targetUidResult.stdout, "App run user UID");
+    if (String(uid) !== fields[2]) {
+      throw new PreflightError(`App run user UID does not match: ${runAs}`);
+    }
 
     const sshUidResult = await this.run(["id", "-u"], { signal });
-    requireSuccess(sshUidResult, "无法确认 SSH 用户 UID");
-    const sshUid = parseUid(sshUidResult.stdout, "SSH 用户 UID");
+    requireSuccess(sshUidResult, "Failed to determine the SSH user UID");
+    const sshUid = parseUid(sshUidResult.stdout, "SSH user UID");
     if (sshUid === 0) {
       const sudoIdentity = await this.run(["sudo", "-n", "-u", runAs, "--", "id", "-u"], {
         signal,
       });
-      requireSuccess(sudoIdentity, `无法降权到 App 运行用户: ${runAs}`);
-      if (parsePositiveUid(sudoIdentity.stdout, "降权后的 App UID") !== uid) {
-        throw new PreflightError(`降权后的 App UID 不匹配: ${runAs}`);
+      requireSuccess(sudoIdentity, `Failed to drop privileges to the App run user: ${runAs}`);
+      if (parsePositiveUid(sudoIdentity.stdout, "App UID after dropping privileges") !== uid) {
+        throw new PreflightError(`App UID after dropping privileges does not match: ${runAs}`);
       }
     } else {
       const sshName = await this.run(["id", "-un"], { signal });
-      requireSuccess(sshName, "无法确认 SSH 用户名称");
+      requireSuccess(sshName, "Failed to determine the SSH user name");
       if (sshName.stdout.trim() !== runAs || sshUid !== uid) {
-        throw new PreflightError(`非 root SSH 身份必须与 run_as 一致: ${runAs}`);
+        throw new PreflightError(`A non-root SSH identity must match run_as: ${runAs}`);
       }
     }
     const identity = Object.freeze({
@@ -448,7 +454,7 @@ export class OpenSshRemoteSession implements RemoteSession {
     const identity = await this.#validatedAppIdentity(runAs, options.signal);
     const environment = { ...(options.environment ?? {}) };
     if (Object.hasOwn(environment, "HOME") && environment.HOME !== identity.home) {
-      throw new TransportError("managed App 命令不能覆盖已验证的 HOME");
+      throw new TransportError("managed App command must not override the verified HOME");
     }
     environment.HOME = identity.home;
     const scoped = ["env", ...environmentAssignments(environment, ["HOME"]), ...validateArgv(argv)];
@@ -475,14 +481,14 @@ export class OpenSshRemoteSession implements RemoteSession {
             signal: request.signal,
             privileged: true,
           }),
-          "设置 App 解包目录运行身份失败",
+          "Failed to set the App unpack directory run identity",
         );
         requireSuccess(
           await this.run(["chmod", "0711", "--", workspace], {
             signal: request.signal,
             privileged: true,
           }),
-          "设置 App workspace 遍历权限失败",
+          "Failed to set App workspace traverse permissions",
         );
       }
       requireSuccess(
@@ -490,7 +496,7 @@ export class OpenSshRemoteSession implements RemoteSession {
           signal: request.signal,
           privileged: identity.requiresSudo,
         }),
-        "限制 App 解包目录权限失败",
+        "Failed to restrict App unpack directory permissions",
       );
       return extracted;
     } catch (cause) {
@@ -508,13 +514,13 @@ export class OpenSshRemoteSession implements RemoteSession {
     this.#ensureOpen();
     const workspace = this.#registeredWorkspace(request.workspace);
     const identity = await this.#validatedAppIdentity(requiredRunAs(request.runAs), signal);
-    const updater = workspaceMember(workspace, request.updaterScript, "框架配置更新器");
+    const updater = workspaceMember(workspace, request.updaterScript, "framework config updater");
     assertFrameworkUpdater(workspace, updater);
-    const skeleton = workspaceMember(workspace, request.skeleton, "配置骨架");
-    const bindings = workspaceMember(workspace, request.bindings, "配置绑定清单");
-    const secretDir = workspaceMember(workspace, request.secretDir, "步骤秘密副本目录");
+    const skeleton = workspaceMember(workspace, request.skeleton, "config skeleton");
+    const bindings = workspaceMember(workspace, request.bindings, "config binding manifest");
+    const secretDir = workspaceMember(workspace, request.secretDir, "step secret copy directory");
     const secretRoot = await this.#expandSecretDirectory(request.secretRoot, signal);
-    const fileSecrets = validateSecretNames(request.fileSecrets, "文件秘密");
+    const fileSecrets = validateSecretNames(request.fileSecrets, "file secret");
     const scope = await this.#createAppScope(identity, workspace, "config", signal);
     const scopedUpdater = `${scope}/updater.js`;
     const scopedSkeleton = `${scope}/skeleton`;
@@ -564,7 +570,7 @@ export class OpenSshRemoteSession implements RemoteSession {
       const detail = [result.stdout, result.stderr].map((text) => text.trim()).filter(Boolean)
         .join("\n");
       throw new TransportError(
-        `配置 ${request.name} 的固定更新器失败${detail ? `: ${detail}` : ""}`,
+        `Fixed updater for config ${request.name} failed${detail ? `: ${detail}` : ""}`,
       );
     }
     await this.#assertCandidate(candidatePath, request.name, signal);
@@ -577,17 +583,19 @@ export class OpenSshRemoteSession implements RemoteSession {
   ): Promise<readonly ManagedConfigPublication[]> {
     this.#ensureOpen();
     if (!Array.isArray(requests) || requests.length === 0) {
-      throw new PreflightError("配置发布事务不能为空");
+      throw new PreflightError("Config publish transaction must not be empty");
     }
     const targets = new Set<string>();
     const publications: ManagedConfigPublication[] = [];
     try {
       for (const [index, request] of requests.entries()) {
         const workspace = this.#registeredWorkspace(request.candidate.workspace);
-        const candidate = workspaceMember(workspace, request.candidate.path, "配置候选");
+        const candidate = workspaceMember(workspace, request.candidate.path, "config candidate");
         await this.#assertCandidate(candidate, request.candidate.name, signal);
         const target = safeRemotePath(request.target);
-        if (targets.has(target)) throw new PreflightError(`配置发布目标重复: ${target}`);
+        if (targets.has(target)) {
+          throw new PreflightError(`Duplicate config publish target: ${target}`);
+        }
         targets.add(target);
         const mode = fileMode(request.mode).toString(8).padStart(4, "0");
         const owner = request.owner === undefined ? undefined : userOrGroup(request.owner, "owner");
@@ -597,14 +605,14 @@ export class OpenSshRemoteSession implements RemoteSession {
             item === "{candidate}" ? candidate : item
           );
           if (!argv.includes(candidate)) {
-            throw new PreflightError("配置 validator 缺少 {candidate}");
+            throw new PreflightError("Config validator is missing {candidate}");
           }
           const validation = await this.runAsApp(requiredRunAs(request.runAs), argv, {
             signal,
             timeoutMs: request.validator.timeoutMs,
           });
           if (validation.exitCode !== 0) {
-            throw new TransportError(`配置 ${request.candidate.name} 的 validator 失败`);
+            throw new TransportError(`Validator for config ${request.candidate.name} failed`);
           }
         }
         await this.preflightPrivilege(signal);
@@ -616,21 +624,23 @@ export class OpenSshRemoteSession implements RemoteSession {
             !target.startsWith(`${root}/`) || root.split("/").includes("..") ||
             target.split("/").includes("..")
           ) {
-            throw new PreflightError(`版本配置目标越界 ${target}`);
+            throw new PreflightError(`Version config target is out of bounds ${target}`);
           }
           const rootLink = await this.run(["/usr/bin/test", "-L", root], {
             signal,
             privileged: true,
           });
-          if (rootLink.exitCode !== 1) throw new TransportError(`版本根目录不是普通目录 ${root}`);
+          if (rootLink.exitCode !== 1) {
+            throw new TransportError(`Version root is not a regular directory ${root}`);
+          }
           const realRoot = await this.run(["realpath", "-e", "--", root], {
             signal,
             privileged: true,
           });
-          requireSuccess(realRoot, `解析版本根目录失败 ${root}`);
+          requireSuccess(realRoot, `Failed to resolve the version root ${root}`);
           resolvedRoot = realRoot.stdout.trim();
           if (!resolvedRoot.startsWith("/")) {
-            throw new TransportError(`解析版本根目录失败 ${root}`);
+            throw new TransportError(`Failed to resolve the version root ${root}`);
           }
         }
         const parentState = await this.run(["/usr/bin/test", "-d", parent], {
@@ -639,7 +649,7 @@ export class OpenSshRemoteSession implements RemoteSession {
         });
         if (parentState.exitCode === 1) {
           if (request.releaseRoot === undefined) {
-            requireSuccess(parentState, `配置目标父目录不存在 ${parent}`);
+            requireSuccess(parentState, `Config target parent directory does not exist ${parent}`);
           }
           await this.#ensureReleaseParent(
             safeRemotePath(request.releaseRoot!),
@@ -648,7 +658,7 @@ export class OpenSshRemoteSession implements RemoteSession {
             signal,
           );
         } else {
-          requireSuccess(parentState, `配置目标父目录不存在 ${parent}`);
+          requireSuccess(parentState, `Config target parent directory does not exist ${parent}`);
         }
         if (request.releaseRoot !== undefined) {
           const root = safeRemotePath(request.releaseRoot);
@@ -656,17 +666,20 @@ export class OpenSshRemoteSession implements RemoteSession {
             signal,
             privileged: true,
           });
-          requireSuccess(realParent, `解析版本配置父目录失败 ${parent}`);
+          requireSuccess(
+            realParent,
+            `Failed to resolve the version config parent directory ${parent}`,
+          );
           const resolvedParent = realParent.stdout.trim();
           const expectedRoot = resolvedRoot;
           if (expectedRoot === undefined) {
-            throw new TransportError(`解析版本根目录失败 ${root}`);
+            throw new TransportError(`Failed to resolve the version root ${root}`);
           }
           if (
             !expectedRoot.startsWith("/") ||
             (resolvedParent !== expectedRoot && !resolvedParent.startsWith(`${expectedRoot}/`))
           ) {
-            throw new TransportError(`版本配置父目录逃逸 ${parent}`);
+            throw new TransportError(`Version config parent directory escapes ${parent}`);
           }
         }
         const targetState = await this.run(["/usr/bin/test", "-e", target], {
@@ -674,7 +687,7 @@ export class OpenSshRemoteSession implements RemoteSession {
           privileged: true,
         });
         if (targetState.exitCode !== 0 && targetState.exitCode !== 1) {
-          throw new TransportError(`检查配置目标失败 ${target}`);
+          throw new TransportError(`Failed to check the config target ${target}`);
         }
         const existed = targetState.exitCode === 0;
         let originalMode: string | undefined;
@@ -685,9 +698,9 @@ export class OpenSshRemoteSession implements RemoteSession {
             signal,
             privileged: true,
           });
-          requireSuccess(type, `检查配置目标类型失败 ${target}`);
+          requireSuccess(type, `Failed to check the config target type ${target}`);
           if (compatibleRemoteStatField(type.stdout, 0) !== "regular file") {
-            throw new TransportError(`配置目标不是普通文件 ${target}`);
+            throw new TransportError(`Config target is not a regular file ${target}`);
           }
           const modeResult = await this.run(["stat", "-c", "%a", "--", target], {
             signal,
@@ -701,17 +714,17 @@ export class OpenSshRemoteSession implements RemoteSession {
             signal,
             privileged: true,
           });
-          requireSuccess(modeResult, `检查配置目标权限失败 ${target}`);
-          requireSuccess(ownerResult, `检查配置目标 owner 失败 ${target}`);
-          requireSuccess(groupResult, `检查配置目标 group 失败 ${target}`);
+          requireSuccess(modeResult, `Failed to check config target permissions ${target}`);
+          requireSuccess(ownerResult, `Failed to check the config target owner ${target}`);
+          requireSuccess(groupResult, `Failed to check the config target group ${target}`);
           originalMode = compatibleRemoteStatField(modeResult.stdout, 1);
           originalOwner = compatibleRemoteStatField(ownerResult.stdout, 2);
           originalGroup = compatibleRemoteStatField(groupResult.stdout, 3);
           if (!/^[0-7]{3,4}$/u.test(originalMode)) {
-            throw new TransportError(`配置目标权限输出不合法 ${target}`);
+            throw new TransportError(`Invalid config target permission output ${target}`);
           }
-          userOrGroup(originalOwner, "原 owner");
-          userOrGroup(originalGroup, "原 group");
+          userOrGroup(originalOwner, "original owner");
+          userOrGroup(originalGroup, "original group");
           const compare = await this.run(["cmp", "--silent", "--", candidate, target], {
             signal,
             privileged: true,
@@ -736,7 +749,9 @@ export class OpenSshRemoteSession implements RemoteSession {
             }));
             continue;
           }
-          if (compare.exitCode !== 1) throw new TransportError(`比较配置目标失败 ${target}`);
+          if (compare.exitCode !== 1) {
+            throw new TransportError(`Failed to compare the config target ${target}`);
+          }
         }
         const backup = existed
           ? `${workspace}/config-backup-${index}-${crypto.randomUUID()}`
@@ -744,18 +759,18 @@ export class OpenSshRemoteSession implements RemoteSession {
         if (backup !== undefined) {
           requireSuccess(
             await this.run(["cp", "--", target, backup], { signal, privileged: true }),
-            `备份配置失败 ${target}`,
+            `Failed to back up the config ${target}`,
           );
           requireSuccess(
             await this.run(["chown", this.#options.user, "--", backup], {
               signal,
               privileged: true,
             }),
-            `限制配置备份属主失败 ${target}`,
+            `Failed to restrict config backup ownership ${target}`,
           );
           requireSuccess(
             await this.run(["chmod", "0600", "--", backup], { signal, privileged: true }),
-            `限制配置备份权限失败 ${target}`,
+            `Failed to restrict config backup permissions ${target}`,
           );
         }
         const temporary = `${parent}/.${posix.basename(target)}.sfo-${crypto.randomUUID()}`;
@@ -768,7 +783,7 @@ export class OpenSshRemoteSession implements RemoteSession {
           installArgv.push("--", candidate, temporary);
           requireSuccess(
             await this.run(installArgv, { signal, privileged: true }),
-            `创建配置发布临时文件失败 ${target}`,
+            `Failed to create the config publish temporary file ${target}`,
           );
           // 发送 rename 前记录补偿状态，覆盖远端成功而响应丢失的情况。
           publications.push(Object.freeze({
@@ -788,7 +803,7 @@ export class OpenSshRemoteSession implements RemoteSession {
               signal,
               privileged: true,
             }),
-            `原子发布配置失败 ${target}`,
+            `Failed to publish the config atomically ${target}`,
           );
         } finally {
           await this.run(["rm", "-f", "--", temporary], { privileged: true }).catch(
@@ -803,7 +818,7 @@ export class OpenSshRemoteSession implements RemoteSession {
         await this.restoreManagedConfigs(publications);
       } catch (recoveryCause) {
         throw new ManagedConfigPublicationError(
-          "配置发布失败且已发布配置恢复不完整",
+          "Config publish failed and published config recovery is incomplete",
           publications,
           {
             cause: new AggregateError([cause, recoveryCause]),
@@ -827,7 +842,7 @@ export class OpenSshRemoteSession implements RemoteSession {
       readonly hashes: Readonly<Record<string, string>>;
     }
   > {
-    const unique = validateSecretNames(names, "文件秘密");
+    const unique = validateSecretNames(names, "file secret");
     if (unique.length === 0) return undefined;
     const expandedRoot = await this.#expandSecretDirectory(secretRoot, signal);
     const path = secretFingerprintPath(target);
@@ -835,16 +850,16 @@ export class OpenSshRemoteSession implements RemoteSession {
     for (const name of unique) {
       const source = `${expandedRoot}/${name}`;
       const result = await this.run(["sha256sum", "--", source], { signal, privileged: true });
-      requireSuccess(result, `读取文件秘密指纹失败 ${name}`);
+      requireSuccess(result, `Failed to read the file secret fingerprint ${name}`);
       const hash = /^([0-9a-f]{64})\s+/.exec(result.stdout)?.[1];
-      if (hash === undefined) throw new TransportError(`文件秘密指纹不合法 ${name}`);
+      if (hash === undefined) throw new TransportError(`Invalid file secret fingerprint ${name}`);
       hashes[name] = hash;
     }
     let previous: Record<string, string> = {};
     const exists = await this.run(["/usr/bin/test", "-f", path], { signal, privileged: true });
     if (exists.exitCode === 0) {
       const content = await this.run(["cat", "--", path], { signal, privileged: true });
-      requireSuccess(content, `读取配置秘密指纹失败 ${target}`);
+      requireSuccess(content, `Failed to read the config secret fingerprint ${target}`);
       try {
         const parsed = JSON.parse(content.stdout) as { files?: Record<string, string> };
         if (
@@ -853,10 +868,10 @@ export class OpenSshRemoteSession implements RemoteSession {
           previous = parsed.files;
         }
       } catch {
-        throw new TransportError(`配置秘密指纹不是合法 JSON ${path}`);
+        throw new TransportError(`Config secret fingerprint is not valid JSON ${path}`);
       }
     } else if (exists.exitCode !== 1) {
-      throw new TransportError(`检查配置秘密指纹失败 ${path}`);
+      throw new TransportError(`Failed to check the config secret fingerprint ${path}`);
     }
     return Object.freeze({
       changed: unique.some((name) => previous[name] !== hashes[name]),
@@ -882,9 +897,9 @@ export class OpenSshRemoteSession implements RemoteSession {
             publication.backupPath === undefined || publication.originalMode === undefined ||
             publication.originalOwner === undefined || publication.originalGroup === undefined
           ) {
-            throw new TransportError("配置恢复记录不完整");
+            throw new TransportError("Config recovery record is incomplete");
           }
-          const backup = workspaceMember(workspace, publication.backupPath, "配置备份");
+          const backup = workspaceMember(workspace, publication.backupPath, "config backup");
           const temporary = `${posix.dirname(target)}/.${
             posix.basename(target)
           }.restore-${crypto.randomUUID()}`;
@@ -895,20 +910,20 @@ export class OpenSshRemoteSession implements RemoteSession {
                 "-m",
                 publication.originalMode,
                 "-o",
-                userOrGroup(publication.originalOwner, "原 owner"),
+                userOrGroup(publication.originalOwner, "original owner"),
                 "-g",
-                userOrGroup(publication.originalGroup, "原 group"),
+                userOrGroup(publication.originalGroup, "original group"),
                 "--",
                 backup,
                 temporary,
               ], { privileged: true }),
-              `恢复配置临时文件失败 ${target}`,
+              `Failed to restore the config temporary file ${target}`,
             );
             requireSuccess(
               await this.run(["mv", "-f", "-T", "--", temporary, target], {
                 privileged: true,
               }),
-              `原子恢复配置失败 ${target}`,
+              `Failed to restore the config atomically ${target}`,
             );
           } finally {
             await this.run(["rm", "-f", "--", temporary], { privileged: true }).catch(
@@ -918,18 +933,20 @@ export class OpenSshRemoteSession implements RemoteSession {
         } else {
           requireSuccess(
             await this.run(["rm", "-f", "--", target], { privileged: true }),
-            `删除新发布配置失败 ${target}`,
+            `Failed to delete the newly published config ${target}`,
           );
         }
         if (publication.backupPath !== undefined) {
-          const backup = workspaceMember(workspace, publication.backupPath, "配置备份");
+          const backup = workspaceMember(workspace, publication.backupPath, "config backup");
           await this.run(["rm", "-f", "--", backup]).catch(() => undefined);
         }
       } catch (cause) {
         errors.push(cause);
       }
     }
-    if (errors.length > 0) throw new TransportError("一个或多个配置恢复失败", { cause: errors[0] });
+    if (errors.length > 0) {
+      throw new TransportError("One or more config recoveries failed", { cause: errors[0] });
+    }
   }
 
   async commitManagedConfigs(
@@ -951,10 +968,10 @@ export class OpenSshRemoteSession implements RemoteSession {
       }
       if (publication.backupPath === undefined) continue;
       const workspace = this.#registeredWorkspace(publication.workspace);
-      const backup = workspaceMember(workspace, publication.backupPath, "配置备份");
+      const backup = workspaceMember(workspace, publication.backupPath, "config backup");
       requireSuccess(
         await this.run(["rm", "-f", "--", backup], { signal }),
-        `清理配置备份失败 ${publication.name}`,
+        `Failed to clean up the config backup ${publication.name}`,
       );
     }
   }
@@ -966,7 +983,7 @@ export class OpenSshRemoteSession implements RemoteSession {
     signal?: AbortSignal,
   ): Promise<void> {
     if (!parent.startsWith(`${root}/`)) {
-      throw new PreflightError(`版本配置目标越界 ${parent}`);
+      throw new PreflightError(`Version config target is out of bounds ${parent}`);
     }
     const relative = parent.slice(root.length + 1);
     const segments = relative.split("/");
@@ -974,7 +991,7 @@ export class OpenSshRemoteSession implements RemoteSession {
       relative.length === 0 ||
       segments.some((segment) => segment.length === 0 || segment === "." || segment === "..")
     ) {
-      throw new PreflightError(`版本配置父目录非法 ${parent}`);
+      throw new PreflightError(`Invalid version config parent directory ${parent}`);
     }
     let current = root;
     for (const segment of segments) {
@@ -989,23 +1006,28 @@ export class OpenSshRemoteSession implements RemoteSession {
         argv.push("--", current);
         requireSuccess(
           await this.run(argv, { signal, privileged: true }),
-          `创建配置目标父目录失败 ${current}`,
+          `Failed to create the config target parent directory ${current}`,
         );
         continue;
       }
-      requireSuccess(existing, `检查配置目标父目录失败 ${current}`);
+      requireSuccess(existing, `Failed to check the config target parent directory ${current}`);
       const link = await this.run(["/usr/bin/test", "-L", current], {
         signal,
         privileged: true,
       });
       if (link.exitCode !== 1) {
-        throw new TransportError(`版本配置父目录不是普通目录 ${current}`);
+        throw new TransportError(
+          `Version config parent directory is not a regular directory ${current}`,
+        );
       }
       const directory = await this.run(["/usr/bin/test", "-d", current], {
         signal,
         privileged: true,
       });
-      requireSuccess(directory, `版本配置父目录不是普通目录 ${current}`);
+      requireSuccess(
+        directory,
+        `Version config parent directory is not a regular directory ${current}`,
+      );
     }
   }
 
@@ -1032,14 +1054,14 @@ export class OpenSshRemoteSession implements RemoteSession {
           signal,
           privileged: true,
         }),
-        `安装配置秘密指纹失败 ${destination}`,
+        `Failed to install the config secret fingerprint ${destination}`,
       );
       requireSuccess(
         await this.run(["mv", "-f", "-T", "--", temporary, destination], {
           signal,
           privileged: true,
         }),
-        `发布配置秘密指纹失败 ${destination}`,
+        `Failed to publish the config secret fingerprint ${destination}`,
       );
       temporary = undefined;
     } finally {
@@ -1053,7 +1075,7 @@ export class OpenSshRemoteSession implements RemoteSession {
 
   async #assertCandidate(path: string, name: string, signal?: AbortSignal): Promise<void> {
     const type = await this.run(["stat", "-c", "%F", "--", path], { signal });
-    requireSuccess(type, `检查配置 ${name} 候选类型失败`);
+    requireSuccess(type, `Failed to check the type of config ${name} candidate`);
     const typeOutput = type.stdout.trim();
     const combinedType = typeOutput.split("\t");
     if (
@@ -1061,10 +1083,10 @@ export class OpenSshRemoteSession implements RemoteSession {
       !(combinedType.length === 2 && combinedType[0] === "regular file" &&
         /^(?:0|[1-9][0-9]*)$/u.test(combinedType[1]))
     ) {
-      throw new TransportError(`配置 ${name} 候选不是受限普通文件`);
+      throw new TransportError(`Config ${name} candidate is not a restricted regular file`);
     }
     const size = await this.run(["stat", "-c", "%s", "--", path], { signal });
-    requireSuccess(size, `检查配置 ${name} 候选长度失败`);
+    requireSuccess(size, `Failed to check the length of config ${name} candidate`);
     const sizeOutput = size.stdout.trim();
     const combinedSize = sizeOutput.split("\t");
     const sizeText = /^(?:0|[1-9][0-9]*)$/u.test(sizeOutput)
@@ -1074,15 +1096,15 @@ export class OpenSshRemoteSession implements RemoteSession {
       ? combinedSize[1]
       : undefined;
     if (sizeText === undefined) {
-      throw new TransportError(`配置 ${name} 候选长度输出不合法`);
+      throw new TransportError(`Invalid length output for config ${name} candidate`);
     }
     const sizeValue = Number(sizeText);
     if (!Number.isSafeInteger(sizeValue) || sizeValue > 16 * 1024 * 1024) {
-      throw new TransportError(`配置 ${name} 候选不是受限普通文件`);
+      throw new TransportError(`Config ${name} candidate is not a restricted regular file`);
     }
     requireSuccess(
       await this.run(["chmod", "0600", "--", path], { signal }),
-      `限制配置 ${name} 候选权限失败`,
+      `Failed to restrict permissions of config ${name} candidate`,
     );
   }
 
@@ -1101,7 +1123,7 @@ export class OpenSshRemoteSession implements RemoteSession {
     options: { readonly signal?: AbortSignal; readonly mode?: number } = {},
   ): Promise<void> {
     this.#ensureOpen();
-    const source = await regularLocalFile(localPath, "上传来源");
+    const source = await regularLocalFile(localPath, "upload source");
     const remote = safeRemotePath(remotePath);
     const mode = fileMode(options.mode ?? 0o600);
     const result = await this.#runLocal(
@@ -1109,14 +1131,14 @@ export class OpenSshRemoteSession implements RemoteSession {
       [...this.#sshOptions(true), "--", source, this.#scpDestination(remote)],
       options.signal,
       this.#options.commandTimeoutMs,
-      "上传文件",
+      "upload file",
     );
-    requireSuccess(result, `上传文件失败 ${source} -> ${remote}`);
+    requireSuccess(result, `Failed to upload file ${source} -> ${remote}`);
     requireSuccess(
       await this.run(["chmod", mode.toString(8).padStart(4, "0"), "--", remote], {
         signal: options.signal,
       }),
-      `设置远端文件权限失败 ${remote}`,
+      `Failed to set remote file permissions ${remote}`,
     );
   }
 
@@ -1124,7 +1146,7 @@ export class OpenSshRemoteSession implements RemoteSession {
     const raw = typeof rawDirectory === "string" && rawDirectory.length > 0
       ? rawDirectory
       : (() => {
-        throw new PreflightError("安全目录路径不能为空");
+        throw new PreflightError("Secure directory path must not be empty");
       })();
     const home = await this.#homeDirectory(signal);
     let absolute: string;
@@ -1132,12 +1154,14 @@ export class OpenSshRemoteSession implements RemoteSession {
     else if (raw.startsWith("~/")) absolute = `${home}/${raw.slice(2)}`;
     else if (raw.startsWith("/")) absolute = raw;
     else {throw new PreflightError(
-        `安全目录必须是 ~/ 起始路径或绝对 POSIX 路径: ${JSON.stringify(raw)}`,
+        `Secure directory must be a ~/ path or an absolute POSIX path: ${JSON.stringify(raw)}`,
       );}
     absolute = absolute.replace(/\/+$/, "") || "/";
     const safe = safeRemotePath(absolute);
     if (safe.split("/").includes("..")) {
-      throw new PreflightError(`安全目录不允许包含 .. 段: ${JSON.stringify(raw)}`);
+      throw new PreflightError(
+        `Secure directory must not contain .. segments: ${JSON.stringify(raw)}`,
+      );
     }
     return safe;
   }
@@ -1158,33 +1182,35 @@ export class OpenSshRemoteSession implements RemoteSession {
       privileged,
     });
     if (exists.exitCode === 1) return [];
-    requireSuccess(exists, `检查密钥清单失败 ${manifest}`);
+    requireSuccess(exists, `Failed to check the secret manifest ${manifest}`);
     const content = await this.run(["/usr/bin/cat", "--", manifest], { signal, privileged });
-    requireSuccess(content, `读取密钥清单失败 ${manifest}`);
+    requireSuccess(content, `Failed to read the secret manifest ${manifest}`);
     let parsed: unknown;
     try {
       parsed = JSON.parse(content.stdout);
     } catch {
-      throw new TransportError(`密钥清单不是合法 JSON: ${manifest}`);
+      throw new TransportError(`Secret manifest is not valid JSON: ${manifest}`);
     }
-    if (!Array.isArray(parsed)) throw new TransportError(`密钥清单必须是 JSON 列表: ${manifest}`);
+    if (!Array.isArray(parsed)) {
+      throw new TransportError(`Secret manifest must be a JSON list: ${manifest}`);
+    }
     const entries: SecretManifestEntry[] = [];
     for (const item of parsed as unknown[]) {
       if (
         !item || typeof item !== "object" || !("name" in item) || !("kind" in item) ||
         !("sha256" in item)
       ) {
-        throw new TransportError(`密钥清单条目损坏: ${manifest}`);
+        throw new TransportError(`Secret manifest entry is corrupted: ${manifest}`);
       }
       const record = item as Record<string, unknown>;
       const name = String(record.name);
       const kind = String(record.kind);
       const sha256 = String(record.sha256);
       if (!SECRET_NAME_RE.test(name) || (kind !== "value" && kind !== "file")) {
-        throw new TransportError(`密钥清单条目身份不合法: ${manifest}`);
+        throw new TransportError(`Invalid secret manifest entry identity: ${manifest}`);
       }
       if (!/^[0-9a-f]{64}$/.test(sha256)) {
-        throw new TransportError(`密钥清单哈希不合法: ${manifest}`);
+        throw new TransportError(`Invalid secret manifest hash: ${manifest}`);
       }
       entries.push(Object.freeze({ name, kind: kind as SecretKind, sha256 }));
     }
@@ -1212,14 +1238,14 @@ export class OpenSshRemoteSession implements RemoteSession {
           signal,
           privileged,
         }),
-        `安装密钥清单失败 ${destination}`,
+        `Failed to install the secret manifest ${destination}`,
       );
       requireSuccess(
         await this.run(["mv", "-f", "-T", "--", temporaryRemote, destination], {
           signal,
           privileged,
         }),
-        `原子更新密钥清单失败 ${destination}`,
+        `Failed to update the secret manifest atomically ${destination}`,
       );
     } finally {
       if (temporary !== undefined) {
@@ -1242,15 +1268,17 @@ export class OpenSshRemoteSession implements RemoteSession {
     const privileged = await this.#secretCommandsPrivileged(directory, signal);
     requireSuccess(
       await this.run(["mkdir", "-p", "-m", "0700", "--", directory], { signal, privileged }),
-      `创建安全目录失败 ${directory}`,
+      `Failed to create the secure directory ${directory}`,
     );
     const mode = await this.run(["stat", "-c", "%a", "--", directory], {
       signal,
       privileged,
     });
-    requireSuccess(mode, `检查安全目录权限失败 ${directory}`);
+    requireSuccess(mode, `Failed to check secure directory permissions ${directory}`);
     if (mode.stdout.trim() !== "700") {
-      throw new PreflightError(`安全目录权限必须为 0700，实际 ${mode.stdout.trim()}: ${directory}`);
+      throw new PreflightError(
+        `Secure directory permissions must be 0700; actual ${mode.stdout.trim()}: ${directory}`,
+      );
     }
     const workspace = await this.createWorkspace(signal);
     const cleanup = async (): Promise<void> => {
@@ -1267,10 +1295,10 @@ export class OpenSshRemoteSession implements RemoteSession {
       for (let index = 0; index < files.length; index++) {
         const file = files[index];
         if (!SECRET_NAME_RE.test(file.name) || (file.kind !== "value" && file.kind !== "file")) {
-          throw new PreflightError(`密钥名称或类型不合法: ${file.name}`);
+          throw new PreflightError(`Invalid secret name or type: ${file.name}`);
         }
         if (!/^[0-9a-f]{64}$/.test(file.sha256)) {
-          throw new PreflightError(`密钥 ${file.name} 哈希不合法`);
+          throw new PreflightError(`Invalid hash for secret ${file.name}`);
         }
         const existing = byName.get(file.name);
         const destination = `${directory}/${file.name}`;
@@ -1280,7 +1308,7 @@ export class OpenSshRemoteSession implements RemoteSession {
         ) {
           requireSuccess(
             await this.run(["chmod", "0600", "--", destination], { signal, privileged }),
-            `修正密钥权限失败 ${destination}`,
+            `Failed to fix secret permissions ${destination}`,
           );
           results.push(Object.freeze({
             name: file.name,
@@ -1301,14 +1329,14 @@ export class OpenSshRemoteSession implements RemoteSession {
               signal,
               privileged,
             }),
-            `创建密钥临时文件失败 ${file.name}`,
+            `Failed to create the secret temporary file ${file.name}`,
           );
           requireSuccess(
             await this.run(["mv", "-f", "-T", "--", temporary, destination], {
               signal,
               privileged,
             }),
-            `原子安装密钥失败 ${file.name}`,
+            `Failed to install the secret atomically ${file.name}`,
           );
         } finally {
           await this.run(["rm", "-f", "--", staged], { signal }).catch(() => undefined);
@@ -1346,24 +1374,24 @@ export class OpenSshRemoteSession implements RemoteSession {
   async removeSecret(name: string, rawDirectory: string, signal?: AbortSignal): Promise<void> {
     this.#ensureOpen();
     if (!SECRET_NAME_RE.test(name)) {
-      throw new PreflightError(`密钥名称不合法: ${JSON.stringify(name)}`);
+      throw new PreflightError(`Invalid secret name: ${JSON.stringify(name)}`);
     }
     const directory = await this.#expandSecretDirectory(rawDirectory, signal);
     const privileged = await this.#secretCommandsPrivileged(directory, signal);
     const target = `${directory}/${name}`;
     const exists = await this.run(["/usr/bin/test", "-f", target], { signal, privileged });
     if (exists.exitCode !== 0 && exists.exitCode !== 1) {
-      requireSuccess(exists, `检查密钥文件失败 ${target}`);
+      requireSuccess(exists, `Failed to check the secret file ${target}`);
     }
     const manifest = await this.#readSecretManifest(directory, privileged, signal);
     const inManifest = manifest.some((entry) => entry.name === name);
     if (exists.exitCode === 1 && !inManifest) {
-      throw new PreflightError(`密钥未部署到该机器: ${name}（${directory}）`);
+      throw new PreflightError(`Secret is not deployed on this machine: ${name} (${directory})`);
     }
     if (exists.exitCode === 0) {
       requireSuccess(
         await this.run(["rm", "-f", "--", target], { signal, privileged }),
-        `删除密钥失败 ${target}`,
+        `Failed to delete the secret ${target}`,
       );
     }
     const remaining = manifest.filter((entry) => entry.name !== name).map((entry) =>
@@ -1394,12 +1422,12 @@ export class OpenSshRemoteSession implements RemoteSession {
         sha256: Object.freeze({}),
       });
     }
-    requireSuccess(exists, `检查安全目录失败 ${directory}`);
+    requireSuccess(exists, `Failed to check the secure directory ${directory}`);
     const mode = await this.run(["stat", "-c", "%a", "--", directory], { signal, privileged });
-    requireSuccess(mode, `检查安全目录权限失败 ${directory}`);
+    requireSuccess(mode, `Failed to check secure directory permissions ${directory}`);
     const manifest = await this.#readSecretManifest(directory, privileged, signal);
     const listing = await this.run(["ls", "-1", "-A", "--", directory], { signal, privileged });
-    requireSuccess(listing, `列出安全目录失败 ${directory}`);
+    requireSuccess(listing, `Failed to list the secure directory ${directory}`);
     const entries = listing.stdout.split(/\r?\n/).map((item) => item.trim())
       .filter((item) => item.length > 0 && item !== "manifest.json");
     const sha256: Record<string, string> = {};
@@ -1428,7 +1456,7 @@ export class OpenSshRemoteSession implements RemoteSession {
     const identity = await this.#validatedAppIdentity(request.runAs, signal);
     const sourceDirectory = await this.#expandSecretDirectory(request.sourceDirectory, signal);
     const sourcePrivileged = await this.#secretCommandsPrivileged(sourceDirectory, signal);
-    const names = validateSecretNames(request.names, "消费者");
+    const names = validateSecretNames(request.names, "consumer");
     await this.#prepareManagedWorkspace(identity, workspace, signal);
     const path = `${workspace}/consumer-secrets-${crypto.randomUUID().replaceAll("-", "")}`;
     try {
@@ -1438,12 +1466,12 @@ export class OpenSshRemoteSession implements RemoteSession {
             signal,
             privileged: true,
           }),
-          "创建消费者秘密副本目录失败",
+          "Failed to create the consumer secret copy directory",
         );
       } else {
         requireSuccess(
           await this.run(["mkdir", "-m", "0700", "--", path], { signal }),
-          "创建消费者秘密副本目录失败",
+          "Failed to create the consumer secret copy directory",
         );
       }
       for (const name of names) {
@@ -1453,9 +1481,9 @@ export class OpenSshRemoteSession implements RemoteSession {
           signal,
           privileged: sourcePrivileged,
         });
-        requireSuccess(type, `秘密未部署到该机器: ${name}`);
+        requireSuccess(type, `Secret is not deployed on this machine: ${name}`);
         if (compatibleRemoteStatField(type.stdout, 0) !== "regular file") {
-          throw new PreflightError(`秘密来源不是普通文件: ${name}`);
+          throw new PreflightError(`Secret source is not a regular file: ${name}`);
         }
         const install = ["install", "-m", "0600"];
         if (sourcePrivileged || identity.requiresSudo) install.push("-o", identity.runAs);
@@ -1465,40 +1493,40 @@ export class OpenSshRemoteSession implements RemoteSession {
             signal,
             privileged: sourcePrivileged || identity.requiresSudo,
           }),
-          `复制消费者秘密失败: ${name}`,
+          `Failed to copy the consumer secret: ${name}`,
         );
         const mode = await this.run(["stat", "-c", "%a", "--", destination], {
           signal,
           privileged: identity.requiresSudo,
         });
-        requireSuccess(mode, `检查消费者秘密权限失败: ${name}`);
+        requireSuccess(mode, `Failed to check consumer secret permissions: ${name}`);
         if (compatibleRemoteStatField(mode.stdout, 1) !== "600") {
-          throw new TransportError(`消费者秘密权限不是 0600: ${name}`);
+          throw new TransportError(`Consumer secret permissions are not 0600: ${name}`);
         }
         const owner = await this.run(["stat", "-c", "%u", "--", destination], {
           signal,
           privileged: identity.requiresSudo,
         });
-        requireSuccess(owner, `检查消费者秘密属主失败: ${name}`);
+        requireSuccess(owner, `Failed to check the consumer secret owner: ${name}`);
         if (compatibleRemoteStatField(owner.stdout, 2) !== String(identity.uid)) {
-          throw new TransportError(`消费者秘密属主不是 run_as: ${name}`);
+          throw new TransportError(`Consumer secret owner is not run_as: ${name}`);
         }
       }
       const directoryMode = await this.run(["stat", "-c", "%a", "--", path], {
         signal,
         privileged: identity.requiresSudo,
       });
-      requireSuccess(directoryMode, "检查消费者秘密目录权限失败");
+      requireSuccess(directoryMode, "Failed to check consumer secret directory permissions");
       if (compatibleRemoteStatField(directoryMode.stdout, 1) !== "700") {
-        throw new TransportError("消费者秘密副本目录权限不是 0700");
+        throw new TransportError("Consumer secret copy directory permissions are not 0700");
       }
       const directoryOwner = await this.run(["stat", "-c", "%u", "--", path], {
         signal,
         privileged: identity.requiresSudo,
       });
-      requireSuccess(directoryOwner, "检查消费者秘密目录属主失败");
+      requireSuccess(directoryOwner, "Failed to check the consumer secret directory owner");
       if (compatibleRemoteStatField(directoryOwner.stdout, 2) !== String(identity.uid)) {
-        throw new TransportError("消费者秘密副本目录属主不是 run_as");
+        throw new TransportError("Consumer secret copy directory owner is not run_as");
       }
       this.#scopedSecretCopies.set(path, identity.runAs);
       return Object.freeze({ workspace, path, runAs: identity.runAs });
@@ -1513,15 +1541,15 @@ export class OpenSshRemoteSession implements RemoteSession {
   async cleanupScopedSecretCopy(copy: ScopedSecretCopy): Promise<void> {
     this.#ensureOpen();
     const workspace = this.#registeredWorkspace(copy.workspace);
-    const path = workspaceMember(workspace, copy.path, "消费者秘密副本目录");
+    const path = workspaceMember(workspace, copy.path, "consumer secret copy directory");
     const runAs = this.#scopedSecretCopies.get(path);
     if (runAs === undefined || runAs !== copy.runAs) {
-      throw new TransportError("消费者秘密副本未在当前会话登记");
+      throw new TransportError("Consumer secret copy is not registered in the current session");
     }
     const identity = await this.#validatedAppIdentity(runAs);
     requireSuccess(
       await this.run(["rm", "-rf", "--", path], { privileged: identity.requiresSudo }),
-      "清理消费者秘密副本失败",
+      "Failed to clean up the consumer secret copy",
     );
     this.#scopedSecretCopies.delete(path);
   }
@@ -1532,8 +1560,8 @@ export class OpenSshRemoteSession implements RemoteSession {
   ): Promise<RemoteOperationLease> {
     this.#ensureOpen();
     const app = lockComponent(request.app, "App");
-    const target = lockComponent(request.target, "目标");
-    const timeoutMs = positiveTimeout(request.timeoutMs, "目标操作锁");
+    const target = lockComponent(request.target, "target");
+    const timeoutMs = positiveTimeout(request.timeoutMs, "target operation lock");
     const digest = await sha256Text(`${app}\0${target}`);
     const id = crypto.randomUUID().replaceAll("-", "");
     const lockPath = `/tmp/sfo-deploy-operation-${digest}.lock`;
@@ -1563,7 +1591,7 @@ export class OpenSshRemoteSession implements RemoteSession {
         [...this.#sshOptions(false), this.#sshDestination(), rendered],
       );
     } catch (cause) {
-      throw new TransportError("无法启动目标操作锁进程", { cause });
+      throw new TransportError("Failed to start the target operation lock process", { cause });
     }
     const output = child.output();
     const deadline = Date.now() + timeoutMs;
@@ -1575,8 +1603,10 @@ export class OpenSshRemoteSession implements RemoteSession {
           pollDelay(25).then(() => ({ kind: "poll" as const })),
         ]);
         if (state.kind === "exit") {
-          if (state.value.code === 73) throw new PreflightError("目标操作锁获取超时");
-          throw new TransportError("目标操作锁持有进程提前退出");
+          if (state.value.code === 73) {
+            throw new PreflightError("Target operation lock acquisition timed out");
+          }
+          throw new TransportError("Target operation lock holder exited early");
         }
         const ready = await this.run(["/usr/bin/test", "-f", readyPath], {
           signal,
@@ -1587,9 +1617,11 @@ export class OpenSshRemoteSession implements RemoteSession {
           this.#operationLeases.set(id, { lease, child, output, readyPath, stopPath });
           return lease;
         }
-        if (ready.exitCode !== 1) throw new TransportError("检查目标操作锁状态失败");
+        if (ready.exitCode !== 1) {
+          throw new TransportError("Failed to check the target operation lock state");
+        }
       }
-      throw new PreflightError("目标操作锁获取超时");
+      throw new PreflightError("Target operation lock acquisition timed out");
     } catch (cause) {
       await terminateAndReap(child, output, this.#options.terminateTimeoutMs);
       await this.run(["rm", "-f", "--", readyPath]).catch(() => undefined);
@@ -1603,12 +1635,14 @@ export class OpenSshRemoteSession implements RemoteSession {
     if (
       held === undefined || held.lease.app !== lease.app || held.lease.target !== lease.target
     ) {
-      throw new TransportError("目标操作锁 lease 未在当前会话登记");
+      throw new TransportError(
+        "Target operation lock lease is not registered in the current session",
+      );
     }
     this.#operationLeases.delete(lease.id);
     requireSuccess(
       await this.run(["rm", "-f", "--", held.stopPath]),
-      "通知目标操作锁释放失败",
+      "Failed to notify the target operation lock to release",
     );
     const released = await Promise.race([
       held.output.then((output) => output.code === 0, () => false),
@@ -1619,7 +1653,7 @@ export class OpenSshRemoteSession implements RemoteSession {
     }
     requireSuccess(
       await this.run(["rm", "-f", "--", held.readyPath, held.stopPath]),
-      "清理目标操作锁状态失败",
+      "Failed to clean up the target operation lock state",
     );
   }
 
@@ -1636,15 +1670,15 @@ export class OpenSshRemoteSession implements RemoteSession {
     const copyDirectory = `${remoteWorkspace}/secrets`;
     requireSuccess(
       await this.run(["mkdir", "-m", "0700", "--", copyDirectory], { signal }),
-      `创建步骤秘密副本目录失败 ${copyDirectory}`,
+      `Failed to create the step secret copy directory ${copyDirectory}`,
     );
     const seen = new Set<string>();
     for (const rawName of secretNames) {
       if (typeof rawName !== "string" || !SECRET_NAME_RE.test(rawName)) {
-        throw new PreflightError(`密钥名称不合法: ${JSON.stringify(rawName)}`);
+        throw new PreflightError(`Invalid secret name: ${JSON.stringify(rawName)}`);
       }
       if (seen.has(rawName)) {
-        throw new PreflightError(`步骤密钥声明重复: ${rawName}`);
+        throw new PreflightError(`Duplicate step secret declaration: ${rawName}`);
       }
       seen.add(rawName);
       const source = `${directory}/${rawName}`;
@@ -1654,15 +1688,15 @@ export class OpenSshRemoteSession implements RemoteSession {
         privileged,
       });
       if (exists.exitCode === 1) {
-        throw new PreflightError(`密钥未部署到该机器: ${rawName}`);
+        throw new PreflightError(`Secret is not deployed on this machine: ${rawName}`);
       }
-      requireSuccess(exists, `检查密钥来源失败 ${rawName}`);
+      requireSuccess(exists, `Failed to check the secret source ${rawName}`);
       requireSuccess(
         await this.run(["install", "-m", "0600", "--", source, destination], {
           signal,
           privileged,
         }),
-        `复制步骤密钥失败 ${rawName}`,
+        `Failed to copy the step secret ${rawName}`,
       );
       if (privileged) {
         requireSuccess(
@@ -1670,12 +1704,12 @@ export class OpenSshRemoteSession implements RemoteSession {
             signal,
             privileged: true,
           }),
-          `修正步骤密钥属主失败 ${rawName}`,
+          `Failed to fix step secret ownership ${rawName}`,
         );
       }
       requireSuccess(
         await this.run(["chmod", "0600", "--", destination], { signal }),
-        `修正步骤密钥权限失败 ${rawName}`,
+        `Failed to fix step secret permissions ${rawName}`,
       );
     }
     return copyDirectory;
@@ -1687,7 +1721,7 @@ export class OpenSshRemoteSession implements RemoteSession {
     minimumMajor = 2,
   ): Promise<CommandResult> {
     if (!Number.isInteger(minimumMajor) || minimumMajor < 1) {
-      throw new TransportError("Deno 最低主版本必须是正整数");
+      throw new TransportError("Deno minimum major version must be a positive integer");
     }
     const checked = runtimeExecutable(executable);
     const result = await this.run([checked, "--version"], { signal });
@@ -1696,7 +1730,9 @@ export class OpenSshRemoteSession implements RemoteSession {
     const match = /^deno (\d+)\.[0-9]+\.[0-9]+(?:[-+][^\s]+)?(?: \([^\r\n]+\))?$/.exec(firstLine);
     if (result.exitCode !== 0 || !match || Number(match[1]) < minimumMajor) {
       throw new PreflightError(
-        `远端 Deno ${minimumMajor}+ 运行时不可用 ${JSON.stringify(executable)}: ${version}`,
+        `Remote Deno ${minimumMajor}+ runtime is unavailable ${
+          JSON.stringify(executable)
+        }: ${version}`,
       );
     }
     return result;
@@ -1710,7 +1746,11 @@ export class OpenSshRemoteSession implements RemoteSession {
       return;
     }
     const sudo = await this.run(["sudo", "-n", "--", "true"], { signal });
-    if (sudo.exitCode !== 0) throw new PreflightError("远端身份既不是 root，也不能使用非交互 sudo");
+    if (sudo.exitCode !== 0) {
+      throw new PreflightError(
+        "Remote identity is neither root nor able to use non-interactive sudo",
+      );
+    }
     this.#privilegePrefix = Object.freeze(["sudo", "-n", "--"]);
   }
 
@@ -1728,22 +1768,22 @@ export class OpenSshRemoteSession implements RemoteSession {
     },
   ): Promise<CommandResult> {
     const workspace = this.#registeredWorkspace(options.workspace);
-    const remoteScript = workspaceMember(workspace, script, "Deno 脚本");
-    const metadata = workspaceMember(workspace, options.metadataPath, "步骤元数据");
+    const remoteScript = workspaceMember(workspace, script, "Deno script");
+    const metadata = workspaceMember(workspace, options.metadataPath, "step metadata");
     const secretCopy = options.secretDir === undefined
       ? undefined
-      : workspaceMember(workspace, options.secretDir, "步骤秘密副本目录");
-    const run = permissionValues(options.permissions.run, "Deno run 权限", true);
-    const net = permissionValues(options.permissions.net, "Deno net 权限", false);
+      : workspaceMember(workspace, options.secretDir, "step secret copy directory");
+    const run = permissionValues(options.permissions.run, "Deno run permission", true);
+    const net = permissionValues(options.permissions.net, "Deno net permission", false);
     const read = filePermissionPaths(
       workspace,
       options.permissions.read ?? [],
-      "Deno read 权限",
+      "Deno read permission",
     );
     const write = filePermissionPaths(
       workspace,
       options.permissions.write ?? [],
-      "Deno write 权限",
+      "Deno write permission",
     );
     net.forEach(validateNetPermission);
     const executablePath = runtimeExecutable(executable);
@@ -1813,10 +1853,10 @@ export class OpenSshRemoteSession implements RemoteSession {
   }
 
   async removeFile(path: string, signal?: AbortSignal): Promise<void> {
-    const remote = workspaceMemberOfAny(this.#workspaces, path, "远端临时文件");
+    const remote = workspaceMemberOfAny(this.#workspaces, path, "remote temporary file");
     requireSuccess(
       await this.run(["rm", "-f", "--", remote], { signal }),
-      `远端文件清理失败 ${remote}`,
+      `Failed to clean up the remote file ${remote}`,
     );
   }
 
@@ -1831,10 +1871,12 @@ export class OpenSshRemoteSession implements RemoteSession {
     const exists = await this.run(["/usr/bin/test", "-f", path], { signal });
     if (exists.exitCode !== 0) {
       if (exists.exitCode === 1) return undefined;
-      throw new TransportError(`无法检查环境应用版本标记 ${path}: ${diagnostic(exists)}`);
+      throw new TransportError(
+        `Failed to check the environment app version marker ${path}: ${diagnostic(exists)}`,
+      );
     }
     const content = await this.run(["/usr/bin/cat", "--", path], { signal });
-    requireSuccess(content, `读取环境应用版本标记失败 ${path}`);
+    requireSuccess(content, `Failed to read the environment app version marker ${path}`);
     const version = content.stdout.trim();
     return version.length === 0 ? undefined : version;
   }
@@ -1850,14 +1892,14 @@ export class OpenSshRemoteSession implements RemoteSession {
       typeof version !== "string" || version.length === 0 || hasControl(version) ||
       /\s/.test(version) || version !== version.trim()
     ) {
-      throw new TransportError("环境应用版本值不合法");
+      throw new TransportError("Invalid environment app version value");
     }
     const home = await this.#homeDirectory(signal);
     const directory = `${home}/.sfo-deploy/environments`;
     const path = `${directory}/${name}.version`;
     requireSuccess(
       await this.run(["mkdir", "-p", "--", directory], { signal }),
-      `创建环境应用版本标记目录失败 ${directory}`,
+      `Failed to create the environment app version marker directory ${directory}`,
     );
     const temporary = await Deno.makeTempFile({ prefix: "sfo-env-version-" });
     try {
@@ -1888,7 +1930,7 @@ export class OpenSshRemoteSession implements RemoteSession {
   async cleanupWorkspace(path: string, signal?: AbortSignal): Promise<void> {
     const workspace = this.#registeredWorkspace(path);
     const result = await this.run(["rm", "-rf", "--", workspace], { signal });
-    requireSuccess(result, `远端工作目录清理失败 ${workspace}`);
+    requireSuccess(result, `Failed to clean up the remote workspace ${workspace}`);
     for (const path of this.#scopedSecretCopies.keys()) {
       if (path.startsWith(`${workspace}/`)) this.#scopedSecretCopies.delete(path);
     }
@@ -1913,7 +1955,9 @@ export class OpenSshRemoteSession implements RemoteSession {
       }
     }
     this.#closed = true;
-    if (errors.length > 0) throw new TransportError(`SSH 会话清理失败: ${errors.join("; ")}`);
+    if (errors.length > 0) {
+      throw new TransportError(`SSH session cleanup failed: ${errors.join("; ")}`);
+    }
   }
 
   async [Symbol.asyncDispose](): Promise<void> {
@@ -1929,7 +1973,7 @@ export class OpenSshRemoteSession implements RemoteSession {
     const home = result.stdout.trim();
     if (result.exitCode !== 0 || home.length === 0 || home === "/" || !home.startsWith("/")) {
       throw new TransportError(
-        `无法确定远端用户主目录: ${result.stdout}${result.stderr}`,
+        `Failed to determine the remote user home directory: ${result.stdout}${result.stderr}`,
       );
     }
     this.#home = home;
@@ -1980,27 +2024,27 @@ export class OpenSshRemoteSession implements RemoteSession {
     try {
       child = this.#options.commandFactory(executable, args);
     } catch (cause) {
-      throw new TransportError(`无法启动 ${label} 进程`, { cause });
+      throw new TransportError(`Failed to start the ${label} process`, { cause });
     }
     const outputPromise = child.output();
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
     let abortHandler: (() => void) | undefined;
     const timeout = new Promise<never>((_resolve, reject) => {
       timeoutId = setTimeout(
-        () => reject(new TransportError(`${label}执行超时`)),
+        () => reject(new TransportError(`${label} timed out`)),
         positiveTimeout(timeoutMs, label),
       );
     });
     const aborted = signal
       ? new Promise<never>((_resolve, reject) => {
-        abortHandler = () => reject(new CancelledError(`${label}已取消`));
+        abortHandler = () => reject(new CancelledError(`${label} was cancelled`));
         signal.addEventListener("abort", abortHandler, { once: true });
         if (signal.aborted) abortHandler();
       })
       : new Promise<never>(() => undefined);
     try {
       const output = await Promise.race([outputPromise, timeout, aborted]);
-      if (signal?.aborted) throw new CancelledError(`${label}已取消`);
+      if (signal?.aborted) throw new CancelledError(`${label} was cancelled`);
       return commandResult(
         output.code,
         new TextDecoder().decode(output.stdout),
@@ -2009,7 +2053,7 @@ export class OpenSshRemoteSession implements RemoteSession {
     } catch (cause) {
       await terminateAndReap(child, outputPromise, this.#options.terminateTimeoutMs);
       if (cause instanceof CancelledError || cause instanceof TransportError) throw cause;
-      throw new TransportError(`${label}进程失败`, { cause });
+      throw new TransportError(`${label} process failed`, { cause });
     } finally {
       if (timeoutId !== undefined) clearTimeout(timeoutId);
       if (signal && abortHandler) signal.removeEventListener("abort", abortHandler);
@@ -2019,7 +2063,9 @@ export class OpenSshRemoteSession implements RemoteSession {
   #registeredWorkspace(path: string): string {
     const workspace = safeRemotePath(path);
     if (!workspace.startsWith(WORKSPACE_PREFIX) || !this.#workspaces.has(workspace)) {
-      throw new TransportError(`远端工作目录未在当前会话登记: ${workspace}`);
+      throw new TransportError(
+        `Remote workspace is not registered in the current session: ${workspace}`,
+      );
     }
     return workspace;
   }
@@ -2043,7 +2089,7 @@ export class OpenSshRemoteSession implements RemoteSession {
     if (!identity.requiresSudo) return;
     requireSuccess(
       await this.run(["chmod", "0711", "--", workspace], { signal, privileged: true }),
-      "设置 managed workspace 遍历权限失败",
+      "Failed to set managed workspace traverse permissions",
     );
   }
 
@@ -2061,12 +2107,12 @@ export class OpenSshRemoteSession implements RemoteSession {
           signal,
           privileged: true,
         }),
-        "创建非特权 App 执行目录失败",
+        "Failed to create the unprivileged App execution directory",
       );
     } else {
       requireSuccess(
         await this.run(["mkdir", "-m", "0700", "--", scope], { signal }),
-        "创建非特权 App 执行目录失败",
+        "Failed to create the unprivileged App execution directory",
       );
     }
     return scope;
@@ -2084,7 +2130,7 @@ export class OpenSshRemoteSession implements RemoteSession {
     argv.push("--", source, destination);
     requireSuccess(
       await this.run(argv, { signal, privileged: identity.requiresSudo }),
-      "准备非特权 App 执行输入失败",
+      "Failed to prepare unprivileged App execution input",
     );
   }
 
@@ -2099,12 +2145,12 @@ export class OpenSshRemoteSession implements RemoteSession {
       privileged: identity.requiresSudo,
     });
     if (exists.exitCode === 1) return;
-    requireSuccess(exists, "检查可选 App 执行输入失败");
+    requireSuccess(exists, "Failed to check optional App execution input");
     await this.#installAppInput(identity, source, destination, "0400", signal);
   }
 
   #ensureOpen(): void {
-    if (this.#closed) throw new TransportError("SSH 会话已经关闭");
+    if (this.#closed) throw new TransportError("SSH session is already closed");
   }
 }
 
@@ -2139,16 +2185,18 @@ async function terminateAndReap(
 
 export function quotePosix(value: string): string {
   if (typeof value !== "string" || hasControl(value)) {
-    throw new TransportError(`远端 shell 参数不合法: ${JSON.stringify(value)}`);
+    throw new TransportError(`Invalid remote shell argument: ${JSON.stringify(value)}`);
   }
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
 export function validateArgv(argv: readonly string[]): readonly string[] {
-  if (!Array.isArray(argv) || argv.length === 0) throw new TransportError("远端命令不能为空");
+  if (!Array.isArray(argv) || argv.length === 0) {
+    throw new TransportError("Remote command must not be empty");
+  }
   const result = argv.map((value) => {
     if (typeof value !== "string" || value.length === 0 || hasControl(value)) {
-      throw new TransportError(`远端命令参数不合法: ${JSON.stringify(value)}`);
+      throw new TransportError(`Invalid remote command argument: ${JSON.stringify(value)}`);
     }
     return value;
   });
@@ -2163,7 +2211,9 @@ function environmentAssignments(
   const entries = Object.entries(environment);
   for (const [name, value] of entries) {
     if (!ENV_NAME_RE.test(name) || typeof value !== "string" || hasControl(value)) {
-      throw new TransportError(`远端命令环境变量不合法: ${JSON.stringify(name)}`);
+      throw new TransportError(
+        `Invalid remote command environment variable: ${JSON.stringify(name)}`,
+      );
     }
   }
   entries.sort(([left], [right]) => {
@@ -2180,27 +2230,27 @@ function environmentAssignments(
 
 function appUser(value: string): string {
   if (typeof value !== "string" || value === "root" || !APP_USER_RE.test(value)) {
-    throw new PreflightError("run_as 必须是规范的非 root Linux 用户");
+    throw new PreflightError("run_as must be a canonical non-root Linux user");
   }
   return value;
 }
 
 function requiredRunAs(value: string | undefined): string {
-  if (value === undefined) throw new PreflightError("managed App 调用缺少 run_as");
+  if (value === undefined) throw new PreflightError("managed App invocation is missing run_as");
   return appUser(value);
 }
 
 function parseUid(output: string, label: string): number {
   const text = output.trim();
-  if (!/^(?:0|[1-9][0-9]*)$/u.test(text)) throw new PreflightError(`${label}输出不合法`);
+  if (!/^(?:0|[1-9][0-9]*)$/u.test(text)) throw new PreflightError(`Invalid ${label} output`);
   const uid = Number(text);
-  if (!Number.isSafeInteger(uid)) throw new PreflightError(`${label}输出不合法`);
+  if (!Number.isSafeInteger(uid)) throw new PreflightError(`Invalid ${label} output`);
   return uid;
 }
 
 function parsePositiveUid(output: string, label: string): number {
   const uid = parseUid(output, label);
-  if (uid <= 0) throw new PreflightError(`${label}必须大于 0`);
+  if (uid <= 0) throw new PreflightError(`${label} must be greater than 0`);
   return uid;
 }
 
@@ -2223,19 +2273,25 @@ function assertFrameworkUpdater(workspace: string, path: string): void {
   const relative = path.slice(`${workspace}/`.length);
   const escaped = REMOTE_CONFIG_UPDATER_BUNDLE_PATH.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
   if (!new RegExp(`^deployment-[0-9a-f]{64}/scripts/${escaped}$`, "u").test(relative)) {
-    throw new PreflightError("框架配置 updater 必须来自已验证部署包的保留成员");
+    throw new PreflightError(
+      "Framework config updater must come from a reserved member of the verified deployment bundle",
+    );
   }
 }
 
 function validateSecretNames(values: readonly string[], label: string): readonly string[] {
-  if (!Array.isArray(values)) throw new PreflightError(`${label}秘密声明必须是列表`);
+  if (!Array.isArray(values)) {
+    throw new PreflightError(`${label} secret declarations must be a list`);
+  }
   const seen = new Set<string>();
   const result: string[] = [];
   for (const value of values) {
     if (typeof value !== "string" || !SECRET_NAME_RE.test(value)) {
-      throw new PreflightError(`${label}秘密名称不合法`);
+      throw new PreflightError(`Invalid ${label} secret name`);
     }
-    if (seen.has(value)) throw new PreflightError(`${label}秘密声明重复: ${value}`);
+    if (seen.has(value)) {
+      throw new PreflightError(`Duplicate ${label} secret declaration: ${value}`);
+    }
     seen.add(value);
     result.push(value);
   }
@@ -2247,7 +2303,7 @@ function lockComponent(value: string, label: string): string {
     typeof value !== "string" || value.length === 0 || value.length > 128 ||
     !/^[A-Za-z0-9_@%+=,:.-]+$/u.test(value)
   ) {
-    throw new PreflightError(`${label}锁键不合法`);
+    throw new PreflightError(`Invalid ${label} lock key`);
   }
   return value;
 }
@@ -2263,7 +2319,7 @@ function pollDelay(milliseconds: number): Promise<void> {
 
 function environmentVersionsResource(value: string): string {
   if (typeof value !== "string" || !ENVIRONMENT_RESOURCE_RE.test(value)) {
-    throw new TransportError(`环境应用名称不合法: ${JSON.stringify(value)}`);
+    throw new TransportError(`Invalid environment app name: ${JSON.stringify(value)}`);
   }
   return value;
 }
@@ -2280,7 +2336,7 @@ function safeRemotePath(value: string): string {
     typeof value !== "string" || !SAFE_REMOTE_PATH_RE.test(value) || value === "/" ||
     value.startsWith("//") || posix.normalize(value) !== value || value.split("/").includes("..")
   ) {
-    throw new TransportError(`远端路径不安全: ${JSON.stringify(value)}`);
+    throw new TransportError(`Unsafe remote path: ${JSON.stringify(value)}`);
   }
   return value;
 }
@@ -2288,7 +2344,7 @@ function safeRemotePath(value: string): string {
 function workspaceMember(workspace: string, rawPath: string, label: string): string {
   const path = safeRemotePath(rawPath);
   if (!path.startsWith(`${workspace}/`)) {
-    throw new TransportError(`${label}必须位于当前步骤工作目录内: ${path}`);
+    throw new TransportError(`${label} must be inside the current step workspace: ${path}`);
   }
   return path;
 }
@@ -2300,7 +2356,7 @@ function workspaceMemberOfAny(
 ): string {
   const path = safeRemotePath(rawPath);
   if (![...workspaces].some((workspace) => path.startsWith(`${workspace}/`))) {
-    throw new TransportError(`${label}必须位于当前会话工作目录内: ${path}`);
+    throw new TransportError(`${label} must be inside the current session workspace: ${path}`);
   }
   return path;
 }
@@ -2310,11 +2366,13 @@ function runtimeExecutable(value: string): string {
     typeof value !== "string" || value.length === 0 || value.trim() !== value ||
     value.includes(",") || value.includes("\\") || hasControl(value) || /\s/.test(value)
   ) {
-    throw new TransportError(`脚本运行时命令不合法: ${JSON.stringify(value)}`);
+    throw new TransportError(`Invalid script runtime command: ${JSON.stringify(value)}`);
   }
   if (!value.includes("/")) {
     if (!COMMAND_RE.test(value) || value === "." || value === "..") {
-      throw new TransportError(`脚本运行时裸命令名不合法: ${JSON.stringify(value)}`);
+      throw new TransportError(
+        `Invalid script runtime bare command name: ${JSON.stringify(value)}`,
+      );
     }
     return value;
   }
@@ -2323,21 +2381,21 @@ function runtimeExecutable(value: string): string {
 
 function safeConfigName(value: string): string {
   if (typeof value !== "string" || !ENVIRONMENT_RESOURCE_RE.test(value)) {
-    throw new TransportError(`配置名称不合法: ${JSON.stringify(value)}`);
+    throw new TransportError(`Invalid config name: ${JSON.stringify(value)}`);
   }
   return value;
 }
 
 function userOrGroup(value: string, label: string): string {
   if (typeof value !== "string" || !USER_RE.test(value)) {
-    throw new TransportError(`${label} 不合法: ${JSON.stringify(value)}`);
+    throw new TransportError(`Invalid ${label}: ${JSON.stringify(value)}`);
   }
   return value;
 }
 
 function permissionPath(value: string): string {
   const path = safeRemotePath(value);
-  if (path.includes(",")) throw new TransportError("Deno 权限路径不能包含逗号");
+  if (path.includes(",")) throw new TransportError("Deno permission paths must not contain commas");
   return path;
 }
 
@@ -2346,17 +2404,19 @@ function permissionValues(
   label: string,
   absolute: boolean,
 ): readonly string[] {
-  if (!Array.isArray(values)) throw new TransportError(`${label}必须是字符串序列`);
+  if (!Array.isArray(values)) throw new TransportError(`${label} must be a sequence of strings`);
   const result: string[] = [];
   for (const value of values) {
     if (
       typeof value !== "string" || value.length === 0 || value.trim() !== value ||
       value.includes(",") || /\s/.test(value) || hasControl(value)
     ) {
-      throw new TransportError(`${label}值不合法: ${JSON.stringify(value)}`);
+      throw new TransportError(`Invalid ${label} value: ${JSON.stringify(value)}`);
     }
     if (absolute) safeRemotePath(value);
-    if (result.includes(value)) throw new TransportError(`${label}包含重复值: ${value}`);
+    if (result.includes(value)) {
+      throw new TransportError(`${label} contains a duplicate value: ${value}`);
+    }
     result.push(value);
   }
   return Object.freeze(result);
@@ -2373,32 +2433,38 @@ function filePermissionPaths(
 
 function validateNetPermission(value: string): void {
   if (["//", "@", "/", "*", "?", "#", "\\"].some((marker) => value.includes(marker))) {
-    throw new TransportError(`Deno net 权限不是合法主机或 IP: ${JSON.stringify(value)}`);
+    throw new TransportError(
+      `Deno net permission is not a valid host or IP: ${JSON.stringify(value)}`,
+    );
   }
   let port: string | undefined;
   if (value.startsWith("[")) {
     const match = /^\[([0-9A-Fa-f:]+)\](?::([0-9]+))?$/.exec(value);
     if (!match || !match[1].includes(":")) {
-      throw new TransportError(`Deno net 权限 IPv6 格式不合法: ${JSON.stringify(value)}`);
+      throw new TransportError(`Invalid Deno net permission IPv6 format: ${JSON.stringify(value)}`);
     }
     port = match[2];
   } else if ((value.match(/:/g) ?? []).length > 1) {
     if (!/^[0-9A-Fa-f:]+$/.test(value)) {
-      throw new TransportError(`Deno net 权限 IPv6 地址不合法: ${JSON.stringify(value)}`);
+      throw new TransportError(
+        `Invalid Deno net permission IPv6 address: ${JSON.stringify(value)}`,
+      );
     }
   } else {
     const match = /^([A-Za-z0-9.-]+)(?::([0-9]+))?$/.exec(value);
-    if (!match) throw new TransportError(`Deno net 权限主机格式不合法: ${JSON.stringify(value)}`);
+    if (!match) {
+      throw new TransportError(`Invalid Deno net permission host format: ${JSON.stringify(value)}`);
+    }
     port = match[2];
   }
   if (port !== undefined && (Number(port) < 1 || Number(port) > 65535)) {
-    throw new TransportError(`Deno net 权限端口不合法: ${JSON.stringify(value)}`);
+    throw new TransportError(`Invalid Deno net permission port: ${JSON.stringify(value)}`);
   }
 }
 
 function fileMode(value: number): number {
   if (!Number.isInteger(value) || value < 0 || value > 0o777) {
-    throw new TransportError(`远端文件 mode 不合法: ${JSON.stringify(value)}`);
+    throw new TransportError(`Invalid remote file mode: ${JSON.stringify(value)}`);
   }
   return value;
 }
@@ -2413,24 +2479,26 @@ function localExecutable(value: string, label: string): string {
   if (value.startsWith("/") && !value.includes("\\") && !hasControl(value) && !/\s/.test(value)) {
     return value;
   }
-  throw new TypeError(`${label} 可执行文件名不合法`);
+  throw new TypeError(`Invalid executable file name for ${label}`);
 }
 
 function sshUser(value: string): string {
-  if (!USER_RE.test(value)) throw new PreflightError(`SSH 用户名不合法: ${JSON.stringify(value)}`);
+  if (!USER_RE.test(value)) {
+    throw new PreflightError(`Invalid SSH user name: ${JSON.stringify(value)}`);
+  }
   return value;
 }
 
 function sshAddress(value: string): string {
   if (!ADDRESS_RE.test(value) || value.startsWith("-") || hasControl(value)) {
-    throw new PreflightError(`SSH 地址不合法: ${JSON.stringify(value)}`);
+    throw new PreflightError(`Invalid SSH address: ${JSON.stringify(value)}`);
   }
   return value;
 }
 
 function sshPort(value: number): number {
   if (!Number.isInteger(value) || value < 1 || value > 65535) {
-    throw new PreflightError(`SSH 端口不合法: ${value}`);
+    throw new PreflightError(`Invalid SSH port: ${value}`);
   }
   return value;
 }
@@ -2439,21 +2507,25 @@ async function regularLocalFile(rawPath: string, label: string): Promise<string>
   try {
     const path = await Deno.realPath(resolve(rawPath));
     const info = await Deno.lstat(path);
-    if (!info.isFile || info.isSymlink) throw new PreflightError(`${label} 不是普通文件: ${path}`);
+    if (!info.isFile || info.isSymlink) {
+      throw new PreflightError(`${label} is not a regular file: ${path}`);
+    }
     return path;
   } catch (cause) {
     if (cause instanceof PreflightError) throw cause;
-    throw new PreflightError(`${label} 不存在或不可访问`, { cause });
+    throw new PreflightError(`${label} does not exist or is not accessible`, { cause });
   }
 }
 
 function positiveTimeout(value: number, label: string): number {
-  if (!Number.isFinite(value) || value <= 0) throw new TypeError(`${label}超时必须是正数`);
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new TypeError(`${label} timeout must be a positive number`);
+  }
   return value;
 }
 
 function throwIfAborted(signal?: AbortSignal): void {
-  if (signal?.aborted) throw new CancelledError("部署已取消");
+  if (signal?.aborted) throw new CancelledError("Deployment cancelled");
 }
 
 function requireSuccess(result: CommandResult, operation: string): void {

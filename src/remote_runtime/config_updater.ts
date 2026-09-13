@@ -40,37 +40,42 @@ export interface UpdateConfigOptions {
 }
 
 export async function updateConfig(options: UpdateConfigOptions): Promise<void> {
-  const input = safeAbsoluteFile(options.input, "配置骨架");
-  const bindingsPath = safeAbsoluteFile(options.bindings, "绑定清单");
-  const secretDir = safeAbsoluteDirectory(options.secrets, "秘密目录");
-  const secretRoot = safeAbsoluteDirectory(options.secretRoot, "稳定秘密目录");
-  const output = safeAbsoluteFile(options.output, "配置候选");
+  const input = safeAbsoluteFile(options.input, "config skeleton");
+  const bindingsPath = safeAbsoluteFile(options.bindings, "binding manifest");
+  const secretDir = safeAbsoluteDirectory(options.secrets, "secret directory");
+  const secretRoot = safeAbsoluteDirectory(options.secretRoot, "stable secret directory");
+  const output = safeAbsoluteFile(options.output, "config candidate");
   if (
     output === input || output === bindingsPath || output.startsWith(`${secretDir}/`) ||
     output.startsWith(`${secretRoot}/`)
-  ) throw new Error("配置候选路径与只读输入冲突");
+  ) throw new Error("Config candidate path conflicts with a read-only input");
 
   const skeleton = decodeUtf8(
-    await readRegularFile(input, MAX_CONFIG_BYTES, "配置骨架"),
-    "配置骨架",
+    await readRegularFile(input, MAX_CONFIG_BYTES, "config skeleton"),
+    "config skeleton",
   );
   const manifest = parseManifest(
-    decodeUtf8(await readRegularFile(bindingsPath, MAX_BINDINGS_BYTES, "绑定清单"), "绑定清单"),
+    decodeUtf8(
+      await readRegularFile(bindingsPath, MAX_BINDINGS_BYTES, "binding manifest"),
+      "binding manifest",
+    ),
     options.format,
   );
   if (options.format === "nginx") {
     if (manifest.bindings.length > 0) {
-      throw new Error("NGINX 配置不支持秘密绑定");
+      throw new Error("NGINX config does not support secret bindings");
     }
     if (skeleton.includes(RESERVED_MARKER)) {
-      throw new Error("NGINX 配置包含框架保留占位符");
+      throw new Error("NGINX config contains a framework-reserved placeholder");
     }
     const invalid = /\$\{([^{}]*)\}/.exec(skeleton);
     if (invalid !== null) {
-      throw new Error(`NGINX 配置不支持占位符: \${${invalid?.[1] ?? ""}}`);
+      throw new Error(`NGINX config does not support the placeholder: \${${invalid?.[1] ?? ""}}`);
     }
     const content = encoder.encode(skeleton);
-    if (content.byteLength > MAX_CONFIG_BYTES) throw new Error("配置候选超过大小限制");
+    if (content.byteLength > MAX_CONFIG_BYTES) {
+      throw new Error("Config candidate exceeds the size limit");
+    }
     await Deno.writeFile(output, content, { createNew: true, mode: 0o600 });
     await Deno.chmod(output, 0o600);
     return;
@@ -81,20 +86,30 @@ export async function updateConfig(options: UpdateConfigOptions): Promise<void> 
     replaceMarkers(parsed, binding, raw);
   }
   const rendered = stringifyStructured(parsed, options.format);
-  if (rendered.includes(RESERVED_MARKER)) throw new Error("配置候选仍包含秘密占位符");
+  if (rendered.includes(RESERVED_MARKER)) {
+    throw new Error("Config candidate still contains secret placeholders");
+  }
   validateRendered(rendered, options.format);
   const content = encoder.encode(rendered);
-  if (content.byteLength > MAX_CONFIG_BYTES) throw new Error("配置候选超过大小限制");
+  if (content.byteLength > MAX_CONFIG_BYTES) {
+    throw new Error("Config candidate exceeds the size limit");
+  }
   await Deno.writeFile(output, content, { createNew: true, mode: 0o600 });
   await Deno.chmod(output, 0o600);
 }
 
 export async function validateCandidate(path: string): Promise<void> {
   const content = decodeUtf8(
-    await readRegularFile(safeAbsoluteFile(path, "配置候选"), MAX_CONFIG_BYTES, "配置候选"),
-    "配置候选",
+    await readRegularFile(
+      safeAbsoluteFile(path, "config candidate"),
+      MAX_CONFIG_BYTES,
+      "config candidate",
+    ),
+    "config candidate",
   );
-  if (content.includes(RESERVED_MARKER)) throw new Error("配置候选仍包含秘密占位符");
+  if (content.includes(RESERVED_MARKER)) {
+    throw new Error("Config candidate still contains secret placeholders");
+  }
 }
 
 async function bindingValue(
@@ -104,22 +119,24 @@ async function bindingValue(
 ): Promise<string> {
   if (binding.kind === "file") {
     if (binding.encoding !== "path" || binding.type !== "string") {
-      throw new Error(`秘密 ${binding.secret} 的 file 绑定只能是字符串路径`);
+      throw new Error(`file binding for secret ${binding.secret} must be a string path`);
     }
     const path = `${secretRoot}/${binding.secret}`;
     const info = await Deno.stat(path);
-    if (!info.isFile) throw new Error(`秘密 ${binding.secret} 的文件路径不是普通文件`);
+    if (!info.isFile) {
+      throw new Error(`file path for secret ${binding.secret} is not a regular file`);
+    }
     return path;
   }
-  if (binding.encoding !== "utf8") throw new Error(`秘密 ${binding.secret} 编码不合法`);
+  if (binding.encoding !== "utf8") throw new Error(`Invalid encoding for secret ${binding.secret}`);
   return typedValue(
     decodeUtf8(
       await readRegularFile(
         `${secretDir}/${binding.secret}`,
         MAX_CONFIG_BYTES,
-        `秘密 ${binding.secret}`,
+        `secret ${binding.secret}`,
       ),
-      `秘密 ${binding.secret}`,
+      `secret ${binding.secret}`,
     ),
     binding.type,
   );
@@ -130,22 +147,22 @@ function parseManifest(text: string, format: ConfigFormat): BindingManifest {
   try {
     value = JSON.parse(text);
   } catch {
-    throw new Error("绑定清单不是合法 JSON");
+    throw new Error("Binding manifest is not valid JSON");
   }
-  const root = record(value, "绑定清单");
-  exactKeys(root, ["schema_version", "config", "format", "bindings"], "绑定清单");
+  const root = record(value, "binding manifest");
+  exactKeys(root, ["schema_version", "config", "format", "bindings"], "binding manifest");
   if (root.schema_version !== 1 || root.format !== format || typeof root.config !== "string") {
-    throw new Error("绑定清单身份不匹配");
+    throw new Error("Binding manifest identity does not match");
   }
   if (!Array.isArray(root.bindings) || root.bindings.length > 1024) {
-    throw new Error("绑定清单 bindings 不合法");
+    throw new Error("Invalid binding manifest bindings");
   }
   const bindings = root.bindings.map((raw, index): Binding => {
-    const item = record(raw, `绑定 ${index}`);
+    const item = record(raw, `binding ${index}`);
     exactKeys(
       item,
       ["secret", "kind", "encoding", "type", "marker", "text_marker"],
-      `绑定 ${index}`,
+      `binding ${index}`,
     );
     if (
       typeof item.secret !== "string" || !SECRET_NAME_RE.test(item.secret) ||
@@ -156,12 +173,12 @@ function parseManifest(text: string, format: ConfigFormat): BindingManifest {
       typeof item.marker !== "string" || !MARKER_RE.test(item.marker) ||
       typeof item.text_marker !== "string" || !MARKER_RE.test(item.text_marker) ||
       item.marker === item.text_marker
-    ) throw new Error(`绑定 ${index} 不合法`);
+    ) throw new Error(`Invalid binding ${index}`);
     if (item.kind === "file" && (item.encoding !== "path" || item.type !== "string")) {
-      throw new Error(`绑定 ${index} 的 file 秘密只能是字符串路径`);
+      throw new Error(`file secret for binding ${index} must be a string path`);
     }
     if (item.kind === "value" && item.encoding !== "utf8") {
-      throw new Error(`绑定 ${index} 的 value 秘密只能是 utf8`);
+      throw new Error(`value secret for binding ${index} must be utf8`);
     }
     return {
       secret: item.secret,
@@ -178,7 +195,9 @@ function parseManifest(text: string, format: ConfigFormat): BindingManifest {
 
 function replaceMarkers(value: unknown, binding: Binding, raw: string): void {
   visit(value);
-  if (!binding.found) throw new Error(`秘密 ${binding.secret} 的 marker 未出现在配置中`);
+  if (!binding.found) {
+    throw new Error(`marker for secret ${binding.secret} does not appear in the config`);
+  }
 
   function visit(item: unknown): void {
     if (Array.isArray(item)) {
@@ -198,12 +217,14 @@ function replaceMarkers(value: unknown, binding: Binding, raw: string): void {
         binding.found = true;
       } else if (child.includes(binding.textMarker)) {
         if (binding.type !== "string") {
-          throw new Error(`${binding.secret} 的非字符串类型只能作为完整值占位符`);
+          throw new Error(
+            `non-string type for ${binding.secret} can only be a whole-value placeholder`,
+          );
         }
         record[key] = child.replaceAll(binding.textMarker, raw);
         binding.found = true;
       } else if (child.includes(binding.marker)) {
-        throw new Error(`${binding.secret} 的整值 marker 不能嵌入字符串`);
+        throw new Error(`whole-value marker for ${binding.secret} cannot be embedded in a string`);
       }
     }
   }
@@ -224,7 +245,7 @@ function parseStructured(text: string, format: ConfigFormat): Record<string, unk
     if (format === "toml") return parseToml(text) as Record<string, unknown>;
     return parseIni(text) as Record<string, unknown>;
   } catch (cause) {
-    throw new Error(`${format.toUpperCase()} 配置骨架无法解析`, { cause });
+    throw new Error(`Failed to parse the ${format.toUpperCase()} config skeleton`, { cause });
   }
 }
 
@@ -237,28 +258,34 @@ function stringifyStructured(value: unknown, format: ConfigFormat): string {
     if (format === "toml") return stringifyToml(value as Record<string, unknown>);
     return stringifyIni(value);
   } catch (cause) {
-    throw new Error(`无法序列化 ${format.toUpperCase()} 配置`, { cause });
+    throw new Error(`Failed to serialize ${format.toUpperCase()} config`, { cause });
   }
 }
 
 function typedValue(raw: string, type: ValueType): string {
   if (type === "string") {
-    if (raw.length === 0) throw new Error("字符串秘密不能为空");
+    if (raw.length === 0) throw new Error("String secret must not be empty");
     return raw;
   }
   if (type === "boolean") {
-    if (raw !== "true" && raw !== "false") throw new Error("秘密值不符合 boolean 类型");
+    if (raw !== "true" && raw !== "false") {
+      throw new Error("Secret value does not match type boolean");
+    }
     return raw;
   }
   if (type === "integer") {
-    if (!/^-?(?:0|[1-9][0-9]*)$/u.test(raw)) throw new Error("秘密值不符合 integer 类型");
-    if (!Number.isSafeInteger(Number(raw))) throw new Error("秘密整数超出安全范围");
+    if (!/^-?(?:0|[1-9][0-9]*)$/u.test(raw)) {
+      throw new Error("Secret value does not match type integer");
+    }
+    if (!Number.isSafeInteger(Number(raw))) {
+      throw new Error("Secret integer exceeds the safe range");
+    }
     return raw;
   }
   if (!/^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?$/u.test(raw)) {
-    throw new Error("秘密值不符合 number 类型");
+    throw new Error("Secret value does not match type number");
   }
-  if (!Number.isFinite(Number(raw))) throw new Error("秘密数字超出有限范围");
+  if (!Number.isFinite(Number(raw))) throw new Error("Secret number is outside the finite range");
   return raw;
 }
 
@@ -269,13 +296,13 @@ function validateRendered(text: string, format: ConfigFormat): void {
     else if (format === "toml") parseToml(text);
     else parseIni(text);
   } catch (cause) {
-    throw new Error(`更新后的 ${format.toUpperCase()} 配置无法解析`, { cause });
+    throw new Error(`Failed to parse the updated ${format.toUpperCase()} config`, { cause });
   }
 }
 
 function record(value: unknown, label: string): Record<string, unknown> {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error(`${label} 必须是对象`);
+    throw new Error(`${label} must be an object`);
   }
   return value as Record<string, unknown>;
 }
@@ -288,7 +315,7 @@ function exactKeys(
   const actual = Object.keys(value).sort();
   const wanted = [...expected].sort();
   if (actual.length !== wanted.length || actual.some((key, index) => key !== wanted[index])) {
-    throw new Error(`${label} 包含未知或缺失字段`);
+    throw new Error(`${label} contains unknown or missing fields`);
   }
 }
 
@@ -296,7 +323,7 @@ function decodeUtf8(bytes: Uint8Array, label: string): string {
   try {
     return decoder.decode(bytes);
   } catch {
-    throw new Error(`${label} 不是合法 UTF-8`);
+    throw new Error(`${label} is not valid UTF-8`);
   }
 }
 
@@ -305,14 +332,14 @@ async function readRegularFile(path: string, maxBytes: number, label: string): P
   try {
     info = await Deno.lstat(path);
   } catch {
-    throw new Error(`${label} 不可读`);
+    throw new Error(`${label} is not readable`);
   }
   if (!info.isFile || info.isSymlink || info.size > maxBytes) {
-    throw new Error(`${label} 不是受限普通文件`);
+    throw new Error(`${label} is not a restricted regular file`);
   }
   const bytes = await Deno.readFile(path);
   if (bytes.byteLength !== info.size || bytes.byteLength > maxBytes) {
-    throw new Error(`${label} 在读取时发生变化`);
+    throw new Error(`${label} changed while being read`);
   }
   return bytes;
 }
@@ -330,7 +357,7 @@ function requireAbsolute(path: string, label: string, directory: boolean): strin
     typeof path !== "string" || !path.startsWith("/") || path.startsWith("//") ||
     path.includes("\\") || /[\0\r\n]/u.test(path) || path.split("/").includes("..") ||
     (directory ? path === "/" || path.endsWith("/") : path.endsWith("/"))
-  ) throw new Error(`${label} 路径不安全`);
+  ) throw new Error(`${label} path is unsafe`);
   return path;
 }
 
@@ -343,27 +370,27 @@ export function parseArgs(args: readonly string[]): {
     const key = args[index];
     const value = args[index + 1];
     if (!key?.startsWith("--") || value === undefined || values.has(key)) {
-      throw new Error("配置更新器参数不合法");
+      throw new Error("Invalid config updater arguments");
     }
     values.set(key, value);
   }
   if (command === "validate") {
     if (values.size !== 1 || !values.has("--input")) {
-      throw new Error("配置更新器参数不合法");
+      throw new Error("Invalid config updater arguments");
     }
     return { command, input: values.get("--input") };
   }
-  if (command !== "update") throw new Error("配置更新器命令不合法");
+  if (command !== "update") throw new Error("Invalid config updater command");
   const required = ["--format", "--input", "--bindings", "--secrets", "--secret-root", "--output"];
   if (values.size !== required.length || !required.every((key) => values.has(key))) {
-    throw new Error("配置更新器参数不合法");
+    throw new Error("Invalid config updater arguments");
   }
   const format = values.get("--format");
   if (
     format !== "yaml" && format !== "json" && format !== "toml" && format !== "ini" &&
     format !== "nginx"
   ) {
-    throw new Error("配置更新器参数不合法");
+    throw new Error("Invalid config updater arguments");
   }
   return {
     command,
@@ -382,7 +409,7 @@ if (import.meta.main) {
     if (parsed.command === "validate") await validateCandidate(parsed.input!);
     else await updateConfig(parsed as UpdateConfigOptions);
   } catch (error) {
-    console.error(error instanceof Error ? error.message : "配置更新失败");
+    console.error(error instanceof Error ? error.message : "Config update failed");
     Deno.exit(1);
   }
 }

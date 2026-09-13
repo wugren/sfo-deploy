@@ -146,27 +146,27 @@ Deno.test("unit/environment management config: conflicts and invalid declaration
     [
       "scripts and lifecycle conflict",
       `schema_version: 1\nname: runtime\nversion: "1"\nscripts:\n  check: [{path: scripts/action.ts, permissions: {run: [], net: []}}]\ninstall:\n  kind: package\n  packages: [nginx]\n`,
-      "只能选择",
+      "must choose exactly one of",
     ],
     [
       "manager without install",
       `schema_version: 1\nname: runtime\nversion: "1"\nmanager:\n  kind: system\n  name: nginx\n`,
-      "install 是新生命周期的必需字段",
+      "install is a required field of the new lifecycle",
     ],
     [
       "invalid package name",
       `schema_version: 1\nname: runtime\nversion: "1"\ninstall:\n  kind: package\n  packages: ["nginx;rm"]\n`,
-      "不是合法包名",
+      "is not a valid package name",
     ],
     [
       "invalid install kind",
       `schema_version: 1\nname: runtime\nversion: "1"\ninstall:\n  kind: wget\n`,
-      "install.kind 使用不支持的值",
+      "install.kind uses an unsupported value",
     ],
     [
       "invalid manager tool",
       `schema_version: 1\nname: runtime\nversion: "1"\ninstall:\n  kind: package\n  packages: [nginx]\nmanager:\n  kind: system\n  name: nginx\n  tool: rc-service\n`,
-      "manager.tool 使用不支持的值",
+      "manager.tool uses an unsupported value",
     ],
     [
       "script manager without stop",
@@ -181,7 +181,7 @@ manager:
   start: {path: scripts/action.ts, permissions: {run: [], net: []}}
   restart: {path: scripts/action.ts, permissions: {run: [], net: []}}
 `,
-      "缺少字段: stop",
+      "is missing fields: stop",
     ],
   ];
   for (const [label, lifecycle, message] of cases) {

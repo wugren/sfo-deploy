@@ -15,7 +15,7 @@ const requiredFiles = [
 for (const file of requiredFiles) {
   const text = await Deno.readTextFile(file);
   if (text.trim().length === 0) {
-    console.error(`${file} 不能为空`);
+    console.error(`${file} must not be empty`);
     Deno.exit(1);
   }
 }
@@ -33,7 +33,7 @@ for (
   ]
 ) {
   if (!guide.includes(token)) {
-    console.error(`配置指南缺少契约说明: ${token}`);
+    console.error(`configuration guide is missing the contract statement: ${token}`);
     Deno.exit(1);
   }
 }
@@ -50,7 +50,7 @@ for (
   ]
 ) {
   if (!runtime.includes(token)) {
-    console.error(`环境运行时缺少契约实现: ${token}`);
+    console.error(`environment runtime is missing the contract implementation: ${token}`);
     Deno.exit(1);
   }
 }
@@ -66,7 +66,7 @@ for (
   ]
 ) {
   if (!types.includes(token)) {
-    console.error(`类型契约缺少: ${token}`);
+    console.error(`type contract is missing: ${token}`);
     Deno.exit(1);
   }
 }

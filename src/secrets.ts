@@ -40,20 +40,22 @@ function entries<T>(
 
 function pathText(value: string | URL, label: string): string {
   if (value instanceof URL) {
-    if (value.protocol !== "file:") throw new ConfigurationError(`${label} 必须是本地文件路径`);
+    if (value.protocol !== "file:") {
+      throw new ConfigurationError(`${label} must be a local file path`);
+    }
     return decodeURIComponent(value.pathname);
   }
   if (typeof value !== "string" || value.length === 0) {
-    throw new ConfigurationError(`${label} 必须是本地文件路径`);
+    throw new ConfigurationError(`${label} must be a local file path`);
   }
   if (value === "~" || value.startsWith("~/")) {
     let home: string | undefined;
     try {
       home = Deno.env.get(Deno.build.os === "windows" ? "USERPROFILE" : "HOME");
     } catch (cause) {
-      throw new ConfigurationError(`${label} 无法展开用户主目录`, { cause });
+      throw new ConfigurationError(`${label} cannot expand the user home directory`, { cause });
     }
-    if (!home) throw new ConfigurationError(`${label} 无法展开用户主目录`);
+    if (!home) throw new ConfigurationError(`${label} cannot expand the user home directory`);
     return value === "~" ? home : join(home, value.slice(2));
   }
   return value;
@@ -67,7 +69,7 @@ export function validateSecretName(name: unknown): string {
     } catch {
       rendered = String(name);
     }
-    throw new ConfigurationError(`敏感输入名称不合法: ${rendered}`);
+    throw new ConfigurationError(`Invalid sensitive input name: ${rendered}`);
   }
   return name;
 }
@@ -75,7 +77,9 @@ export function validateSecretName(name: unknown): string {
 /** 校验并归一秘密类型（值密钥或文件密钥）。 */
 export function validateSecretKind(value: unknown): SecretKind {
   if (typeof value !== "string" || !SECRET_KIND_SET.has(value)) {
-    throw new ConfigurationError(`敏感输入类型只支持 value 或 file: ${JSON.stringify(value)}`);
+    throw new ConfigurationError(
+      `Sensitive input type supports only value or file: ${JSON.stringify(value)}`,
+    );
   }
   return value as SecretKind;
 }
@@ -91,18 +95,18 @@ async function requireSecretSourceFile(path: string): Promise<void> {
     info = await Deno.lstat(path);
   } catch (cause) {
     if (cause instanceof Deno.errors.NotFound) {
-      throw new ConfigurationError(`缺少集群秘密来源 ${path}`);
+      throw new ConfigurationError(`Missing cluster secret source ${path}`);
     }
-    throw new ConfigurationError(`无法读取集群秘密来源 ${path}`);
+    throw new ConfigurationError(`Failed to read cluster secret source ${path}`);
   }
   if (!info.isFile || info.isSymlink) {
-    throw new ConfigurationError(`集群秘密来源必须是普通文件: ${path}`);
+    throw new ConfigurationError(`Cluster secret source must be a regular file: ${path}`);
   }
   if (
     Deno.build.os !== "windows" && typeof info.mode === "number" &&
     (info.mode & 0o777) !== 0o600
   ) {
-    throw new ConfigurationError(`集群秘密来源权限必须是 0600: ${path}`);
+    throw new ConfigurationError(`Cluster secret source permissions must be 0600: ${path}`);
   }
 }
 
@@ -117,16 +121,18 @@ export async function loadClusterSecretSource(
   try {
     text = await Deno.readTextFile(sourcePath);
   } catch (cause) {
-    throw new ConfigurationError(`无法读取集群秘密来源 ${sourcePath}`, { cause });
+    throw new ConfigurationError(`Failed to read cluster secret source ${sourcePath}`, { cause });
   }
   let value: unknown;
   try {
     value = parse(text, { allowDuplicateKeys: false });
   } catch {
-    throw new ConfigurationError(`集群秘密来源不是合法 YAML: ${sourcePath}`);
+    throw new ConfigurationError(`Cluster secret source is not valid YAML: ${sourcePath}`);
   }
   if (value === null || value === undefined || typeof value !== "object" || Array.isArray(value)) {
-    throw new ConfigurationError(`集群秘密来源顶层必须是映射: ${sourcePath}`);
+    throw new ConfigurationError(
+      `Cluster secret source top level must be a mapping: ${sourcePath}`,
+    );
   }
   const rawEntries = Object.entries(value as Record<string, unknown>);
   const sourceDirectory = dirname(sourcePath);
@@ -135,33 +141,35 @@ export async function loadClusterSecretSource(
   const fileSecrets = new Map<string, string>();
   const missing = [...cluster.secrets.keys()].filter((name) => !(name in (value as object)));
   if (missing.length > 0) {
-    throw new ConfigurationError(`集群秘密来源缺少密钥: ${missing.join(", ")}`);
+    throw new ConfigurationError(`Cluster secret source is missing secrets: ${missing.join(", ")}`);
   }
   for (const [rawName, rawValue] of rawEntries) {
     const name = validateSecretName(rawName);
     const declaration = cluster.secrets.get(name);
     if (declaration === undefined) {
-      throw new ConfigurationError(`集群秘密来源包含未声明密钥: ${name}`);
+      throw new ConfigurationError(`Cluster secret source contains an undeclared secret: ${name}`);
     }
     if (typeof rawValue !== "string" || rawValue.length === 0) {
-      throw new ConfigurationError(`集群秘密来源中 ${name} 必须是非空字符串`);
+      throw new ConfigurationError(`Cluster secret source ${name} must be a non-empty string`);
     }
     if (declaration.kind === "file") {
       if (isAbsolute(rawValue) || rawValue.includes("\\")) {
-        throw new ConfigurationError(`文件密钥 ${name} 必须是相对 POSIX 路径`);
+        throw new ConfigurationError(`File secret ${name} must be a relative POSIX path`);
       }
       if (rawValue.split("/").includes("..")) {
-        throw new ConfigurationError(`文件密钥 ${name} 路径不允许 ..`);
+        throw new ConfigurationError(`File secret ${name} path must not contain ..`);
       }
       const candidate = resolve(sourceDirectory, rawValue);
       let realPath: string;
       try {
         realPath = await Deno.realPath(candidate);
       } catch (cause) {
-        throw new PreflightError(`文件密钥 ${name} 来源不存在或不可访问`, { cause });
+        throw new PreflightError(`File secret ${name} source does not exist or is not accessible`, {
+          cause,
+        });
       }
       if (realPath === sourceDirectoryReal || !realPath.startsWith(`${sourceDirectoryReal}/`)) {
-        throw new PreflightError(`文件密钥 ${name} 路径不允许离开集群目录`);
+        throw new PreflightError(`File secret ${name} path must not leave the cluster directory`);
       }
       fileSecrets.set(name, realPath);
     } else {
@@ -188,16 +196,20 @@ function validateSecretValueType(
     /^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?$/u.test(value) &&
     Number.isFinite(Number(value))
   ) return;
-  throw new ConfigurationError(`密钥 ${name} 的值不符合 ${type} 类型`);
+  throw new ConfigurationError(`Secret ${name} value does not match type ${type}`);
 }
 
 function validateProvider(name: string, provider: unknown): ConfigSecretProvider {
   if (typeof provider === "string") return provider;
   if (typeof provider !== "function") {
-    throw new ConfigurationError(`配置密钥 ${name} 必须是字符串或零参数函数`);
+    throw new ConfigurationError(
+      `Config secret ${name} must be a string or a zero-argument function`,
+    );
   }
   if (provider.length > 0) {
-    throw new ConfigurationError(`配置密钥 ${name} 的延迟函数必须可用零参数调用`);
+    throw new ConfigurationError(
+      `Config secret ${name} deferred function must be callable with zero arguments`,
+    );
   }
   return provider as () => string | Promise<string>;
 }
@@ -211,7 +223,7 @@ export class ProjectBindings {
     const fileValues = new Map<string, string>();
     for (const [rawName, rawPath] of entries(options.fileSecrets)) {
       const name = validateSecretName(rawName);
-      fileValues.set(name, resolve(pathText(rawPath, `文件私钥 ${name} 的来源`)));
+      fileValues.set(name, resolve(pathText(rawPath, `source of file secret ${name}`)));
     }
     const configValues = new Map<string, ConfigSecretProvider>();
     for (const [rawName, provider] of entries(options.configSecrets)) {
@@ -228,18 +240,20 @@ export class ProjectBindings {
     for (const rawName of names) {
       const name = validateSecretName(rawName);
       if (Object.hasOwn(selected, name)) {
-        throw new ConfigurationError(`配置密钥选择包含重复名称: ${name}`);
+        throw new ConfigurationError(`Config secret selection contains a duplicate name: ${name}`);
       }
       const provider = this.configSecrets.get(name);
-      if (provider === undefined) throw new PreflightError(`项目未绑定配置密钥: ${name}`);
+      if (provider === undefined) {
+        throw new PreflightError(`Project has no config secret binding: ${name}`);
+      }
       let value: unknown;
       try {
         value = typeof provider === "function" ? await provider() : provider;
       } catch (cause) {
-        throw new PreflightError(`读取配置密钥 ${name} 失败`, { cause });
+        throw new PreflightError(`Failed to read config secret ${name}`, { cause });
       }
       if (typeof value !== "string" || value.length === 0) {
-        throw new PreflightError(`配置密钥 ${name} 必须解析为非空字符串`);
+        throw new PreflightError(`Config secret ${name} must resolve to a non-empty string`);
       }
       selected[name] = value;
     }
@@ -255,17 +269,21 @@ export class ProjectBindings {
   async resolveFileSecret(rawName: string): Promise<string> {
     const name = validateSecretName(rawName);
     const source = this.fileSecrets.get(name);
-    if (!source) throw new PreflightError(`项目未绑定文件私钥: ${name}`);
+    if (!source) throw new PreflightError(`Project has no file secret binding: ${name}`);
     let resolved: string;
     try {
       resolved = await Deno.realPath(source);
       const info = await Deno.stat(resolved);
-      if (!info.isFile) throw new PreflightError(`文件私钥 ${name} 的来源不是可读普通文件`);
+      if (!info.isFile) {
+        throw new PreflightError(`File secret ${name} source is not a readable regular file`);
+      }
       const file = await Deno.open(resolved, { read: true });
       file.close();
     } catch (cause) {
       if (cause instanceof PreflightError) throw cause;
-      throw new PreflightError(`文件私钥 ${name} 的来源不存在或不可访问`, { cause });
+      throw new PreflightError(`File secret ${name} source does not exist or is not accessible`, {
+        cause,
+      });
     }
     return resolved;
   }
@@ -276,7 +294,7 @@ export class ProjectBindings {
     try {
       return await Deno.readFile(path);
     } catch (cause) {
-      throw new PreflightError(`读取文件私钥 ${validateSecretName(name)} 失败`, { cause });
+      throw new PreflightError(`Failed to read file secret ${validateSecretName(name)}`, { cause });
     }
   }
 }
@@ -304,7 +322,7 @@ export function declaredSecretNamesForMachine(
   for (const declaration of declarations.values()) {
     const name = validateSecretName(declaration.name);
     if (declaration.kind !== "value" && declaration.kind !== "file") {
-      throw new PreflightError(`密钥 ${name} 的类型不合法`);
+      throw new PreflightError(`Invalid secret type for ${name}`);
     }
     if (declaration.machines.includes(machineName)) names.push(name);
   }
@@ -327,7 +345,7 @@ export async function resolveSecretsForMachine(
     if (declaration.kind === "value") {
       const value = values[name];
       if (typeof value !== "string" || value.length === 0) {
-        throw new PreflightError(`配置密钥 ${name} 必须解析为非空字符串`);
+        throw new PreflightError(`Config secret ${name} must resolve to a non-empty string`);
       }
       resolved.push(Object.freeze({ name, kind: "value" as const, value }));
     } else {
@@ -365,11 +383,11 @@ export async function prepareSecretDeployments(
   options: { readonly prefix: string },
 ): Promise<readonly SecretDeploymentFile[]> {
   if (!STAGE_PREFIX_RE.test(options.prefix) || options.prefix === "." || options.prefix === "..") {
-    throw new PreflightError(`密钥暂存前缀不合法: ${JSON.stringify(options.prefix)}`);
+    throw new PreflightError(`Invalid secret staging prefix: ${JSON.stringify(options.prefix)}`);
   }
   const stagingDirectory = resolve(directory);
   const info = await Deno.stat(stagingDirectory);
-  if (!info.isDirectory) throw new PreflightError("密钥暂存路径不是目录");
+  if (!info.isDirectory) throw new PreflightError("Secret staging path is not a directory");
   const resolved = await resolveSecretsForMachine(declarations, machineName, bindings);
   const files: SecretDeploymentFile[] = [];
   for (let index = 0; index < resolved.length; index++) {
@@ -429,12 +447,12 @@ async function copyPrivateFile(source: string, destination: string, name: string
   try {
     const linkInfo = await Deno.lstat(source);
     if (!linkInfo.isFile || linkInfo.isSymlink) {
-      throw new PreflightError(`文件私钥 ${name} 的来源不是普通文件`);
+      throw new PreflightError(`File secret ${name} source is not a regular file`);
     }
     input = await Deno.open(source, { read: true });
     const before = await input.stat();
     if (!sameFile(linkInfo, before)) {
-      throw new PreflightError(`文件私钥 ${name} 在暂存前发生变化`);
+      throw new PreflightError(`File secret ${name} changed before staging`);
     }
     output = await Deno.open(destination, {
       write: true,
@@ -451,7 +469,7 @@ async function copyPrivateFile(source: string, destination: string, name: string
     await output.sync();
     const after = await input.stat();
     if (!sameFile(before, after)) {
-      throw new PreflightError(`文件私钥 ${name} 在暂存期间发生变化`);
+      throw new PreflightError(`File secret ${name} changed during staging`);
     }
     await Deno.chmod(destination, 0o600);
   } catch (cause) {
@@ -466,7 +484,7 @@ async function copyPrivateFile(source: string, destination: string, name: string
       // 清理错误不能泄漏秘密路径内容，也不应遮蔽主错误。
     }
     if (cause instanceof PreflightError) throw cause;
-    throw new PreflightError(`暂存文件私钥 ${name} 失败`, { cause });
+    throw new PreflightError(`Failed to stage file secret ${name}`, { cause });
   } finally {
     output?.close();
     input?.close();
@@ -475,17 +493,17 @@ async function copyPrivateFile(source: string, destination: string, name: string
 
 export async function validateSshPrivateKey(path?: string | URL): Promise<string | undefined> {
   if (path === undefined) return undefined;
-  const candidate = resolve(pathText(path, "SSH 私钥"));
+  const candidate = resolve(pathText(path, "SSH private key"));
   try {
     const resolved = await Deno.realPath(candidate);
     const info = await Deno.stat(resolved);
-    if (!info.isFile) throw new PreflightError("SSH 私钥不是可读普通文件");
+    if (!info.isFile) throw new PreflightError("SSH private key is not a readable regular file");
     const file = await Deno.open(resolved, { read: true });
     file.close();
     return resolved;
   } catch (cause) {
     if (cause instanceof PreflightError) throw cause;
-    throw new PreflightError("SSH 私钥不存在或不可访问", { cause });
+    throw new PreflightError("SSH private key does not exist or is not accessible", { cause });
   }
 }
 
@@ -496,7 +514,7 @@ export class Redactor {
   constructor(values: Iterable<string> = []) {
     const unique = new Set<string>();
     for (const value of values) {
-      if (typeof value !== "string") throw new TypeError("脱敏值必须是字符串");
+      if (typeof value !== "string") throw new TypeError("Redacted value must be a string");
       if (value.length > 0) unique.add(value);
     }
     this.#values = freezeArray(
@@ -515,7 +533,7 @@ export class Redactor {
   }
 
   redact(text: string): string {
-    if (typeof text !== "string") throw new TypeError("待脱敏内容必须是字符串");
+    if (typeof text !== "string") throw new TypeError("Content to redact must be a string");
     for (const value of this.#values) text = text.split(value).join("[REDACTED]");
     return text;
   }

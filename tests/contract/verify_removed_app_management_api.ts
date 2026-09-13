@@ -6,8 +6,8 @@ const output = await command.output();
 const stderr = new TextDecoder().decode(output.stderr);
 
 if (output.success) {
-  throw new Error("已移除的 App management.actions 类型路径意外通过编译");
+  throw new Error("removed App management.actions type path unexpectedly compiled");
 }
 if (!stderr.includes("Property 'actions' does not exist")) {
-  throw new Error(`旧 App 类型路径未按预期失败:\n${stderr}`);
+  throw new Error(`old App type path did not fail as expected:\n${stderr}`);
 }

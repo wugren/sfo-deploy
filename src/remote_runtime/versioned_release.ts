@@ -70,7 +70,7 @@ async function readTextFile(path: string): Promise<string | undefined> {
   if (result.success) return new TextDecoder().decode(result.stdout).trim();
   if (result.code === 1) return undefined;
   throw new Error(
-    `读取文件失败（exit ${result.code}）: ${new TextDecoder().decode(result.stderr).trim()}`,
+    `Failed to read file (exit ${result.code}): ${new TextDecoder().decode(result.stderr).trim()}`,
   );
 }
 
@@ -79,7 +79,7 @@ async function requireReleaseDirectory(path: string): Promise<void> {
     !(await run("/usr/bin/test", ["-d", path], false)).success ||
     (await run("/usr/bin/test", ["-L", path], false)).success
   ) {
-    throw new Error(`版本目录不是安全的普通目录: ${path}`);
+    throw new Error(`Version directory is not a safe regular directory: ${path}`);
   }
 }
 
@@ -91,9 +91,11 @@ async function resolveSingleRootPayload(packageInput: string): Promise<string> {
   const entry = entries[0];
   if (!entry.isDirectory || entry.isSymlink) return packageInput;
   if (!PAYLOAD_ROOT_RE.test(entry.name)) {
-    throw new Error(`validated package 包含不安全的顶层目录名: ${entry.name}`);
+    throw new Error(`validated package contains an unsafe top-level directory name: ${entry.name}`);
   }
-  console.log(`App 包存在唯一顶层目录 ${entry.name}，发布时剥离该层`);
+  console.log(
+    `App package has a single top-level directory ${entry.name}; stripping it at release time`,
+  );
   return `${packageInput}/${entry.name}`;
 }
 
@@ -168,7 +170,7 @@ async function stageRelease(metadata: JsonObject): Promise<void> {
   const markerName = `.${metadata.resource as string}.version`;
   const previousVersion = await readTextFile(`${installDirectory}/${markerName}`);
   if (previousVersion === nextVersion) {
-    console.log(`App 版本无变化（${nextVersion}），跳过暂存`);
+    console.log(`App version unchanged (${nextVersion}); skipping staging`);
     return;
   }
 
@@ -203,7 +205,7 @@ async function stageRelease(metadata: JsonObject): Promise<void> {
       `${stagePath}/VERSION`,
     ]);
     await run("/usr/bin/mv", ["-Tf", "--", stagePath, releasePath]);
-    console.log(`App 已暂存版本 ${nextVersion}`);
+    console.log(`App staged version ${nextVersion}`);
   } finally {
     await run("/usr/bin/rm", ["-rf", "--", stagePath], false);
     await Deno.remove(versionFileName).catch(() => undefined);
@@ -226,14 +228,14 @@ async function activateRelease(metadata: JsonObject): Promise<void> {
   const markerPath = `${installDirectory}/${markerName}`;
   const previousVersion = await readTextFile(markerPath);
   if (previousVersion === nextVersion) {
-    console.log(`App 版本无变化（${nextVersion}），跳过激活`);
+    console.log(`App version unchanged (${nextVersion}); skipping activation`);
     return;
   }
   await requireReleaseDirectory(releasePath);
   const version = await readTextFile(`${releasePath}/VERSION`);
   if (version !== nextVersion) {
     throw new Error(
-      `版本目录 VERSION 不匹配: expected ${nextVersion}, got ${version ?? "missing"}`,
+      `Version directory VERSION mismatch: expected ${nextVersion}, got ${version ?? "missing"}`,
     );
   }
 
@@ -254,7 +256,7 @@ async function activateRelease(metadata: JsonObject): Promise<void> {
     if (typeof keepVersions === "number") {
       await cleanupOldVersions(installDirectory, nextVersion, keepVersions);
     }
-    console.log(`App 已发布版本 ${nextVersion}`);
+    console.log(`App released version ${nextVersion}`);
   } catch (error) {
     if (latestSwitched) {
       const rollbackTmp = `${installDirectory}/.sfo-deploy-latest-rollback-${nonce}`;
@@ -271,7 +273,7 @@ async function activateRelease(metadata: JsonObject): Promise<void> {
       } catch (rollbackError) {
         throw new AggregateError(
           [error, rollbackError],
-          "版本激活失败且 latest/版本标记恢复不完整",
+          "Version activation failed and latest/version marker recovery is incomplete",
         );
       }
     }

@@ -507,7 +507,7 @@ project-deploy install --cluster production --yes
 可重复使用 `--machine`、`--app` 和 `--environment`；`deploy`/`plan` 只处理 App，只接受
 `--machine`/`--app` 范围筛选。`--executor-region` 覆盖执行器区域，`--address-kind private|public`
 显式覆盖地址类型。默认在执行过程中
-按步骤输出中文人可读的进度行（步骤、机器、资源、动作与状态/跳过原因），结束时给出
+按步骤输出英文人可读的进度行（步骤、机器、资源、动作与状态/跳过原因），结束时给出
 简洁汇总；需要机器可解析结果时追加 `--json`，输出保持稳定 JSON 契约（结构与键名与
 既有版本一致）。计划只包含敏感输入的逻辑名称，不包含配置密钥值或文件私钥内容。执行器在 stdout、
 stderr、错误和 cleanup 信息离开执行边界前使用本次操作解析出的全部秘密脱敏；无法安全建立或应用

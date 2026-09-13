@@ -192,7 +192,7 @@ export function createCli(
       } else {
         await writeText(
           stderr,
-          `错误（${normalized.category}）: ${redactor.redact(normalized.message)}\n`,
+          `Error (${normalized.category}): ${redactor.redact(normalized.message)}\n`,
         );
       }
       return normalized.exitCode;
@@ -210,7 +210,7 @@ export async function resolveGenericConfigRoot(
   currentDirectory: string = Deno.cwd(),
 ): Promise<string> {
   if (typeof cluster !== "string" || !NAME_RE.test(cluster)) {
-    throw new ConfigurationError(`集群选择名称不合法: ${JSON.stringify(cluster)}`);
+    throw new ConfigurationError(`Invalid cluster selection name: ${JSON.stringify(cluster)}`);
   }
   if (explicitRoot !== undefined) return resolve(currentDirectory, explicitRoot);
   const candidates = [
@@ -222,11 +222,13 @@ export async function resolveGenericConfigRoot(
       if ((await Deno.stat(candidate)).isDirectory) return resolve(candidate, "..");
     } catch (cause) {
       if (!(cause instanceof Deno.errors.NotFound)) {
-        throw new ConfigurationError(`无法检查集群目录: ${candidate}`, { cause });
+        throw new ConfigurationError(`Failed to check cluster directory: ${candidate}`, { cause });
       }
     }
   }
-  throw new ConfigurationError(`当前目录下未找到集群 ${cluster}，已搜索: ${candidates.join("、")}`);
+  throw new ConfigurationError(
+    `Cluster ${cluster} not found under the current directory; searched: ${candidates.join(", ")}`,
+  );
 }
 
 function parseArguments(args: readonly string[], fixedRoot: boolean): ParsedArguments {
@@ -255,9 +257,9 @@ function parseArguments(args: readonly string[], fixedRoot: boolean): ParsedArgu
       continue;
     }
     if (!argument.startsWith("-")) {
-      if (action !== undefined) throw new ArgumentError(`无法识别的额外参数: ${argument}`);
+      if (action !== undefined) throw new ArgumentError(`Unrecognized extra argument: ${argument}`);
       if (!(CLI_ACTIONS as readonly string[]).includes(argument)) {
-        throw new ArgumentError(`不支持的 CLI 动作: ${argument}`);
+        throw new ArgumentError(`Unsupported CLI action: ${argument}`);
       }
       action = argument as CliAction;
       continue;
@@ -269,7 +271,7 @@ function parseArguments(args: readonly string[], fixedRoot: boolean): ParsedArgu
         if (inline !== undefined) index--;
         break;
       case "--config-root":
-        if (fixedRoot) throw new ArgumentError("项目绑定 CLI 不支持 --config-root");
+        if (fixedRoot) throw new ArgumentError("Project-bound CLI does not support --config-root");
         configRoot = optionValue(args, ++index, name, inline);
         if (inline !== undefined) index--;
         break;
@@ -297,7 +299,7 @@ function parseArguments(args: readonly string[], fixedRoot: boolean): ParsedArgu
         const value = optionValue(args, ++index, name, inline);
         if (inline !== undefined) index--;
         if (value !== "private" && value !== "public") {
-          throw new ArgumentError("--address-kind 只支持 private 或 public");
+          throw new ArgumentError("--address-kind supports only private or public");
         }
         addressKind = value;
         break;
@@ -335,11 +337,11 @@ function parseArguments(args: readonly string[], fixedRoot: boolean): ParsedArgu
         json = true;
         break;
       default:
-        throw new ArgumentError(`无法识别的选项: ${name}`);
+        throw new ArgumentError(`Unrecognized option: ${name}`);
     }
   }
-  if (!help && action === undefined) throw new ArgumentError("缺少动作参数");
-  if (!help && cluster === undefined) throw new ArgumentError("缺少必需选项: --cluster");
+  if (!help && action === undefined) throw new ArgumentError("Missing action argument");
+  if (!help && cluster === undefined) throw new ArgumentError("Missing required option: --cluster");
   return Object.freeze({
     help,
     action,
@@ -376,13 +378,13 @@ function optionValue(
   if (
     value === undefined || value.length === 0 || (inline === undefined && value.startsWith("--"))
   ) {
-    throw new ArgumentError(`${name} 需要一个值`);
+    throw new ArgumentError(`${name} requires a value`);
   }
   return value;
 }
 
 function rejectInline(name: string, inline?: string): void {
-  if (inline !== undefined) throw new ArgumentError(`${name} 不接受值`);
+  if (inline !== undefined) throw new ArgumentError(`${name} does not accept a value`);
 }
 
 async function confirmExecutionPlan(
@@ -396,8 +398,8 @@ async function confirmExecutionPlan(
     );
     await writeText(
       stderr,
-      `部署将处理 ${steps.length} 个步骤（内置 versioned App 先完成全部 stage，再执行 activate）：${
-        steps.join("、")
+      `Deployment will process ${steps.length} steps (built-in versioned Apps complete every stage first, then activate): ${
+        steps.join(", ")
       }\n`,
     );
   } else if (plan.requestedAction === "prepare") {
@@ -410,7 +412,9 @@ async function confirmExecutionPlan(
     ].sort();
     await writeText(
       stderr,
-      `缺省全量环境准备将处理 ${targets.length} 个环境应用：${targets.join("、")}\n`,
+      `Default full environment preparation will process ${targets.length} environment apps: ${
+        targets.join(", ")
+      }\n`,
     );
   } else {
     const targets = [
@@ -422,17 +426,17 @@ async function confirmExecutionPlan(
     ].sort();
     await writeText(
       stderr,
-      `缺省全量安装将处理 ${targets.length} 个环境：${targets.join("、")}\n`,
+      `Default full install will process ${targets.length} environments: ${targets.join(", ")}\n`,
     );
   }
   if (stdin.isTerminal && !stdin.isTerminal()) return false;
   await writeText(
     stderr,
     plan.requestedAction === "deploy"
-      ? "确认执行部署？输入 yes 继续，其它内容取消: "
+      ? "Confirm deployment? Type yes to continue, anything else cancels: "
       : plan.requestedAction === "prepare"
-      ? "确认执行缺省全量环境准备？输入 yes 继续，其它内容取消: "
-      : "确认执行缺省全量安装？输入 yes 继续，其它内容取消: ",
+      ? "Confirm default full environment preparation? Type yes to continue, anything else cancels: "
+      : "Confirm default full install? Type yes to continue, anything else cancels: ",
   );
   const buffer = new Uint8Array(1024);
   const count = await stdin.read(buffer);
@@ -449,12 +453,12 @@ async function confirmMachineTargets(
 ): Promise<boolean> {
   await writeText(
     stderr,
-    `缺省全量操作将处理 ${machines.length} 台机器：${machines.join("、")}\n`,
+    `Default full operation will process ${machines.length} machines: ${machines.join(", ")}\n`,
   );
   if (stdin.isTerminal && !stdin.isTerminal()) return false;
   await writeText(
     stderr,
-    "确认对全部机器执行？输入 yes 继续，其它内容取消: ",
+    "Run on all machines? Type yes to continue, anything else cancels: ",
   );
   const buffer = new Uint8Array(1024);
   const count = await stdin.read(buffer);
@@ -467,17 +471,17 @@ async function confirmMachineTargets(
 function skipReasonText(reason: string, message?: string): string {
   switch (reason) {
     case "up-to-date":
-      return "已是最新";
+      return "already up to date";
     case "check-satisfied":
-      return "检查已满足";
+      return "check satisfied";
     case "using-start":
-      return "复用 start 步骤";
+      return "reuse start step";
     case "using-restart":
-      return "复用 restart 步骤";
+      return "reuse restart step";
     case "target-fail-fast":
-      return "目标机器已失败";
+      return "target machine already failed";
     case "dependency-failed":
-      return message ?? "依赖未成功";
+      return message ?? "dependency did not succeed";
     default:
       return message ?? reason;
   }
@@ -486,48 +490,60 @@ function skipReasonText(reason: string, message?: string): string {
 function humanStepLine(event: Extract<ProgressEvent, { readonly kind: "step-result" }>): string {
   const step = event.step;
   const action = ACTION_LABELS[step.action] ?? step.action;
-  const base = `[${step.machine}] ${step.resource} ${action}（${
+  const base = `[${step.machine}] ${step.resource} ${action} (${
     event.index + 1
-  }/${event.total}）... ${STATUS_LABELS[step.status]}`;
+  }/${event.total})... ${STATUS_LABELS[step.status]}`;
   if (step.status === StepStatus.SKIPPED) {
-    return `${base}（${skipReasonText(step.skipReason ?? "", step.message)}）`;
+    return `${base} (${skipReasonText(step.skipReason ?? "", step.message)})`;
   }
   if (step.status === StepStatus.FAILED || step.status === StepStatus.BLOCKED) {
     const recovery = step.recovery === undefined
       ? ""
       : step.recovery.succeeded
-      ? "；恢复成功"
-      : "；恢复不完整";
+      ? "; recovery succeeded"
+      : "; recovery incomplete";
     const detail = `${step.message ?? step.skipReason ?? ""}${recovery}`;
-    return detail === "" ? base : `${base}：${detail}`;
+    return detail === "" ? base : `${base}: ${detail}`;
   }
   const managed = [
-    step.changed === undefined ? undefined : step.changed ? "配置已变更" : "配置未变",
-    step.service === undefined ? undefined : `服务动作 ${step.service.action}`,
-    step.bundle === undefined ? undefined : step.bundle.reused ? "部署包已复用" : "部署包已上传",
-    step.recovery === undefined ? undefined : step.recovery.succeeded ? "恢复成功" : "恢复不完整",
+    step.changed === undefined ? undefined : step.changed ? "config changed" : "config unchanged",
+    step.service === undefined ? undefined : `service action ${step.service.action}`,
+    step.bundle === undefined
+      ? undefined
+      : step.bundle.reused
+      ? "deployment bundle reused"
+      : "deployment bundle uploaded",
+    step.recovery === undefined
+      ? undefined
+      : step.recovery.succeeded
+      ? "recovery succeeded"
+      : "recovery incomplete",
   ].filter((item): item is string => item !== undefined);
   const detail = [step.message, ...managed].filter((item): item is string => item !== undefined);
-  if (detail.length > 0) return `${base}（${detail.join("；")}）`;
+  if (detail.length > 0) return `${base} (${detail.join("; ")})`;
   return base;
 }
 
 function humanMachineLine(machine: MachineDenoOutcome): string {
   const base = `[${machine.machine}] install-deno ... ${
-    machine.status === "present" ? "已满足" : machine.status === "installed" ? "已安装" : "失败"
+    machine.status === "present"
+      ? "already satisfied"
+      : machine.status === "installed"
+      ? "installed"
+      : "failed"
   }`;
   if (machine.status === "failed") {
     const detail = machine.message ?? "";
-    return detail === "" ? base : `${base}（${machine.errorCategory ?? "execution"}）：${detail}`;
+    return detail === "" ? base : `${base} (${machine.errorCategory ?? "execution"}): ${detail}`;
   }
   const version = machine.version === undefined ? "" : ` ${machine.version}`;
-  return `${base}（${machine.denoPath}${version}）`;
+  return `${base} (${machine.denoPath}${version})`;
 }
 
 function humanPackageLine(pkg: FetchPackageResult): string {
   return `[${pkg.app}] fetch ${pkg.version} ... ${
-    pkg.status === "downloaded" ? "已下载" : "命中缓存"
-  }（${pkg.path}）`;
+    pkg.status === "downloaded" ? "downloaded" : "cache hit"
+  } (${pkg.path})`;
 }
 
 async function writeProgressLine(writer: Writer, event: ProgressEvent): Promise<void> {
@@ -544,30 +560,31 @@ async function writeHumanResult(writer: Writer, result: RunResult): Promise<void
   if (result instanceof ValidationResult) {
     await writeText(
       writer,
-      `配置校验通过：集群 ${result.cluster}（目录 ${result.directory}，机器 ${result.machines.length} 台、环境实例 ${result.environments.length} 个、App ${result.apps.length} 个）\n`,
+      `Config validation passed: cluster ${result.cluster} (directory ${result.directory}, ${result.machines.length} machines, ${result.environments.length} environment instances, ${result.apps.length} Apps)\n`,
     );
     return;
   }
   if (result instanceof FetchResult) {
     const downloaded = result.packages.filter((pkg) => pkg.status === "downloaded").length;
     const cached = result.packages.length - downloaded;
-    let summary = `抓取完成：集群 ${result.cluster}，${downloaded} 个已下载、${cached} 个命中缓存`;
+    let summary =
+      `Fetch complete: cluster ${result.cluster}, ${downloaded} downloaded, ${cached} cache hits`;
     if (result.appsWithoutPackage.length > 0) {
-      summary += `；${result.appsWithoutPackage.length} 个 App 无安装包：${
-        result.appsWithoutPackage.join("、")
+      summary += `; ${result.appsWithoutPackage.length} Apps have no installer package: ${
+        result.appsWithoutPackage.join(", ")
       }`;
     }
     await writeText(writer, `${summary}\n`);
     return;
   }
   if (result instanceof ReleaseHistoryResult) {
-    await writeText(writer, `发布历史：集群 ${result.cluster}\n`);
+    await writeText(writer, `Release history: cluster ${result.cluster}\n`);
     for (const record of result.releases) {
       const status = RELEASE_STATUS_LABELS[record.status] ?? record.status;
-      const finished = record.finishedAt === undefined ? "" : `，完成 ${record.finishedAt}`;
+      const finished = record.finishedAt === undefined ? "" : `, finished ${record.finishedAt}`;
       await writeText(
         writer,
-        `- ${record.releaseId}（${record.operation}，${status}${finished}）\n`,
+        `- ${record.releaseId} (${record.operation}, ${status}${finished})\n`,
       );
     }
     return;
@@ -578,35 +595,35 @@ async function writeHumanResult(writer: Writer, result: RunResult): Promise<void
     const failed = result.machines.length - present - installed;
     await writeText(
       writer,
-      `install-deno 完成：集群 ${result.cluster}，${
-        result.succeeded ? "成功" : "失败"
-      }（${result.machines.length} 台机器：已满足 ${present}、已安装 ${installed}、失败 ${failed}）\n`,
+      `install-deno complete: cluster ${result.cluster}, ${
+        result.succeeded ? "succeeded" : "failed"
+      } (${result.machines.length} machines: ${present} already satisfied, ${installed} installed, ${failed} failed)\n`,
     );
     return;
   }
   if (result instanceof SecretsDeployResult) {
     const operationLabel = result.operation === "check"
-      ? "校验"
+      ? "check"
       : result.operation === "remove"
-      ? "移除"
-      : "部署";
+      ? "remove"
+      : "deploy";
     await writeText(
       writer,
-      `secrets ${operationLabel} 完成：集群 ${result.cluster}，${
-        result.succeeded ? "成功" : "失败"
-      }（${result.machines.length} 台机器）\n`,
+      `secrets ${operationLabel} complete: cluster ${result.cluster}, ${
+        result.succeeded ? "succeeded" : "failed"
+      } (${result.machines.length} machines)\n`,
     );
     for (const machine of result.machines) {
       const detail = machine.issues !== undefined && machine.issues.length > 0
-        ? "；问题: " + machine.issues.map((issue) => `${issue.name}=${issue.kind}`).join("、")
+        ? "; issues: " + machine.issues.map((issue) => `${issue.name}=${issue.kind}`).join(", ")
         : machine.entries !== undefined
-        ? "；写入 " +
+        ? "; written " +
           machine.entries.filter((entry) => entry.status === "written").length +
-          "、未变 " +
+          ", unchanged " +
           machine.entries.filter((entry) => entry.status === "unchanged").length
         : "";
-      const outcome = machine.status === "succeeded" ? "通过" : "失败";
-      const message = machine.message === undefined ? "" : `：${machine.message}`;
+      const outcome = machine.status === "succeeded" ? "passed" : "failed";
+      const message = machine.message === undefined ? "" : `: ${machine.message}`;
       await writeText(
         writer,
         `- [${machine.machine}] ${operationLabel} ${outcome}${detail}${message}\n`,
@@ -617,13 +634,15 @@ async function writeHumanResult(writer: Writer, result: RunResult): Promise<void
   if (result instanceof DeploymentResult) {
     await writeText(
       writer,
-      `集群：${result.cluster}\n动作：${result.requestedAction}\n状态：${
-        result.succeeded ? "成功" : "失败"
+      `Cluster: ${result.cluster}\nAction: ${result.requestedAction}\nStatus: ${
+        result.succeeded ? "succeeded" : "failed"
       }\n`,
     );
-    if (result.releaseId !== undefined) await writeText(writer, `发布 ID：${result.releaseId}\n`);
+    if (result.releaseId !== undefined) {
+      await writeText(writer, `Release ID: ${result.releaseId}\n`);
+    }
     if (result.sourceReleaseId !== undefined) {
-      await writeText(writer, `来源发布 ID：${result.sourceReleaseId}\n`);
+      await writeText(writer, `Source release ID: ${result.sourceReleaseId}\n`);
     }
     for (const target of result.targets) {
       const counts = new Map<StepStatus, number>();
@@ -632,19 +651,19 @@ async function writeHumanResult(writer: Writer, result: RunResult): Promise<void
       }
       const breakdown = [...counts.entries()]
         .map(([status, count]) => `${STATUS_LABELS[status]} ${count}`)
-        .join("、");
+        .join(", ");
       await writeText(
         writer,
-        `目标：${target.machine}（${
+        `Target: ${target.machine} (${
           STATUS_LABELS[target.status]
-        }）${target.steps.length} 步，${breakdown}\n`,
+        }) ${target.steps.length} steps, ${breakdown}\n`,
       );
     }
     return;
   }
   await writeText(
     writer,
-    `计划：集群 ${result.cluster} · 动作 ${result.requestedAction} · ${result.steps.length} 步\n`,
+    `Plan: cluster ${result.cluster} | action ${result.requestedAction} | ${result.steps.length} steps\n`,
   );
   for (const step of result.steps) {
     await writeText(
@@ -941,7 +960,7 @@ function normalizeError(cause: unknown): { category: string; message: string; ex
     cause instanceof CancelledError ||
     (cause instanceof DOMException && cause.name === "AbortError")
   ) {
-    return { category: "cancelled", message: cause.message || "用户取消", exitCode: 130 };
+    return { category: "cancelled", message: cause.message || "User cancelled", exitCode: 130 };
   }
   if (cause instanceof ConfigurationError || cause instanceof PlanningError) {
     return { category: "configuration", message: cause.message, exitCode: 2 };
@@ -988,14 +1007,18 @@ async function writeText(writer: Writer, text: string): Promise<void> {
   let offset = 0;
   while (offset < bytes.length) {
     const count = await writer.write(bytes.subarray(offset));
-    if (!Number.isInteger(count) || count <= 0) throw new Error("输出流没有接受数据");
+    if (!Number.isInteger(count) || count <= 0) {
+      throw new Error("Output stream did not accept data");
+    }
     offset += count;
   }
 }
 
 function pathFromStringOrUrl(value: string | URL): string {
   if (value instanceof URL) {
-    if (value.protocol !== "file:") throw new ConfigurationError("配置根目录必须是本地文件路径");
+    if (value.protocol !== "file:") {
+      throw new ConfigurationError("Config root must be a local file path");
+    }
     return resolve(decodeURIComponent(value.pathname));
   }
   return resolve(value);
@@ -1003,46 +1026,48 @@ function pathFromStringOrUrl(value: string | URL): string {
 
 /** 每个 CLI 动作在帮助文本中的一行中文描述。 */
 const ACTION_DESCRIPTIONS: Readonly<Record<CliAction, string>> = {
-  validate: "装载并校验集群配置",
-  plan: "预览 deploy 计划，不执行远端步骤",
-  check: "检查所选环境是否满足要求",
-  install: "安装或初始化所选环境",
-  configure: "配置环境或 App（投递密钥与模板）",
-  prepare: "部署/更新所选环境应用（检查、按需安装、配置、启动或重启）",
-  deploy: "部署所选 App 并归档发布快照",
-  fetch: "下载 App 安装包到本地部署包缓存",
-  start: "启动目标环境或 App",
-  stop: "停止目标环境或 App",
-  restart: "重启目标环境或 App",
-  history: "浏览发布历史或查看指定发布",
-  rollback: "回退到 --release-id 指定的发布",
-  "install-deno": "通过纯 SSH 安装固定版本 Deno 到目标机器",
-  "secrets-deploy": "把已声明密钥部署/移除到集群机器安全目录，或只读校验漂移",
+  validate: "Load and validate the cluster configuration",
+  plan: "Preview the deploy plan without running remote steps",
+  check: "Check whether the selected environments are satisfied",
+  install: "Install or initialize the selected environments",
+  configure: "Configure environments or Apps (deliver secrets and templates)",
+  prepare:
+    "Deploy/update selected environment apps (check, install on demand, configure, start or restart)",
+  deploy: "Deploy selected Apps and archive release snapshots",
+  fetch: "Download App installer packages into the local deployment package cache",
+  start: "Start the target environment or App",
+  stop: "Stop the target environment or App",
+  restart: "Restart the target environment or App",
+  history: "Browse release history or view a specific release",
+  rollback: "Roll back to the release given by --release-id",
+  "install-deno": "Install a pinned Deno version on target machines over plain SSH",
+  "secrets-deploy":
+    "Deploy/remove declared secrets in the cluster machine secure directory, or check drift read-only",
 };
 
 const RELEASE_STATUS_LABELS: Readonly<Record<string, string>> = {
-  succeeded: "成功",
-  failed: "失败",
-  cancelled: "已取消",
-  incomplete: "未完成",
+  succeeded: "succeeded",
+  failed: "failed",
+  cancelled: "cancelled",
+  incomplete: "incomplete",
 };
 
 const ACTION_LABELS: Readonly<Record<string, string>> = {
-  check: "检查",
-  install: "安装",
-  configure: "配置",
-  start: "启动",
-  stop: "停止",
-  restart: "重启",
-  deploy: "部署",
+  check: "check",
+  install: "install",
+  configure: "configure",
+  start: "start",
+  stop: "stop",
+  restart: "restart",
+  deploy: "deploy",
 };
 
 const STATUS_LABELS: Readonly<Record<StepStatus, string>> = {
-  [StepStatus.SUCCEEDED]: "通过",
-  [StepStatus.FAILED]: "失败",
-  [StepStatus.SKIPPED]: "跳过",
-  [StepStatus.BLOCKED]: "阻塞",
-  [StepStatus.CANCELLED]: "已取消",
+  [StepStatus.SUCCEEDED]: "passed",
+  [StepStatus.FAILED]: "failed",
+  [StepStatus.SKIPPED]: "skipped",
+  [StepStatus.BLOCKED]: "blocked",
+  [StepStatus.CANCELLED]: "cancelled",
 };
 
 interface HelpOption {
@@ -1060,65 +1085,71 @@ function helpOption(option: string, description: string): HelpOption {
   return Object.freeze({ option, description });
 }
 
-const CLUSTER_OPTION = helpOption("--cluster NAME", "配置根目录下的集群目录名");
+const CLUSTER_OPTION = helpOption("--cluster NAME", "Cluster directory name under the config root");
 const CONFIG_ROOT_OPTION = helpOption(
   "--config-root PATH",
-  "配置根目录；省略时搜索 ./NAME 和 ./clusters/NAME",
+  "Config root; when omitted, search ./NAME and ./clusters/NAME",
 );
-const MACHINE_OPTION = helpOption("--machine NAME", "仅选择指定机器；可重复");
-const APP_OPTION = helpOption("--app NAME", "仅选择指定 App；可重复");
+const MACHINE_OPTION = helpOption("--machine NAME", "Select only the given machines; repeatable");
+const APP_OPTION = helpOption("--app NAME", "Select only the given Apps; repeatable");
 const ENVIRONMENT_OPTION = helpOption(
   "--environment [MACHINE/]NAME",
-  "仅选择指定环境实例；可重复",
+  "Select only the given environment instances; repeatable",
 );
 const ENV_OPTION = helpOption(
   "--env [MACHINE/]NAME",
-  "仅选择指定环境应用；与 --environment 等价，可重复",
+  "Select only the given environment apps; equivalent to --environment, repeatable",
 );
-const REGION_OPTION = helpOption("--executor-region REGION", "覆盖部署执行器区域");
+const REGION_OPTION = helpOption(
+  "--executor-region REGION",
+  "Override the deployment executor region",
+);
 const ADDRESS_OPTION = helpOption(
   "--address-kind private|public",
-  "显式选择机器地址类型",
+  "Explicitly select the machine address kind",
 );
 const WITH_DEPENDENCIES_OPTION = helpOption(
   "--with-dependencies",
-  "定向 App 时同时执行环境依赖",
+  "Also run environment dependencies for targeted Apps",
 );
 const GLOBAL_RELEASE_ID_OPTION = helpOption(
   "--release-id ID",
-  "查看发布或指定回退来源",
+  "View a release or set the rollback source",
 );
 const HISTORY_RELEASE_ID_OPTION = helpOption(
   "--release-id ID",
-  "查看指定发布记录；省略时列出全部记录",
+  "View the given release record; when omitted, list all records",
 );
 const ROLLBACK_RELEASE_ID_OPTION = helpOption(
   "--release-id ID",
-  "要回退到的发布 ID（必填）",
+  "Release ID to roll back to (required)",
 );
 const DENO_VERSION_OPTION = helpOption(
   "--deno-version VERSION",
-  "安装的 Deno 版本；省略时安装最新稳定版",
+  "Deno version to install; when omitted, install the latest stable version",
 );
 const INSTALL_TO_OPTION = helpOption(
   "--install-to PATH",
-  "远端安装目录（绝对 POSIX 路径）；默认 /usr/local",
+  "Remote install directory (absolute POSIX path); default /usr/local",
 );
 const REMOVE_OPTION = helpOption(
   "--remove NAME",
-  "从目标机器安全目录显式移除该密钥；可重复",
+  "Explicitly remove this secret from the target machine secure directory; repeatable",
 );
 const CHECK_OPTION = helpOption(
   "--check",
-  "只读校验安全目录权限与清单哈希，不写任何文件",
+  "Check secure directory permissions and manifest hashes read-only; write no files",
 );
 const JSON_OPTION = helpOption(
   "--json",
-  "以稳定 JSON 输出结果与错误（默认输出人类可读的分步进度）",
+  "Output results and errors as stable JSON (default: step-by-step human-readable progress)",
 );
-const YES_OPTION = helpOption("--yes", "跳过 deploy、缺省全量安装与 install-deno 确认");
-const GLOBAL_HELP_OPTION = helpOption("-h, --help", "显示帮助");
-const ACTION_HELP_OPTION = helpOption("-h, --help", "显示该动作帮助");
+const YES_OPTION = helpOption(
+  "--yes",
+  "Skip deploy, default full install, and install-deno confirmations",
+);
+const GLOBAL_HELP_OPTION = helpOption("-h, --help", "Show help");
+const ACTION_HELP_OPTION = helpOption("-h, --help", "Show help for this action");
 
 const SELECTOR_OPTIONS: readonly HelpOption[] = Object.freeze([
   MACHINE_OPTION,
@@ -1150,21 +1181,21 @@ const ACTION_HELP: Readonly<Record<CliAction, ActionHelp>> = {
     usageSuffix: "",
     options: APP_ONLY_OPTIONS,
     notes: Object.freeze([
-      "预览 deploy 动作；不建立 SSH 连接、不下载包、不解析秘密值",
-      "只处理 App；环境准备使用 prepare，不支持 --environment/--with-dependencies",
+      "Preview the deploy action; no SSH connection, no package download, no secret resolution",
+      "Handle only Apps; use prepare for environments; --environment/--with-dependencies are not supported",
     ]),
   },
   check: {
     usageSuffix: "",
     options: ENVIRONMENT_ONLY_OPTIONS,
-    notes: Object.freeze(["环境动作，不支持 --app"]),
+    notes: Object.freeze(["Environment action; --app is not supported"]),
   },
   install: {
     usageSuffix: "",
     options: Object.freeze([...ENVIRONMENT_ONLY_OPTIONS, YES_OPTION]),
     notes: Object.freeze([
-      "环境动作，不支持 --app",
-      "省略 --environment 时覆盖所选范围内的全部环境；缺省全量安装会请求确认",
+      "Environment action; --app is not supported",
+      "When --environment is omitted, cover all environments in the selected scope; default full install asks for confirmation",
     ]),
   },
   configure: { usageSuffix: "", options: SELECTOR_OPTIONS_WITH_DEPENDENCIES },
@@ -1178,27 +1209,27 @@ const ACTION_HELP: Readonly<Record<CliAction, ActionHelp>> = {
       YES_OPTION,
     ]),
     notes: Object.freeze([
-      "环境动作，不支持 --app",
-      "步骤：check → 按需 install；声明 configure 时追加；首次安装成功后 start，更新成功后 restart",
-      "同版本且检查通过时跳过；未声明 start/restart 脚本的环境应用自动跳过并提示",
-      "省略 --env 时覆盖所选范围内的全部环境应用；缺省全量会请求确认",
+      "Environment action; --app is not supported",
+      "Steps: check → install on demand; append configure when declared; start after the first install, restart after an update",
+      "Skip when the version is unchanged and the check passes; environment apps without start/restart scripts are skipped with a notice",
+      "When --env is omitted, cover all environment apps in the selected scope; default full runs ask for confirmation",
     ]),
   },
   deploy: {
     usageSuffix: "",
     options: Object.freeze([...APP_ONLY_OPTIONS, YES_OPTION]),
     notes: Object.freeze([
-      "每次部署写入发布历史，成功结果包含 release_id",
-      "执行前会请求确认；自动化调用需传 --yes",
-      "只处理 App；环境准备使用 prepare，不支持 --environment/--with-dependencies",
+      "Every deployment writes release history; successful results include release_id",
+      "Asks for confirmation before execution; automated calls must pass --yes",
+      "Handle only Apps; use prepare for environments; --environment/--with-dependencies are not supported",
     ]),
   },
   fetch: {
     usageSuffix: "",
     options: Object.freeze([APP_OPTION]),
     notes: Object.freeze([
-      "只处理 App 安装包，不支持环境、机器、区域、地址或依赖过滤",
-      "缓存目录由 ~/.sfo-deploy/config.yaml 的 packages_dir 配置（缺省 ~/.sfo-deploy/packages）",
+      "Handle only App installer packages; environment, machine, region, address, and dependency filtering are not supported",
+      "The cache directory comes from packages_dir in ~/.sfo-deploy/config.yaml (default ~/.sfo-deploy/packages)",
     ]),
   },
   start: { usageSuffix: "", options: SELECTOR_OPTIONS_WITH_DEPENDENCIES },
@@ -1208,14 +1239,14 @@ const ACTION_HELP: Readonly<Record<CliAction, ActionHelp>> = {
     usageSuffix: " [--release-id ID]",
     options: Object.freeze([HISTORY_RELEASE_ID_OPTION]),
     notes: Object.freeze([
-      "不能与 --machine/--app/--environment/--executor-region/--address-kind/--with-dependencies 混用",
+      "Cannot be combined with --machine/--app/--environment/--executor-region/--address-kind/--with-dependencies",
     ]),
   },
   rollback: {
     usageSuffix: " --release-id ID",
     options: Object.freeze([ROLLBACK_RELEASE_ID_OPTION]),
     notes: Object.freeze([
-      "不能与 --machine/--app/--environment/--executor-region/--address-kind/--with-dependencies 混用",
+      "Cannot be combined with --machine/--app/--environment/--executor-region/--address-kind/--with-dependencies",
     ]),
   },
   "install-deno": {
@@ -1229,10 +1260,10 @@ const ACTION_HELP: Readonly<Record<CliAction, ActionHelp>> = {
       YES_OPTION,
     ]),
     notes: Object.freeze([
-      "只支持 --machine 筛选，不支持 --app/--environment/--with-dependencies",
-      "缺省安装到远端 /usr/local/bin/deno；已最新则跳过，旧版本升级",
-      "显式 --deno-version 时只在该精确版本已存在时跳过",
-      "省略 --machine 时覆盖全部机器并请求确认；纯 SSH 直连，不要求远端预装 Deno",
+      "Supports only --machine filtering; --app/--environment/--with-dependencies are not supported",
+      "Installs to remote /usr/local/bin/deno by default; skips when up to date and upgrades older versions",
+      "With an explicit --deno-version, skip only when that exact version already exists",
+      "When --machine is omitted, cover all machines and ask for confirmation; plain SSH, no remote Deno required",
     ]),
   },
   "secrets-deploy": {
@@ -1246,11 +1277,11 @@ const ACTION_HELP: Readonly<Record<CliAction, ActionHelp>> = {
       YES_OPTION,
     ]),
     notes: Object.freeze([
-      "只支持 --machine 筛选，不支持 --app/--environment/--with-dependencies",
-      "部署时读取集群目录内 secrets.yaml；顶层键对应密钥名，文件密钥值为相对路径",
-      "缺省覆盖 cluster.yaml.secrets 声明需要密钥的全部机器并请求确认；--check 无需确认",
-      "目录默认 ~/.sfo-deploy/secrets/（0700，文件 0600）；消息与错误不输出秘密值",
-      "--check 报告缺失/漂移/未声明残留且返回非零退出码；不允许与 --remove 混用",
+      "Supports only --machine filtering; --app/--environment/--with-dependencies are not supported",
+      "Reads secrets.yaml in the cluster directory at deploy time; top-level keys are secret names and file secret values are relative paths",
+      "By default covers all machines that need declared secrets from cluster.yaml.secrets and asks for confirmation; --check needs no confirmation",
+      "Directory defaults to ~/.sfo-deploy/secrets/ (0700, files 0600); messages and errors never print secret values",
+      "--check reports missing/drifted/undeclared leftovers and returns a non-zero exit code; cannot be combined with --remove",
     ]),
   },
 };
@@ -1278,12 +1309,12 @@ function usage(generic: boolean): string {
     JSON_OPTION,
     GLOBAL_HELP_OPTION,
   ].map(optionLine).join("\n");
-  return `用法: sfo-deploy <action> --cluster NAME${root} [选项]\n\n` +
-    "校验、规划或串行执行一个自包含集群部署。\n\n" +
-    "动作:\n" +
+  return `Usage: sfo-deploy <action> --cluster NAME${root} [options]\n\n` +
+    "Validate, plan, or serially execute a self-contained cluster deployment.\n\n" +
+    "Actions:\n" +
     `${actions}\n\n` +
-    "运行 sfo-deploy <action> --help 查看该动作参数。\n\n" +
-    "选项:\n" +
+    "Run sfo-deploy <action> --help to see action-specific arguments.\n\n" +
+    "Options:\n" +
     `${options}\n`;
 }
 
@@ -1298,11 +1329,11 @@ function actionUsage(action: CliAction, generic: boolean): string {
     ACTION_HELP_OPTION,
   ].map(optionLine).join("\n");
   const notes = help.notes ?? [];
-  return `用法: sfo-deploy ${action} --cluster NAME${help.usageSuffix}${root}\n\n` +
+  return `Usage: sfo-deploy ${action} --cluster NAME${help.usageSuffix}${root}\n\n` +
     `${ACTION_DESCRIPTIONS[action]}\n\n` +
-    "参数:\n" +
+    "Arguments:\n" +
     `${options}\n` +
-    (notes.length > 0 ? `\n限制:\n${notes.map((note) => `  ${note}`).join("\n")}\n` : "");
+    (notes.length > 0 ? `\nLimits:\n${notes.map((note) => `  ${note}`).join("\n")}\n` : "");
 }
 
 if (import.meta.main) {

@@ -124,7 +124,7 @@ Deno.test("unit/deployment-bundle: 危险路径、重复项、链接、大小和
             ordinaryFiles: [{ source: file, relativePath }],
           }),
         PreflightError,
-        "规范相对 POSIX",
+        "canonical relative POSIX",
       );
     }
     await assertRejects(
@@ -137,7 +137,7 @@ Deno.test("unit/deployment-bundle: 危险路径、重复项、链接、大小和
           ],
         }),
       PreflightError,
-      "重复成员",
+      "duplicate member",
     );
     const link = join(root, "link");
     await Deno.symlink(file, link);
@@ -148,7 +148,7 @@ Deno.test("unit/deployment-bundle: 危险路径、重复项、链接、大小和
           ordinaryFiles: [{ source: link, relativePath: "link" }],
         }),
       PreflightError,
-      "稳定普通文件",
+      "stable regular file",
     );
     const tooLarge = await assertRejects(
       () =>
@@ -159,7 +159,7 @@ Deno.test("unit/deployment-bundle: 危险路径、重复项、链接、大小和
         }),
       PreflightError,
     );
-    assertStringIncludes(tooLarge.message, "单成员限制");
+    assertStringIncludes(tooLarge.message, "single-member limit");
     const gzip = join(root, "tampered.tar.gz");
     await Deno.writeFile(gzip, gzipSync(new TextEncoder().encode("tampered")));
     await assertRejects(

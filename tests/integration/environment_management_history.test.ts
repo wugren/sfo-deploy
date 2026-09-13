@@ -165,6 +165,6 @@ machines:
       () => __internal.decodePlan(encoded, snapshot, clusterDirectory, importer),
       ConfigurationError,
     );
-    assertEquals(error.message, "environment_manager 字段不匹配");
+    assertEquals(error.message, "environment_manager fields do not match");
   });
 });

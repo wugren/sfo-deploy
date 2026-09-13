@@ -143,21 +143,21 @@ Deno.test("dv/environment placement: excluded, unknown and incomplete workflows 
           }),
         PlanningError,
       ).message,
-      "过滤条件排除了必需依赖: env:node-a/base",
+      "The filter excluded required dependencies: env:node-a/base",
     );
     assertStringIncludes(
       assertThrows(
         () => buildPlan(cluster, { action: "deploy", apps: ["missing"] }),
         PlanningError,
       ).message,
-      "未知 App 过滤器: missing",
+      "Unknown App filter: missing",
     );
     assertStringIncludes(
       assertThrows(
         () => buildPlan(cluster, { action: "check", environments: ["missing"] }),
         PlanningError,
       ).message,
-      "过滤条件没有选择任何部署对象",
+      "The filter selected no deployment targets",
     );
   });
 
@@ -171,7 +171,7 @@ Deno.test("dv/environment placement: excluded, unknown and incomplete workflows 
     await assertRejects(
       () => loadCluster(directory),
       ConfigurationError,
-      "Environment base 引用未知机器: missing-node",
+      "Environment base references unknown machines: missing-node",
     );
   });
 });
@@ -194,14 +194,18 @@ Deno.test("integration/environment placement: public load and planning APIs keep
       () => buildPlan(v2, { ...request, environments: ["node-a/base"] }),
       PlanningError,
     );
-    assertStringIncludes(excluded.message, "过滤条件排除了必需依赖");
+    assertStringIncludes(excluded.message, "The filter excluded required dependencies");
 
     await replaceInFile(
       join(v2.directory, "cluster.yaml"),
       "base: [node-a, node-b]",
       "base: [node-z]",
     );
-    await assertRejects(() => loadCluster(v2.directory), ConfigurationError, "引用未知机器");
+    await assertRejects(
+      () => loadCluster(v2.directory),
+      ConfigurationError,
+      "references unknown machines",
+    );
   });
 });
 
@@ -256,7 +260,7 @@ Deno.test("integration/environment placement: multipass template is a runnable v
     await assertRejects(
       () => loadCluster(clusterDirectory),
       ConfigurationError,
-      "schema_version 2 不允许 v1 Environment 布局",
+      "schema_version 2 does not allow the v1 Environment layout",
     );
   });
 });

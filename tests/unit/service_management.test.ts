@@ -227,7 +227,7 @@ Deno.test("unit/systemd: not-found 是首次部署的未启用/未运行基线",
   await assertRejects(
     () => inspectSystemd(session, service()),
     TransportError,
-    "读取 systemd enable 状态失败: failed",
+    "Failed to read systemd enable state: failed",
   );
 
   session.enabledExitCode = 1;
@@ -237,7 +237,7 @@ Deno.test("unit/systemd: not-found 是首次部署的未启用/未运行基线",
   await assertRejects(
     () => inspectSystemd(session, service()),
     TransportError,
-    "读取 systemd active 状态失败: inactive",
+    "Failed to read systemd active state: inactive",
   );
 });
 
@@ -281,7 +281,7 @@ Deno.test("unit/systemd: 命令失败和状态未收敛均给出实际状态", a
       }, before),
     TransportError,
   );
-  assertStringIncludes(commandError.message, "实际 enabled=");
+  assertStringIncludes(commandError.message, "actual enabled=");
 
   const stale = new SystemdSession();
   stale.active = false;
@@ -293,7 +293,7 @@ Deno.test("unit/systemd: 命令失败和状态未收敛均给出实际状态", a
         changed: false,
       }, before),
     TransportError,
-    "实际 enabled=disabled active=inactive",
+    "actual enabled=disabled active=inactive",
   );
 });
 

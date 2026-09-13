@@ -26,14 +26,14 @@ const FILEHUB_INSTALL_URL = "https://github.com/wugren/sfo-filehub/blob/main/REA
 const GZIP_MAGIC = Uint8Array.of(0x1f, 0x8b);
 const GZIP_LABEL_RE = /\.tar\.gz$|\.tgz$/i;
 const FILEHUB_EXIT_DIAGNOSTICS: Readonly<Record<number, string>> = Object.freeze({
-  1: "客户端用法或版本兼容错误",
-  2: "认证失败，请先完成 filehub 登录",
-  3: "授权失败",
-  4: "目标冲突",
-  5: "目标格式错误或目标不存在",
-  6: "网络错误或请求超时",
-  7: "下载完整性校验失败",
-  8: "本地文件系统错误",
+  1: "client usage or version compatibility error",
+  2: "authentication failed; sign in to filehub first",
+  3: "authorization failed",
+  4: "target conflict",
+  5: "invalid target format or target not found",
+  6: "network error or request timeout",
+  7: "download integrity verification failed",
+  8: "local file system error",
 });
 
 type JsonSource = Readonly<Record<string, unknown>>;
@@ -48,7 +48,9 @@ export async function assertGzipTar(path: string, label: string): Promise<void> 
   try {
     handle = await Deno.open(path, { read: true });
   } catch (cause) {
-    throw new DownloadError(`无法读取 ${label} 以校验 gzip 格式: ${String(cause)}`, { cause });
+    throw new DownloadError(`Failed to read ${label} to check the gzip format: ${String(cause)}`, {
+      cause,
+    });
   }
   try {
     const header = new Uint8Array(2);
@@ -61,8 +63,8 @@ export async function assertGzipTar(path: string, label: string): Promise<void> 
     if (
       offset !== GZIP_MAGIC.length || header[0] !== GZIP_MAGIC[0] || header[1] !== GZIP_MAGIC[1]
     ) {
-      const suffix = GZIP_LABEL_RE.test(path) ? "" : "（文件名也不是 .tar.gz/.tgz）";
-      throw new DownloadError(`${label} 必须是 tar.gz 格式的 App 可执行文件包${suffix}`);
+      const suffix = GZIP_LABEL_RE.test(path) ? "" : " (the file name is not .tar.gz/.tgz either)";
+      throw new DownloadError(`${label} must be a tar.gz App executable package${suffix}`);
     }
   } finally {
     handle.close();
@@ -137,7 +139,7 @@ export class VerifiedArtifact implements AsyncDisposable {
 
   async assertAvailable(): Promise<this> {
     if (this.#cleaned || !(await regularFile(this.path))) {
-      throw new DownloadError(`已验证工件不再可用: ${this.path}`);
+      throw new DownloadError(`Verified artifact is no longer available: ${this.path}`);
     }
     return this;
   }
@@ -148,7 +150,7 @@ export class VerifiedArtifact implements AsyncDisposable {
       await Deno.remove(this.path);
     } catch (cause) {
       if (!(cause instanceof Deno.errors.NotFound)) {
-        throw new DownloadError(`无法清理已验证工件 ${this.path}`, { cause });
+        throw new DownloadError(`Failed to clean up verified artifact ${this.path}`, { cause });
       }
     }
     this.#cleaned = true;
@@ -203,7 +205,7 @@ export class HttpDownloadProvider implements DownloadProvider, ReleaseSourceCode
       const { hash, size } = await this.#stream(initialUrl, request, temporary, signal);
       if (!constantTimeEqual(hash, request.expectedHash.toLowerCase())) {
         throw new DownloadError(
-          `下载工件哈希不匹配: expected=${request.expectedHash.toLowerCase()} actual=${hash}`,
+          `Download artifact hash mismatch: expected=${request.expectedHash.toLowerCase()} actual=${hash}`,
         );
       }
       await publishWithoutReplace(temporary, destination);
@@ -214,8 +216,8 @@ export class HttpDownloadProvider implements DownloadProvider, ReleaseSourceCode
       await cleanupPath(temporary, cause);
       if (publishedIdentity) await cleanupOwnedPath(destination, publishedIdentity, cause);
       if (cause instanceof DownloadError) throw cause;
-      if (signal?.aborted) throw new DownloadError("HTTP 下载已取消", { cause });
-      throw new DownloadError("HTTP 下载失败", { cause });
+      if (signal?.aborted) throw new DownloadError("HTTP download cancelled", { cause });
+      throw new DownloadError("HTTP download failed", { cause });
     }
   }
 
@@ -240,9 +242,11 @@ export class HttpDownloadProvider implements DownloadProvider, ReleaseSourceCode
         try {
           if ([301, 302, 303, 307, 308].includes(response.status)) {
             const location = response.headers.get("location");
-            if (!location) throw new DownloadError(`HTTP ${response.status} 重定向缺少 Location`);
+            if (!location) {
+              throw new DownloadError(`HTTP ${response.status} redirect is missing Location`);
+            }
             if (redirects >= request.maxRedirects) {
-              throw new DownloadError(`HTTP 重定向超过限制 ${request.maxRedirects}`);
+              throw new DownloadError(`HTTP redirects exceed the limit ${request.maxRedirects}`);
             }
             current = new URL(location, current).href;
             parseHttpUrl(current);
@@ -250,15 +254,15 @@ export class HttpDownloadProvider implements DownloadProvider, ReleaseSourceCode
             continue;
           }
           if (response.status < 200 || response.status >= 300) {
-            throw new DownloadError(`HTTP 下载失败: status=${response.status}`);
+            throw new DownloadError(`HTTP download failed: status=${response.status}`);
           }
           const length = contentLength(response);
           if (length !== undefined && length > request.maxBytes) {
             throw new DownloadError(
-              `下载工件超过最大字节数: declared=${length} max=${request.maxBytes}`,
+              `Download artifact exceeds the maximum byte count: declared=${length} max=${request.maxBytes}`,
             );
           }
-          if (!response.body) throw new DownloadError("HTTP 下载响应缺少正文");
+          if (!response.body) throw new DownloadError("HTTP download response is missing the body");
           const reader = response.body.getReader();
           let size = 0;
           try {
@@ -269,7 +273,7 @@ export class HttpDownloadProvider implements DownloadProvider, ReleaseSourceCode
               size += chunk.byteLength;
               if (size > request.maxBytes) {
                 throw new DownloadError(
-                  `下载工件超过最大字节数: received=${size} max=${request.maxBytes}`,
+                  `Download artifact exceeds the maximum byte count: received=${size} max=${request.maxBytes}`,
                 );
               }
               digest.update(chunk);
@@ -321,27 +325,35 @@ export class FilehubDownloadProvider implements DownloadProvider, ReleaseSourceC
       dir: dirname(destination),
       prefix: `.${basename(destination)}.filehub-`,
     }).catch((cause) => {
-      throw new DownloadError("无法创建 filehub 私有暂存目录", { cause });
+      throw new DownloadError("Failed to create the filehub private staging directory", { cause });
     });
     const stagedOutput = join(staging, basename(destination));
     let publishedIdentity: FileIdentity | undefined;
     try {
       throwIfFilehubAborted(signal);
       await Deno.chmod(staging, 0o700).catch((cause) => {
-        throw new DownloadError("无法设置 filehub 私有暂存目录权限", { cause });
+        throw new DownloadError("Failed to set filehub private staging directory permissions", {
+          cause,
+        });
       });
       throwIfFilehubAborted(signal);
       const exitCode = await runFilehubPull(target, stagedOutput, signal);
       throwIfFilehubAborted(signal);
       if (exitCode !== 0) {
-        const category = FILEHUB_EXIT_DIAGNOSTICS[exitCode] ?? "未知错误";
-        throw new DownloadError(`filehub 下载失败: exit_code=${exitCode} category=${category}`);
+        const category = FILEHUB_EXIT_DIAGNOSTICS[exitCode] ?? "unknown error";
+        throw new DownloadError(
+          `filehub download failed: exit_code=${exitCode} category=${category}`,
+        );
       }
       const info = await Deno.lstat(stagedOutput).catch((cause) => {
-        throw new DownloadError("filehub 下载成功但未生成可用工件", { cause });
+        throw new DownloadError("filehub download succeeded but produced no usable artifact", {
+          cause,
+        });
       });
       if (!info.isFile || info.isSymlink) {
-        throw new DownloadError("filehub 下载成功但生成的工件不是普通文件");
+        throw new DownloadError(
+          "filehub download succeeded but the artifact is not a regular file",
+        );
       }
       const stagedArtifact = new VerifiedArtifact(
         stagedOutput,
@@ -371,7 +383,7 @@ export class FilehubDownloadProvider implements DownloadProvider, ReleaseSourceC
       await cleanupDirectory(staging, cause);
       if (publishedIdentity) await cleanupOwnedPath(destination, publishedIdentity, cause);
       if (cause instanceof DownloadError) throw cause;
-      throw new DownloadError("filehub 下载失败", { cause });
+      throw new DownloadError("filehub download failed", { cause });
     }
   }
 }
@@ -403,10 +415,10 @@ export class DownloadProviderRegistry {
   ): void {
     const normalized = providerName(name);
     if (!provider || typeof provider.fetch !== "function") {
-      throw new TypeError("下载提供方必须实现 fetch(request, destination)");
+      throw new TypeError("Download providers must implement fetch(request, destination)");
     }
     if (this.#providers.has(normalized) && !options.replace) {
-      throw new DownloadError(`下载提供方已经注册: ${normalized}`);
+      throw new DownloadError(`Download provider already registered: ${normalized}`);
     }
     this.#providers.set(normalized, provider);
   }
@@ -414,7 +426,7 @@ export class DownloadProviderRegistry {
   resolve(name: string): DownloadProvider {
     const normalized = providerName(name);
     const provider = this.#providers.get(normalized);
-    if (!provider) throw new DownloadError(`未知下载提供方: ${normalized}`);
+    if (!provider) throw new DownloadError(`Unknown download provider: ${normalized}`);
     return provider;
   }
 
@@ -443,10 +455,10 @@ export class DownloadProviderRegistry {
       artifact = await this.resolve(provider).fetch(request, stagingDestination, signal);
       throwIfRegistryAborted(signal);
       if (!(artifact instanceof VerifiedArtifact)) {
-        throw new DownloadError("下载提供方没有返回 VerifiedArtifact");
+        throw new DownloadError("Download provider did not return a VerifiedArtifact");
       }
       if (resolve(artifact.path) !== resolve(stagingDestination)) {
-        throw new DownloadError("下载提供方返回了不属于本次暂存区的工件");
+        throw new DownloadError("Download provider returned an artifact outside this staging area");
       }
       throwIfRegistryAborted(signal);
       await verifyArtifact(artifact, request);
@@ -468,7 +480,7 @@ export class DownloadProviderRegistry {
         artifact.size,
       );
     } catch (cause) {
-      const failure = signal?.aborted ? new DownloadError("下载已取消", { cause }) : cause;
+      const failure = signal?.aborted ? new DownloadError("Download cancelled", { cause }) : cause;
       await artifact?.cleanup().catch(() => undefined);
       await cleanupDirectory(stagingDirectory, failure);
       if (publishedIdentity) await cleanupOwnedPath(finalDestination, publishedIdentity, failure);
@@ -496,15 +508,20 @@ export class DownloadProviderRegistry {
     const schema = codecSchema(providerValue, codec);
     let payload: JsonSource;
     try {
-      payload = validatedSourceMapping(codec.exportReleaseSource(source), "发布 source payload");
+      payload = validatedSourceMapping(codec.exportReleaseSource(source), "release source payload");
     } catch (cause) {
       if (cause instanceof DownloadError) throw cause;
-      throw new DownloadError(`下载提供方 ${providerValue} 导出发布 source 失败`, { cause });
+      throw new DownloadError(
+        `Download provider ${providerValue} failed to export the release source`,
+        { cause },
+      );
     }
     const imported = importWithCodec(providerValue, codec, payload);
-    const original = validatedSourceMapping(source, "发布 source");
+    const original = validatedSourceMapping(source, "release source");
     if (stableJson(imported) !== stableJson(original)) {
-      throw new DownloadError(`下载提供方 ${providerValue} 的发布 source codec 无法严格往返`);
+      throw new DownloadError(
+        `Release source codec of download provider ${providerValue} cannot round-trip strictly`,
+      );
     }
     return Object.freeze({ schema, payload });
   }
@@ -512,28 +529,35 @@ export class DownloadProviderRegistry {
   importReleaseSource(providerValue: string, envelope: JsonSource): JsonSource {
     const provider = this.resolve(providerValue);
     const codec = releaseCodec(providerValue, provider);
-    const value = validatedSourceMapping(envelope, "发布 source envelope");
+    const value = validatedSourceMapping(envelope, "release source envelope");
     if (Object.keys(value).sort().join("\0") !== "payload\0schema") {
-      throw new DownloadError("发布 source envelope 必须只包含 schema 和 payload");
+      throw new DownloadError("Release source envelope must contain only schema and payload");
     }
     const expected = codecSchema(providerValue, codec);
     if (value.schema !== expected) {
-      throw new DownloadError(`下载提供方 ${providerValue} 的发布 source schema 不匹配`);
+      throw new DownloadError(
+        `Release source schema of download provider ${providerValue} does not match`,
+      );
     }
-    const payload = validatedSourceMapping(value.payload, "发布 source payload");
+    const payload = validatedSourceMapping(value.payload, "release source payload");
     const imported = importWithCodec(providerValue, codec, payload);
     let reexported: JsonSource;
     try {
       reexported = validatedSourceMapping(
         codec.exportReleaseSource(imported),
-        "重导出的发布 source payload",
+        "re-exported release source payload",
       );
     } catch (cause) {
       if (cause instanceof DownloadError) throw cause;
-      throw new DownloadError(`下载提供方 ${providerValue} 重导出发布 source 失败`, { cause });
+      throw new DownloadError(
+        `Download provider ${providerValue} failed to re-export the release source`,
+        { cause },
+      );
     }
     if (stableJson(reexported) !== stableJson(payload)) {
-      throw new DownloadError(`下载提供方 ${providerValue} 的发布 source codec 无法严格往返`);
+      throw new DownloadError(
+        `Release source codec of download provider ${providerValue} cannot round-trip strictly`,
+      );
     }
     return imported;
   }
@@ -547,7 +571,7 @@ function providerEntries(
 
 function providerName(value: unknown): string {
   if (typeof value !== "string" || !PROVIDER_NAME_RE.test(value)) {
-    throw new DownloadError(`下载提供方名称不合法: ${JSON.stringify(value)}`);
+    throw new DownloadError(`Invalid download provider name: ${JSON.stringify(value)}`);
   }
   return value.toLowerCase();
 }
@@ -558,42 +582,49 @@ function validateRequest(request: DownloadRequest): void {
   try {
     digestSize = createHash(algorithm).digest().byteLength;
   } catch (cause) {
-    throw new DownloadError(`不支持的哈希算法: ${JSON.stringify(request.hashAlgorithm)}`, {
-      cause,
-    });
+    throw new DownloadError(
+      `Unsupported hash algorithm: ${JSON.stringify(request.hashAlgorithm)}`,
+      {
+        cause,
+      },
+    );
   }
   const expected = request.expectedHash.toLowerCase();
   if (
     algorithm.startsWith("shake") || expected.length !== digestSize * 2 || !HEX_RE.test(expected)
   ) {
-    throw new DownloadError("预期哈希缺失或格式不合法");
+    throw new DownloadError("Expected hash is missing or invalid");
   }
   positiveNumber(request.connectTimeout, "connect_timeout");
   positiveNumber(request.readTimeout, "read_timeout");
   positiveInteger(request.maxBytes, "max_bytes");
   positiveInteger(request.chunkSize, "chunk_size");
   if (!Number.isInteger(request.maxRedirects) || request.maxRedirects < 0) {
-    throw new DownloadError("max_redirects 必须是非负整数");
+    throw new DownloadError("max_redirects must be a non-negative integer");
   }
 }
 
 function positiveNumber(value: number, label: string): void {
-  if (!Number.isFinite(value) || value <= 0) throw new DownloadError(`${label} 必须是有限正数`);
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new DownloadError(`${label} must be a finite positive number`);
+  }
 }
 
 function positiveInteger(value: number, label: string): void {
-  if (!Number.isSafeInteger(value) || value <= 0) throw new DownloadError(`${label} 必须是正整数`);
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new DownloadError(`${label} must be a positive integer`);
+  }
 }
 
 function sourceUrl(source: JsonSource): string {
   const unknown = Reflect.ownKeys(source).filter((key) => key !== "url");
   if (unknown.length) {
     throw new DownloadError(
-      `HTTP 下载 source 包含未知字段: ${unknown.map(String).sort().join(", ")}`,
+      `HTTP download source contains unknown fields: ${unknown.map(String).sort().join(", ")}`,
     );
   }
   if (typeof source.url !== "string" || source.url.trim().length === 0) {
-    throw new DownloadError("HTTP 下载 source.url 必须是非空字符串");
+    throw new DownloadError("HTTP download source.url must be a non-empty string");
   }
   const value = source.url.trim();
   parseHttpUrl(value);
@@ -605,18 +636,22 @@ function parseHttpUrl(value: string): URL {
   try {
     parsed = new URL(value);
   } catch (cause) {
-    throw new DownloadError(`HTTP URL 不合法: ${JSON.stringify(value)}`, { cause });
+    throw new DownloadError(`Invalid HTTP URL: ${JSON.stringify(value)}`, { cause });
   }
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-    throw new DownloadError(`仅允许 http/https URL: ${JSON.stringify(value)}`);
+    throw new DownloadError(`Only http/https URLs are allowed: ${JSON.stringify(value)}`);
   }
-  if (!parsed.hostname) throw new DownloadError(`HTTP URL 缺少主机名: ${JSON.stringify(value)}`);
-  if (parsed.username || parsed.password) throw new DownloadError("HTTP URL 不允许包含用户凭据");
+  if (!parsed.hostname) {
+    throw new DownloadError(`HTTP URL is missing a host name: ${JSON.stringify(value)}`);
+  }
+  if (parsed.username || parsed.password) {
+    throw new DownloadError("HTTP URL must not contain user credentials");
+  }
   if (
     parsed.port &&
     (!/^\d+$/.test(parsed.port) || Number(parsed.port) < 1 || Number(parsed.port) > 65535)
   ) {
-    throw new DownloadError(`HTTP URL 端口不合法: ${JSON.stringify(value)}`);
+    throw new DownloadError(`Invalid HTTP URL port: ${JSON.stringify(value)}`);
   }
   return parsed;
 }
@@ -624,22 +659,30 @@ function parseHttpUrl(value: string): URL {
 function releaseHttpUrl(source: JsonSource): string {
   const value = sourceUrl(source);
   const parsed = parseHttpUrl(value);
-  if (parsed.search) throw new DownloadError("发布历史中的 HTTP URL 不允许包含 query");
-  if (parsed.hash) throw new DownloadError("发布历史中的 HTTP URL 不允许包含 fragment");
-  if (parsed.href !== value) throw new DownloadError("发布历史中的 HTTP URL 必须使用规范形式");
+  if (parsed.search) {
+    throw new DownloadError("HTTP URLs in release history must not contain a query");
+  }
+  if (parsed.hash) {
+    throw new DownloadError("HTTP URLs in release history must not contain a fragment");
+  }
+  if (parsed.href !== value) {
+    throw new DownloadError("HTTP URLs in release history must use the canonical form");
+  }
   return value;
 }
 
 function sourceTarget(source: JsonSource): string {
   if (!source || typeof source !== "object" || Array.isArray(source)) {
-    throw new DownloadError("filehub 下载 source 必须是映射");
+    throw new DownloadError("filehub download source must be a mapping");
   }
   const unknown = Reflect.ownKeys(source).filter((key) => key !== "target");
   if (unknown.length) {
-    throw new DownloadError(`filehub 下载 source 包含未知字段: ${unknown.join(", ")}`);
+    throw new DownloadError(
+      `filehub download source contains unknown fields: ${unknown.join(", ")}`,
+    );
   }
   if (typeof source.target !== "string" || !source.target.trim()) {
-    throw new DownloadError("filehub 下载 source.target 必须是非空字符串");
+    throw new DownloadError("filehub download source.target must be a non-empty string");
   }
   return source.target.trim();
 }
@@ -657,7 +700,7 @@ function releaseFilehubTarget(source: JsonSource): string {
     parts.slice(1).some((part) => !FILEHUB_PART_RE.test(part))
   ) {
     throw new DownloadError(
-      "发布历史中的 filehub target 必须是规范四段 SERVER/PROJECT/VERSION/NAME",
+      "filehub targets in release history must be canonical four-part SERVER/PROJECT/VERSION/NAME",
     );
   }
   return parts.join("/");
@@ -665,13 +708,13 @@ function releaseFilehubTarget(source: JsonSource): string {
 
 function validatedSourceMapping(value: unknown, label: string): JsonSource {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new DownloadError(`${label} 必须是映射`);
+    throw new DownloadError(`${label} must be a mapping`);
   }
   const budget = { count: 0 };
   const normalized = validateSourceJson(value, label, 0, budget) as Record<string, unknown>;
   const encoded = new TextEncoder().encode(stableJson(normalized));
   if (encoded.byteLength > SOURCE_MAX_BYTES) {
-    throw new DownloadError(`${label} 超过 ${SOURCE_MAX_BYTES} 字节限制`);
+    throw new DownloadError(`${label} exceeds the ${SOURCE_MAX_BYTES} byte limit`);
   }
   return Object.freeze(normalized);
 }
@@ -682,16 +725,18 @@ function validateSourceJson(
   depth: number,
   budget: { count: number },
 ): unknown {
-  if (depth > SOURCE_MAX_DEPTH) throw new DownloadError(`${label} 超过嵌套深度限制`);
-  if (++budget.count > SOURCE_MAX_ITEMS) throw new DownloadError(`${label} 超过项目数量限制`);
+  if (depth > SOURCE_MAX_DEPTH) throw new DownloadError(`${label} exceeds the nesting depth limit`);
+  if (++budget.count > SOURCE_MAX_ITEMS) {
+    throw new DownloadError(`${label} exceeds the item count limit`);
+  }
   if (value === null || typeof value === "boolean") return value;
   if (typeof value === "number") {
-    if (!Number.isFinite(value)) throw new DownloadError(`${label} 不允许 NaN/Infinity`);
+    if (!Number.isFinite(value)) throw new DownloadError(`${label} must not contain NaN/Infinity`);
     return value;
   }
   if (typeof value === "string") {
     if (new TextEncoder().encode(value).byteLength > SOURCE_MAX_STRING) {
-      throw new DownloadError(`${label} 字符串超过长度限制`);
+      throw new DownloadError(`${label} string exceeds the length limit`);
     }
     return value;
   }
@@ -702,7 +747,7 @@ function validateSourceJson(
     const result: Record<string, unknown> = {};
     for (const key of Reflect.ownKeys(value)) {
       if (typeof key !== "string" || Object.hasOwn(result, key)) {
-        throw new DownloadError(`${label} 的键必须是唯一字符串`);
+        throw new DownloadError(`${label} keys must be unique strings`);
       }
       result[key] = validateSourceJson(
         (value as Record<string, unknown>)[key],
@@ -713,7 +758,7 @@ function validateSourceJson(
     }
     return result;
   }
-  throw new DownloadError(`${label} 包含非 JSON 类型`);
+  throw new DownloadError(`${label} contains a non-JSON type`);
 }
 
 function stableJson(value: unknown): string {
@@ -726,7 +771,7 @@ function stableJson(value: unknown): string {
     }}`;
   }
   const encoded = JSON.stringify(value);
-  if (encoded === undefined) throw new DownloadError("值不是合法 JSON");
+  if (encoded === undefined) throw new DownloadError("Value is not valid JSON");
   return encoded;
 }
 
@@ -738,7 +783,7 @@ function releaseCodec(provider: string, value: DownloadProvider): ReleaseSourceC
     typeof candidate.importReleaseSource !== "function"
   ) {
     throw new DownloadError(
-      `下载提供方 ${provider} 未实现版本化 ReleaseSourceCodec，不能用于发布历史`,
+      `Download provider ${provider} does not implement versioned ReleaseSourceCodec and cannot be used for release history`,
     );
   }
   return candidate as ReleaseSourceCodec;
@@ -747,7 +792,7 @@ function releaseCodec(provider: string, value: DownloadProvider): ReleaseSourceC
 function codecSchema(provider: string, codec: ReleaseSourceCodec): string {
   const schema = codec.releaseSourceSchema;
   if (!SOURCE_SCHEMA_RE.test(schema)) {
-    throw new DownloadError(`下载提供方 ${provider} 的发布 source schema 不合法`);
+    throw new DownloadError(`Invalid release source schema for download provider ${provider}`);
   }
   return schema;
 }
@@ -758,10 +803,12 @@ function importWithCodec(
   payload: JsonSource,
 ): JsonSource {
   try {
-    return validatedSourceMapping(codec.importReleaseSource(payload), "导入的发布 source");
+    return validatedSourceMapping(codec.importReleaseSource(payload), "imported release source");
   } catch (cause) {
     if (cause instanceof DownloadError) throw cause;
-    throw new DownloadError(`下载提供方 ${provider} 导入发布 source 失败`, { cause });
+    throw new DownloadError(`Download provider ${provider} failed to import the release source`, {
+      cause,
+    });
   }
 }
 
@@ -781,7 +828,7 @@ async function runFilehubPull(
     }).spawn();
   } catch (cause) {
     if (cause instanceof Deno.errors.NotFound) throw filehubInstallError(cause);
-    throw new DownloadError("无法启动 filehub 客户端", { cause });
+    throw new DownloadError("Failed to start the filehub client", { cause });
   }
   const controller = new AbortController();
   const abort = () => controller.abort(signal?.reason);
@@ -805,18 +852,29 @@ async function runFilehubPull(
     } catch (terminateCause) {
       terminationCause = terminateCause;
     }
-    const combinedCause = terminationCause === undefined
-      ? cause
-      : new AggregateError([cause, terminationCause], "filehub 取消后的子进程清理失败");
-    if (signal?.aborted) throw new DownloadError("filehub 下载已取消", { cause: combinedCause });
-    if (terminationCause !== undefined) {
-      throw new DownloadError("filehub 下载超时且无法确认子进程已退出", {
-        cause: combinedCause,
-      });
+    const combinedCause = terminationCause === undefined ? cause : new AggregateError(
+      [cause, terminationCause],
+      "Failed to clean up the filehub child process after cancellation",
+    );
+    if (signal?.aborted) {
+      throw new DownloadError("filehub download cancelled", { cause: combinedCause });
     }
-    throw new DownloadError(`filehub 下载超过总期限 ${FILEHUB_PROCESS_TIMEOUT_MS / 1000} 秒`, {
-      cause: combinedCause,
-    });
+    if (terminationCause !== undefined) {
+      throw new DownloadError(
+        "filehub download timed out and the child process exit could not be confirmed",
+        {
+          cause: combinedCause,
+        },
+      );
+    }
+    throw new DownloadError(
+      `filehub download exceeded the overall deadline of ${
+        FILEHUB_PROCESS_TIMEOUT_MS / 1000
+      } seconds`,
+      {
+        cause: combinedCause,
+      },
+    );
   } finally {
     clearTimeout(timer);
     signal?.removeEventListener("abort", abort);
@@ -825,13 +883,13 @@ async function runFilehubPull(
 
 function throwIfFilehubAborted(signal?: AbortSignal): void {
   if (signal?.aborted) {
-    throw new DownloadError("filehub 下载已取消", { cause: signal.reason });
+    throw new DownloadError("filehub download cancelled", { cause: signal.reason });
   }
 }
 
 function throwIfRegistryAborted(signal?: AbortSignal): void {
   if (signal?.aborted) {
-    throw new DownloadError("下载已取消", { cause: signal.reason });
+    throw new DownloadError("Download cancelled", { cause: signal.reason });
   }
 }
 
@@ -844,7 +902,7 @@ async function terminateAndReap(child: Deno.ChildProcess): Promise<void> {
     child.kill("SIGKILL");
   } catch { /* process may already be gone */ }
   if (!(await settlesWithin(child.status, FILEHUB_TERMINATE_TIMEOUT_MS))) {
-    throw new DownloadError("filehub 子进程强制终止后仍未退出");
+    throw new DownloadError("filehub child process did not exit after forced termination");
   }
 }
 
@@ -857,9 +915,9 @@ async function settlesWithin(value: Promise<unknown>, milliseconds: number): Pro
 
 function filehubInstallError(cause?: unknown): DownloadError {
   return new DownloadError(
-    "未找到 filehub 客户端命令，请先安装 filehub。" +
-      "Linux/macOS 请使用官方 install-cli.sh，Windows 请使用官方 install-cli.ps1；" +
-      `安装说明: ${FILEHUB_INSTALL_URL}`,
+    "filehub client command not found; install filehub first." +
+      "On Linux/macOS use the official install-cli.sh; on Windows use the official install-cli.ps1;" +
+      `Installation guide: ${FILEHUB_INSTALL_URL}`,
     { cause },
   );
 }
@@ -881,9 +939,9 @@ async function fetchWithTimeout(
       signal: controller.signal,
     });
   } catch (cause) {
-    if (signal?.aborted) throw new DownloadError("HTTP 下载已取消", { cause });
-    if (controller.signal.aborted) throw new DownloadError("HTTP 下载超时", { cause });
-    throw new DownloadError("HTTP 下载失败", { cause });
+    if (signal?.aborted) throw new DownloadError("HTTP download cancelled", { cause });
+    if (controller.signal.aborted) throw new DownloadError("HTTP download timed out", { cause });
+    throw new DownloadError("HTTP download failed", { cause });
   } finally {
     clearTimeout(timer);
     signal?.removeEventListener("abort", abort);
@@ -895,16 +953,19 @@ async function readWithTimeout(
   milliseconds: number,
   signal?: AbortSignal,
 ): Promise<ReadableStreamReadResult<Uint8Array>> {
-  if (signal?.aborted) throw new DownloadError("HTTP 下载已取消");
+  if (signal?.aborted) throw new DownloadError("HTTP download cancelled");
   let timeout: ReturnType<typeof setTimeout> | undefined;
   let abortListener: (() => void) | undefined;
   try {
     return await Promise.race([
       reader.read(),
       new Promise<never>((_, reject) => {
-        timeout = setTimeout(() => reject(new DownloadError("HTTP 下载超时")), milliseconds);
+        timeout = setTimeout(
+          () => reject(new DownloadError("HTTP download timed out")),
+          milliseconds,
+        );
         if (signal) {
-          abortListener = () => reject(new DownloadError("HTTP 下载已取消"));
+          abortListener = () => reject(new DownloadError("HTTP download cancelled"));
           signal.addEventListener("abort", abortListener, { once: true });
         }
       }),
@@ -919,7 +980,7 @@ function contentLength(response: Response): number | undefined {
   const value = response.headers.get("content-length");
   if (value === null) return undefined;
   if (!/^\d+$/.test(value) || !Number.isSafeInteger(Number(value))) {
-    throw new DownloadError(`HTTP Content-Length 不合法: ${JSON.stringify(value)}`);
+    throw new DownloadError(`Invalid HTTP Content-Length: ${JSON.stringify(value)}`);
   }
   return Number(value);
 }
@@ -929,19 +990,24 @@ async function verifyArtifact(artifact: VerifiedArtifact, request: DownloadReque
   try {
     info = await Deno.lstat(artifact.path);
   } catch (cause) {
-    throw new DownloadError(`下载提供方返回的工件不可读: ${artifact.path}`, { cause });
+    throw new DownloadError(
+      `Artifact returned by the download provider is not readable: ${artifact.path}`,
+      { cause },
+    );
   }
   if (!info.isFile || info.isSymlink) {
-    throw new DownloadError(`下载提供方返回的工件不是普通文件: ${artifact.path}`);
+    throw new DownloadError(
+      `Artifact returned by the download provider is not a regular file: ${artifact.path}`,
+    );
   }
   if (info.size > request.maxBytes) {
     throw new DownloadError(
-      `下载工件超过最大字节数: received=${info.size} max=${request.maxBytes}`,
+      `Download artifact exceeds the maximum byte count: received=${info.size} max=${request.maxBytes}`,
     );
   }
   const digest = createHash(request.hashAlgorithm.toLowerCase());
   const file = await Deno.open(artifact.path, { read: true }).catch((cause) => {
-    throw new DownloadError(`无法校验下载工件 ${artifact.path}`, { cause });
+    throw new DownloadError(`Failed to verify download artifact ${artifact.path}`, { cause });
   });
   let size = 0;
   const buffer = new Uint8Array(request.chunkSize);
@@ -951,7 +1017,9 @@ async function verifyArtifact(artifact: VerifiedArtifact, request: DownloadReque
       if (count === null) break;
       size += count;
       if (size > request.maxBytes) {
-        throw new DownloadError(`下载工件超过最大字节数: received=${size} max=${request.maxBytes}`);
+        throw new DownloadError(
+          `Download artifact exceeds the maximum byte count: received=${size} max=${request.maxBytes}`,
+        );
       }
       digest.update(buffer.subarray(0, count));
     }
@@ -961,7 +1029,7 @@ async function verifyArtifact(artifact: VerifiedArtifact, request: DownloadReque
   const actual = digest.digest("hex").toLowerCase();
   if (!constantTimeEqual(actual, request.expectedHash.toLowerCase())) {
     throw new DownloadError(
-      `下载工件哈希不匹配: expected=${request.expectedHash.toLowerCase()} actual=${actual}`,
+      `Download artifact hash mismatch: expected=${request.expectedHash.toLowerCase()} actual=${actual}`,
     );
   }
   artifact.hashAlgorithm = request.hashAlgorithm.toLowerCase();
@@ -979,13 +1047,17 @@ async function requireDestinationBoundary(destination: string): Promise<void> {
   const parent = dirname(destination);
   try {
     const info = await Deno.stat(parent);
-    if (!info.isDirectory) throw new DownloadError(`下载目标目录不存在: ${parent}`);
+    if (!info.isDirectory) {
+      throw new DownloadError(`Download destination directory does not exist: ${parent}`);
+    }
   } catch (cause) {
     if (cause instanceof DownloadError) throw cause;
-    throw new DownloadError(`下载目标目录不存在: ${parent}`, { cause });
+    throw new DownloadError(`Download destination directory does not exist: ${parent}`, { cause });
   }
   if (await pathExists(destination)) {
-    throw new DownloadError(`下载目标已存在，拒绝覆盖: ${destination}`);
+    throw new DownloadError(
+      `Download destination already exists; refusing to overwrite: ${destination}`,
+    );
   }
 }
 
@@ -1004,9 +1076,12 @@ async function publishWithoutReplace(source: string, destination: string): Promi
     await Deno.link(source, destination);
   } catch (cause) {
     if (cause instanceof Deno.errors.AlreadyExists) {
-      throw new DownloadError(`下载目标已存在，拒绝覆盖: ${destination}`, { cause });
+      throw new DownloadError(
+        `Download destination already exists; refusing to overwrite: ${destination}`,
+        { cause },
+      );
     }
-    throw new DownloadError("无法原子发布下载工件", { cause });
+    throw new DownloadError("Failed to publish the download artifact atomically", { cause });
   }
 }
 
@@ -1041,7 +1116,7 @@ async function cleanupPath(path: string, primary: unknown): Promise<void> {
   try {
     await removeIfPresent(path);
   } catch (cause) {
-    if (primary instanceof Error) primary.message += ` (清理失败: ${String(cause)})`;
+    if (primary instanceof Error) primary.message += ` (cleanup failed: ${String(cause)})`;
   }
 }
 
@@ -1050,14 +1125,16 @@ async function cleanupDirectory(path: string, primary: unknown): Promise<void> {
     await Deno.remove(path, { recursive: true });
   } catch (cause) {
     if (!(cause instanceof Deno.errors.NotFound) && primary instanceof Error) {
-      primary.message += ` (filehub 私有暂存目录清理失败)`;
+      primary.message += ` (failed to clean up the filehub private staging directory)`;
     }
   }
 }
 
 async function fileIdentity(path: string): Promise<FileIdentity> {
   const info = await Deno.lstat(path);
-  if (!info.isFile || info.isSymlink) throw new DownloadError(`下载目标不是安全普通文件: ${path}`);
+  if (!info.isFile || info.isSymlink) {
+    throw new DownloadError(`Download destination is not a safe regular file: ${path}`);
+  }
   return Object.freeze({ dev: info.dev, ino: info.ino });
 }
 
@@ -1072,13 +1149,15 @@ async function cleanupOwnedPath(
       !current.isFile || current.isSymlink || current.dev !== identity.dev ||
       current.ino !== identity.ino
     ) {
-      if (primary instanceof Error) primary.message += " (下载目标已被替换，拒绝清理)";
+      if (primary instanceof Error) {
+        primary.message += " (download destination was replaced; refusing to clean up)";
+      }
       return;
     }
     await Deno.remove(path);
   } catch (cause) {
     if (!(cause instanceof Deno.errors.NotFound) && primary instanceof Error) {
-      primary.message += " (下载目标清理失败)";
+      primary.message += " (failed to clean up the download destination)";
     }
   }
 }

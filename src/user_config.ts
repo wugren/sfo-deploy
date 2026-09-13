@@ -30,7 +30,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function stringValue(value: unknown, label: string): string | undefined {
   if (value === undefined) return undefined;
   if (typeof value !== "string" || value.trim().length === 0) {
-    throw new ConfigurationError(`${label} 必须是字符串`);
+    throw new ConfigurationError(`${label} must be a string`);
   }
   return value.trim();
 }
@@ -41,7 +41,7 @@ function keepVersionsValue(value: unknown, label: string): number {
     typeof value !== "number" || !Number.isInteger(value) ||
     value < 1 || value > MAX_KEEP_VERSIONS
   ) {
-    throw new ConfigurationError(`${label} 必须是 1-${MAX_KEEP_VERSIONS} 的整数`);
+    throw new ConfigurationError(`${label} must be an integer between 1 and ${MAX_KEEP_VERSIONS}`);
   }
   return value;
 }
@@ -59,7 +59,9 @@ async function exists(path: string): Promise<boolean> {
 function expandHome(value: string, homeDir: string): string {
   if (value === "~") return homeDir;
   if (value.startsWith("~/")) return join(homeDir, value.slice(2));
-  throw new ConfigurationError("packages_dir 只支持当前用户主目录展开（~）或绝对路径");
+  throw new ConfigurationError(
+    "packages_dir supports only home-directory expansion (~) or an absolute path",
+  );
 }
 
 async function loadConfigFile(
@@ -76,33 +78,33 @@ async function loadConfigFile(
   try {
     text = await Deno.readTextFile(configPath);
   } catch (cause) {
-    throw new ConfigurationError(`无法读取用户配置文件 ${configPath}`, { cause });
+    throw new ConfigurationError(`Failed to read user config file ${configPath}`, { cause });
   }
   let value: unknown;
   try {
     value = parse(text, { allowDuplicateKeys: false });
   } catch (cause) {
-    throw new ConfigurationError(`无法读取 YAML ${configPath}: ${String(cause)}`, { cause });
+    throw new ConfigurationError(`Failed to read YAML ${configPath}: ${String(cause)}`, { cause });
   }
   if (!isRecord(value)) {
-    throw new ConfigurationError(`用户配置文件顶层必须是映射: ${configPath}`);
+    throw new ConfigurationError(`User config file top level must be a mapping: ${configPath}`);
   }
   const unknown = Object.keys(value).filter((key) =>
     key !== "schema_version" && key !== "packages_dir" && key !== "keep_versions"
   )
     .sort();
   if (unknown.length > 0) {
-    throw new ConfigurationError(`用户配置文件包含未知字段: ${unknown.join(", ")}`);
+    throw new ConfigurationError(`User config file contains unknown fields: ${unknown.join(", ")}`);
   }
   if (value.schema_version !== 1) {
-    throw new ConfigurationError("用户配置 schema_version 只支持 1");
+    throw new ConfigurationError("User config schema_version supports only 1");
   }
   const raw = stringValue(value.packages_dir, "packages_dir");
   let packagesDir = join(homeDir, CONFIG_DIRECTORY_NAME, DEFAULT_PACKAGES_DIRECTORY_NAME);
   if (raw !== undefined) {
     const expanded = raw.startsWith("~") ? expandHome(raw, homeDir) : raw;
     if (!isAbsolute(expanded)) {
-      throw new ConfigurationError("packages_dir 必须是绝对路径或以 ~ 开头的路径");
+      throw new ConfigurationError("packages_dir must be an absolute path or start with ~");
     }
     packagesDir = resolve(expanded);
   }
@@ -116,7 +118,9 @@ function defaultHome(homeDir: string | undefined): string {
   const home = homeDir ??
     Deno.env.get(Deno.build.os === "windows" ? "USERPROFILE" : "HOME");
   if (typeof home !== "string" || home.length === 0) {
-    throw new ConfigurationError("无法确定用户主目录（未设置 HOME/USERPROFILE）");
+    throw new ConfigurationError(
+      "Failed to determine the user home directory (HOME/USERPROFILE is not set)",
+    );
   }
   return home;
 }

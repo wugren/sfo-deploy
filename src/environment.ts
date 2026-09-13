@@ -97,8 +97,8 @@ export function resolveEnvironment(
 ): ResolvedEnvironment {
   if (instance.definition !== definition.name) {
     throw new PlanningError(
-      `环境实例 ${machineName}/${instance.name} 引用 ${instance.definition}，` +
-        `不能用定义 ${definition.name} 解析`,
+      `Environment instance ${machineName}/${instance.name} references ${instance.definition}, ` +
+        `which cannot be resolved with definition ${definition.name}`,
     );
   }
   const requiresPrivilege = instance.requiresPrivilege ?? definition.requiresPrivilege;
@@ -130,7 +130,9 @@ function requiredScripts(
 ): readonly ScriptInvocation[] {
   const scripts = definition.scripts.actions.get(action) ?? EMPTY_SCRIPTS;
   if (scripts.length === 0) {
-    throw new PlanningError(`环境定义 ${definition.name} 未定义动作脚本: ${action}`);
+    throw new PlanningError(
+      `Environment definition ${definition.name} has no action script: ${action}`,
+    );
   }
   return freezeArray(scripts);
 }
@@ -168,7 +170,7 @@ export function planEnvironmentActions(
     return freezeArray(sequence);
   }
   if (!["check", "install", "start", "stop", "restart"].includes(requestedAction)) {
-    throw new PlanningError(`未知环境动作: ${requestedAction}`);
+    throw new PlanningError(`Unknown environment action: ${requestedAction}`);
   }
   return freezeArray([Object.freeze({
     name: requestedAction,

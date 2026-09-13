@@ -145,7 +145,7 @@ Deno.test("integration/config-updater: 类型、缺失秘密、无效候选和�
         output,
       })
     );
-    assertStringIncludes(missing.message, "不可读");
+    assertStringIncludes(missing.message, "is not readable");
 
     await Deno.writeTextFile(join(secrets, "VALUE"), "not-an-integer");
     await assertRejects(
@@ -159,11 +159,11 @@ Deno.test("integration/config-updater: 类型、缺失秘密、无效候选和�
           output,
         }),
       Error,
-      "不符合 integer",
+      "does not match type integer",
     );
 
     await Deno.writeTextFile(join(root, "residual"), `x=${marker}\n`);
-    await assertRejects(() => validateCandidate(join(root, "residual")), Error, "仍包含");
+    await assertRejects(() => validateCandidate(join(root, "residual")), Error, "still contains");
   });
 });
 
@@ -269,7 +269,7 @@ Deno.test("integration/config-updater: 无效候选按格式复解析失败且�
             output,
           }),
         Error,
-        `${format.toUpperCase()} 配置骨架无法解析`,
+        `Failed to parse the ${format.toUpperCase()} config skeleton`,
       );
       await assertRejects(() => Deno.lstat(output), Deno.errors.NotFound);
     });

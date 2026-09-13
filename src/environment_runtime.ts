@@ -28,7 +28,7 @@ function requireSuccess(
 ): CommandResult {
   if (result.exitCode !== 0) {
     throw new TransportError(
-      `${label}失败（退出码 ${result.exitCode}）: ${
+      `${label} failed (exit code ${result.exitCode}): ${
         [result.stderr.trim(), result.stdout.trim()].filter(Boolean).join(" ")
       }`.trim(),
     );
@@ -46,11 +46,11 @@ async function probeTool(
   requireSuccess(result, label);
   const path = result.stdout.trim();
   if (!path.startsWith("/") || /\s/.test(path)) {
-    throw new TransportError(`${label}返回了非法路径`);
+    throw new TransportError(`${label} returned an invalid path`);
   }
   const kind = path.split("/").pop() ?? "";
   if (!["apt-get", "yum", "systemctl", "service", "chkconfig"].includes(kind)) {
-    throw new TransportError(`${label}返回了不支持的工具: ${kind}`);
+    throw new TransportError(`${label} returned an unsupported tool: ${kind}`);
   }
   return Object.freeze({ kind: kind as DetectedTool["kind"], path });
 }
@@ -65,7 +65,7 @@ async function detectPackageManager(
     : manager === "apt-get"
     ? 'if test -x /usr/bin/apt-get; then printf "%s" /usr/bin/apt-get; exit 0; fi; exit 1'
     : 'for path in /usr/bin/yum /bin/yum; do if test -x "$path"; then printf "%s" "$path"; exit 0; fi; done; exit 1';
-  return await probeTool(session, script, signal, "包管理器探测");
+  return await probeTool(session, script, signal, "package manager probe");
 }
 
 async function packagesInstalled(
@@ -109,12 +109,12 @@ export async function installEnvironmentPackages(
     if (manager.kind === "apt-get") {
       requireSuccess(
         await session.run([manager.path, "update"], { signal, privileged: true }),
-        "刷新 apt 软件源",
+        "refresh apt package index",
       );
     } else {
       requireSuccess(
         await session.run([manager.path, "makecache"], { signal, privileged: true }),
-        "刷新 yum 软件源",
+        "refresh yum package index",
       );
     }
   }
@@ -123,7 +123,7 @@ export async function installEnvironmentPackages(
     : [manager.path, "install", "-y", ...install.packages];
   return requireSuccess(
     await session.run(argv, { signal, privileged: true }),
-    "安装环境软件包",
+    "install environment packages",
   );
 }
 
@@ -137,7 +137,7 @@ export async function detectServiceTool(
     : tool === "systemctl"
     ? 'if test -x /usr/bin/systemctl; then printf "%s" /usr/bin/systemctl; exit 0; fi; if test -x /bin/systemctl; then printf "%s" /bin/systemctl; exit 0; fi; exit 1'
     : 'for path in /usr/bin/service /usr/sbin/service /sbin/service; do if test -x "$path"; then printf "%s" "$path"; exit 0; fi; done; exit 1';
-  return await probeTool(session, script, signal, "服务管理器探测");
+  return await probeTool(session, script, signal, "service manager probe");
 }
 
 function systemctlUnit(name: string): string {
@@ -158,7 +158,7 @@ async function verifySystemdState(
   });
   if (active.exitCode !== 0) {
     throw new TransportError(
-      `systemd 服务未处于 active 状态（退出码 ${active.exitCode}）`,
+      `systemd service is not active (exit code ${active.exitCode})`,
     );
   }
   if (manager.enabled !== undefined) {
@@ -170,7 +170,7 @@ async function verifySystemdState(
     const matched = manager.enabled ? enabled.exitCode === 0 : enabled.exitCode === 1;
     if (!matched) {
       throw new TransportError(
-        `systemd 服务 enable 状态未收敛（退出码 ${enabled.exitCode}）`,
+        `systemd service enable state did not converge (exit code ${enabled.exitCode})`,
       );
     }
   }
@@ -180,7 +180,7 @@ async function chkconfigPath(
   session: RemoteSession,
   signal?: AbortSignal,
 ): Promise<string> {
-  const tool = await probeTool(session, CHKCONFIG_PROBE_SCRIPT, signal, "chkconfig 探测");
+  const tool = await probeTool(session, CHKCONFIG_PROBE_SCRIPT, signal, "chkconfig probe");
   return tool.path;
 }
 
@@ -196,7 +196,7 @@ async function verifyServiceState(
   });
   if (status.exitCode !== 0) {
     throw new TransportError(
-      `service 状态未处于 active（退出码 ${status.exitCode}）`,
+      `service is not active (exit code ${status.exitCode})`,
     );
   }
   if (manager.enabled !== undefined) {
@@ -207,7 +207,7 @@ async function verifyServiceState(
         timeoutMs: manager.timeoutMs,
         privileged: true,
       }),
-      `设置服务 ${manager.enabled ? "自启" : "禁用"}`,
+      `set service ${manager.enabled ? "enabled" : "disabled"}`,
     );
   }
 }
@@ -228,7 +228,7 @@ export async function convergeEnvironmentService(
           [tool.path, manager.enabled ? "enable" : "disable", "--", unit],
           { signal, timeoutMs: manager.timeoutMs, privileged: true },
         ),
-        `设置 systemd 服务 ${manager.enabled ? "自启" : "禁用"}`,
+        `set systemd service ${manager.enabled ? "enabled" : "disabled"}`,
       );
     }
     requireSuccess(
@@ -237,13 +237,13 @@ export async function convergeEnvironmentService(
         timeoutMs: manager.timeoutMs,
         privileged: true,
       }),
-      `执行 systemd ${operation}`,
+      `run systemd ${operation}`,
     );
     await verifySystemdState(session, tool.path, manager, signal);
     return;
   }
   if (tool.kind !== "service") {
-    throw new TransportError(`服务管理器探测返回了不支持的工具: ${tool.kind}`);
+    throw new TransportError(`Service manager probe returned an unsupported tool: ${tool.kind}`);
   }
   requireSuccess(
     await session.run([tool.path, manager.name, operation], {
@@ -251,7 +251,7 @@ export async function convergeEnvironmentService(
       timeoutMs: manager.timeoutMs,
       privileged: true,
     }),
-    `执行 service ${operation}`,
+    `run service ${operation}`,
   );
   await verifyServiceState(session, manager, signal);
 }

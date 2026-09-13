@@ -27,15 +27,15 @@ export function resolveMachine(
   options: { readonly executorRegion?: string; readonly addressKind?: AddressKind } = {},
 ): ResolvedMachine {
   const machine = cluster.machines.get(machineName);
-  if (!machine) throw new PlanningError(`未知机器: ${machineName}`);
+  if (!machine) throw new PlanningError(`Unknown machine: ${machineName}`);
   const region = options.executorRegion ?? cluster.executorRegion;
   const kind = options.addressKind ?? (machine.region === region ? "private" : "public");
   if (kind !== "private" && kind !== "public") {
-    throw new PlanningError(`地址类型只支持 private/public: ${kind}`);
+    throw new PlanningError(`Address kind supports only private/public: ${kind}`);
   }
   const addresses = kind === "private" ? machine.privateIp : machine.publicIp;
   if (addresses.length === 0) {
-    throw new PlanningError(`机器 ${machineName} 缺少要求的 ${kind} IP`);
+    throw new PlanningError(`Machine ${machineName} has no required ${kind} IP`);
   }
   return Object.freeze({
     machine,
@@ -55,7 +55,9 @@ function topological(
     const dependencySet = new Set(dependencies.get(node) ?? []);
     const unknown = [...dependencySet].filter((dependency) => !nodeSet.has(dependency)).sort();
     if (unknown.length > 0) {
-      throw new PlanningError(`${node} 引用计划外依赖: ${unknown.join(", ")}`);
+      throw new PlanningError(
+        `${node} references dependencies outside the plan: ${unknown.join(", ")}`,
+      );
     }
     incoming.set(node, dependencySet);
   }
@@ -76,7 +78,7 @@ function topological(
   }
   if (order.length !== nodeSet.size) {
     const cyclic = [...nodeSet].filter((node) => !order.includes(node)).sort();
-    throw new PlanningError(`环境/App 依赖存在循环: ${cyclic.join(", ")}`);
+    throw new PlanningError(`Environment/App dependency cycle: ${cyclic.join(", ")}`);
   }
   return order;
 }
@@ -187,7 +189,7 @@ export function buildPlan(
   const unknownMachines = [...selectedMachines].filter((machine) => !cluster.machines.has(machine))
     .sort();
   if (unknownMachines.length > 0) {
-    throw new PlanningError(`未知机器过滤器: ${unknownMachines.join(", ")}`);
+    throw new PlanningError(`Unknown machine filter: ${unknownMachines.join(", ")}`);
   }
 
   const appValues = materialize(request.apps);
@@ -200,7 +202,9 @@ export function buildPlan(
     }
   }
   const unknownApps = [...selectedApps].filter((app) => !cluster.apps.has(app)).sort();
-  if (unknownApps.length > 0) throw new PlanningError(`未知 App 过滤器: ${unknownApps.join(", ")}`);
+  if (unknownApps.length > 0) {
+    throw new PlanningError(`Unknown App filter: ${unknownApps.join(", ")}`);
+  }
   const environmentFilter = new Set(materialize(request.environments) ?? []);
 
   let nodes = new Map<string, ResourceNode>();
@@ -243,7 +247,7 @@ export function buildPlan(
       );
     }
   }
-  if (nodes.size === 0) throw new PlanningError("过滤条件没有选择任何部署对象");
+  if (nodes.size === 0) throw new PlanningError("The filter selected no deployment targets");
 
   const checkOnlyEnvironmentNodes = new Set<string>();
   if (!deployAppsOnly && !request.withDependencies && request.apps !== undefined) {
@@ -254,7 +258,9 @@ export function buildPlan(
       pending.delete(dependency);
       if (checkOnlyEnvironmentNodes.has(dependency)) continue;
       if (!nodes.has(dependency) || !dependency.startsWith("env:")) {
-        throw new PlanningError(`定向 App 引用计划外环境依赖: ${dependency}`);
+        throw new PlanningError(
+          `Targeted App references an environment dependency outside the plan: ${dependency}`,
+        );
       }
       checkOnlyEnvironmentNodes.add(dependency);
       for (const transitive of dependencies.get(dependency) ?? []) pending.add(transitive);
@@ -269,7 +275,7 @@ export function buildPlan(
     const required = new Set([...dependencies.values()].flat());
     const missing = [...required].filter((dependency) => !nodes.has(dependency)).sort();
     if (missing.length > 0) {
-      throw new PlanningError(`过滤条件排除了必需依赖: ${missing.join(", ")}`);
+      throw new PlanningError(`The filter excluded required dependencies: ${missing.join(", ")}`);
     }
   }
 
@@ -286,7 +292,11 @@ export function buildPlan(
     let resourceName: string;
     if (kind === "environment") {
       const definition = cluster.environments.get(resource.definition);
-      if (!definition) throw new PlanningError(`${node} 引用未知环境定义: ${resource.definition}`);
+      if (!definition) {
+        throw new PlanningError(
+          `${node} references an unknown environment definition: ${resource.definition}`,
+        );
+      }
       parameters = freezeRecord({
         ...definition.defaults,
         ...resource.parameters,
@@ -391,7 +401,7 @@ export function buildPlan(
           : environmentManagerValue.restart;
         if (!invocation) {
           throw new PlanningError(
-            `${node} 的环境 script manager 快照缺少 ${currentAction} 调用`,
+            `The environment script manager snapshot for ${node} is missing the ${currentAction} call`,
           );
         }
         invocations = [invocation];
@@ -415,7 +425,7 @@ export function buildPlan(
         currentAction === "check"
       ) {
         throw new PlanningError(
-          `${node} 使用 install/manager 生命周期，不支持 check 步骤`,
+          `${node} uses the install/manager lifecycle and does not support a check step`,
         );
       }
       if (invocations.length === 0) {
@@ -429,7 +439,7 @@ export function buildPlan(
           environmentInstallValue === undefined && environmentManagerValue === undefined &&
           !managedOwnsAction(stepManagement, currentAction)
         ) {
-          throw new PlanningError(`${node} 未定义动作脚本: ${currentAction}`);
+          throw new PlanningError(`${node} has no action script: ${currentAction}`);
         }
       }
       const stepId = `${node}:${currentAction}`;

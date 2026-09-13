@@ -76,7 +76,7 @@ Deno.test("unit/secrets cli: deploy fails closed without secrets.yaml", async ()
     });
     const code = await cli(["secrets-deploy", "--cluster", "demo", "--yes", "--json"]);
     assertEquals(code, 2);
-    assertStringIncludes(stderr.text, "缺少集群秘密来源");
+    assertStringIncludes(stderr.text, "Missing cluster secret source");
   });
 });
 
@@ -162,6 +162,6 @@ Deno.test("unit/secrets cli: help and mutually exclusive flags are validated", a
       await invalid(["secrets-deploy", "--check", "--remove", "DB_PASSWORD", "--cluster", "demo"]),
       2,
     );
-    assertStringIncludes(stderr.text, "不能与 --remove 同时使用");
+    assertStringIncludes(stderr.text, "cannot be combined with --remove");
   });
 });

@@ -84,7 +84,7 @@ Deno.test("unit/package-cache: prepare is local-only for deploy and fallback oth
     const missing = await assertRejects(
       () => cache.prepare(spec, join(root, "out", "a.bin"), "local-only", metadata),
       PreflightError,
-      "请先运行",
+      "Run first",
     );
     assertStringIncludes(missing.message, "--app demo");
     assertEquals(provider.calls, 0);
@@ -121,8 +121,8 @@ Deno.test("unit/package-cache: corrupted cache fails closed with removal hint", 
     const error = await assertRejects(
       () => cache.fetch(spec, metadata),
       PreflightError,
-      "缓存校验失败",
+      "cache verification failed",
     );
-    assertStringIncludes(error.message, "请移除");
+    assertStringIncludes(error.message, "remove the file");
   });
 });

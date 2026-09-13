@@ -75,7 +75,7 @@ Deno.test("unit/user-config: unknown fields, bad schema and relative paths fail 
       () => loadUserConfig({ homeDir: home }),
       ConfigurationError,
     );
-    assertStringIncludes(unknown.message, "未知字段");
+    assertStringIncludes(unknown.message, "unknown fields");
 
     await Deno.writeTextFile(configPath, "schema_version: 2\n");
     const schema = await assertRejects(() => loadUserConfig({ homeDir: home }), ConfigurationError);
@@ -86,7 +86,7 @@ Deno.test("unit/user-config: unknown fields, bad schema and relative paths fail 
       () => loadUserConfig({ homeDir: home }),
       ConfigurationError,
     );
-    assertStringIncludes(relative.message, "绝对路径");
+    assertStringIncludes(relative.message, "absolute path");
     assertStringIncludes(relative.message, "~");
 
     const custom = join(home, "custom.yaml");

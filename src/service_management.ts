@@ -55,7 +55,7 @@ export async function inspectSystemd(
   if (tool.kind === "systemctl") {
     requireSuccess(
       await session.run([tool.path, "--version"], { signal, timeoutMs: service.timeoutMs }),
-      "目标节点不可使用 systemd",
+      "systemd is not available on the target node",
     );
   }
   return await readState(session, service, signal);
@@ -93,7 +93,7 @@ export async function prepareSystemd(
       tool,
       ["reset-failed"],
       signal,
-      "systemd reset-failed 失败",
+      "systemd reset-failed failed",
     );
   }
   if (daemonReloaded) {
@@ -103,7 +103,7 @@ export async function prepareSystemd(
       tool,
       ["daemon-reload"],
       signal,
-      "systemd daemon-reload 失败",
+      "systemd daemon-reload failed",
     );
   }
   if (enableAction !== "none") {
@@ -113,7 +113,7 @@ export async function prepareSystemd(
       tool,
       [enableAction],
       signal,
-      `systemd ${enableAction} 失败`,
+      `systemd ${enableAction} failed`,
     );
   }
   return Object.freeze({ before, tool, daemonReloaded, enableAction, action });
@@ -137,26 +137,28 @@ export async function executePreparedSystemd(
         tool,
         [action],
         signal,
-        `systemd ${action} 失败`,
+        `systemd ${action} failed`,
       );
     }
     const after = await readState(session, service, signal, tool);
     if (service.enabled !== undefined && after.enabled !== service.enabled) {
-      throw new TransportError(`systemd enable 状态未收敛: ${after.enabledState}`);
+      throw new TransportError(`systemd enable state did not converge: ${after.enabledState}`);
     }
     if (
       ((action === "start" || action === "reload" || action === "restart") && !after.active) ||
       (action === "stop" && after.active)
     ) {
-      throw new TransportError(`systemd active 状态未收敛: ${after.activeState}`);
+      throw new TransportError(`systemd active state did not converge: ${after.activeState}`);
     }
     return Object.freeze({ ...prepared, after });
   } catch (cause) {
     const actual = await readState(session, service, undefined, tool).catch(() => undefined);
     const suffix = actual === undefined
-      ? "；无法读取实际状态"
-      : `；实际 enabled=${actual.enabledState} active=${actual.activeState}`;
-    throw new TransportError(`systemd 服务 ${service.unit} 收敛失败${suffix}`, { cause });
+      ? "; failed to read the actual state"
+      : `; actual enabled=${actual.enabledState} active=${actual.activeState}`;
+    throw new TransportError(`systemd service ${service.unit} failed to converge${suffix}`, {
+      cause,
+    });
   }
 }
 
@@ -191,7 +193,7 @@ export async function restoreSystemd(
       tool,
       ["daemon-reload"],
       signal,
-      "恢复时 daemon-reload 失败",
+      "daemon-reload failed during recovery",
     );
   }
   let current = await readState(session, service, signal);
@@ -202,7 +204,7 @@ export async function restoreSystemd(
       tool,
       ["reset-failed"],
       signal,
-      "恢复时 systemd reset-failed 失败",
+      "systemd reset-failed failed during recovery",
     );
     current = await readState(session, service, signal, tool);
   }
@@ -214,7 +216,7 @@ export async function restoreSystemd(
       tool,
       [action],
       signal,
-      `恢复 systemd ${action} 状态失败`,
+      `Failed to restore systemd ${action} state`,
     );
   }
   current = await readState(session, service, signal);
@@ -226,13 +228,13 @@ export async function restoreSystemd(
       tool,
       [action],
       signal,
-      `恢复 systemd ${action} 状态失败`,
+      `Failed to restore systemd ${action} state`,
     );
   }
   const restored = await readState(session, service, signal);
   if (restored.active !== before.active || restored.enabled !== before.enabled) {
     throw new TransportError(
-      `systemd 补偿未收敛: enabled=${restored.enabledState} active=${restored.activeState}`,
+      `systemd compensation did not converge: enabled=${restored.enabledState} active=${restored.activeState}`,
     );
   }
   return restored;
@@ -290,14 +292,14 @@ async function readState(
     (activeState === "inactive" || activeState === "not-found" ||
       activeState === "failed");
   if (enabled.exitCode !== 0 && enabled.exitCode !== 1 && !isMissingUnit) {
-    throw new TransportError(`读取 systemd enable 状态失败: ${enabledState}`);
+    throw new TransportError(`Failed to read systemd enable state: ${enabledState}`);
   }
   // systemctl is-active 对 inactive/failed 的常见退出码为 3；1 也作为非 active 状态接受。
   if (
     active.exitCode !== 0 && active.exitCode !== 1 && active.exitCode !== 3 &&
     !isMissingUnitActive
   ) {
-    throw new TransportError(`读取 systemd active 状态失败: ${activeState}`);
+    throw new TransportError(`Failed to read systemd active state: ${activeState}`);
   }
   return Object.freeze({
     enabled: enabled.exitCode === 0 &&
@@ -344,7 +346,9 @@ async function resolveServiceTool(
   }
   const detected = await detectServiceTool(session, service.tool, signal);
   if (detected.kind !== "systemctl" && detected.kind !== "service") {
-    throw new TransportError(`服务管理器探测返回了不支持的工具: ${detected.kind}`);
+    throw new TransportError(
+      `Service manager probe returned an unsupported tool: ${detected.kind}`,
+    );
   }
   return Object.freeze({ kind: detected.kind, path: detected.path });
 }
@@ -360,7 +364,7 @@ function validateService(service: AppServiceManagement): void {
     service?.kind !== "service" || !UNIT_RE.test(service.unit) || service.unit.includes("..") ||
     !Number.isFinite(service.timeoutMs) || service.timeoutMs <= 0
   ) {
-    throw new PreflightError("service 管理声明不合法");
+    throw new PreflightError("Invalid service management declaration");
   }
 }
 

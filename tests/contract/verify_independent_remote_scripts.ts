@@ -115,7 +115,7 @@ async function documentationExamples(): Promise<void> {
   if (!readme.includes("自包含") || !readme.includes("loader")) {
     fail("README missing self-contained script migration guidance");
   }
-  if (!guide.includes("0700") || !guide.includes("步骤元数据")) {
+  if (!guide.includes("0700") || !guide.includes("step metadata")) {
     fail("configuration guide missing workspace and step metadata boundary");
   }
   if (!exampleReadme.includes("不会把") || !exampleReadme.includes("loadSecrets")) {

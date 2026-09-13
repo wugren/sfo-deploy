@@ -114,7 +114,10 @@ Deno.test("unit/history: new writes use v4 and Deno v2/v3 snapshots remain reada
       () => __internal.decodePlan(v1, snapshot, join(root, "demo"), importer),
       ConfigurationError,
     );
-    assertStringIncludes(v1Error.message, "execution-plan v1 Python 快照不再支持");
+    assertStringIncludes(
+      v1Error.message,
+      "execution-plan v1 Python snapshots are no longer supported",
+    );
   });
 });
 
@@ -126,10 +129,14 @@ Deno.test("unit/history: snapshot tampering and duplicate JSON keys fail closed"
       () => store.verifySnapshot(snapshot, releaseId),
       ConfigurationError,
     );
-    assertStringIncludes(error.message, "完整性失败");
+    assertStringIncludes(error.message, "integrity failed");
     const duplicate = join(root, "duplicate.json");
     await Deno.writeTextFile(duplicate, '{"a":1,"a":2}\n');
-    await assertRejects(() => __internal.readJson(duplicate, 1024), ConfigurationError, "重复键");
+    await assertRejects(
+      () => __internal.readJson(duplicate, 1024),
+      ConfigurationError,
+      "duplicate key",
+    );
   });
 });
 
@@ -149,7 +156,7 @@ Deno.test("unit/history: operation lock serializes attempts and releases on clos
     await assertRejects(
       () => store.beginAttempt({ operation: "deploy", selection: new ReleaseSelection() }),
       ConfigurationError,
-      "已有发布",
+      "already running for this cluster",
     );
     await first.closeIncomplete();
     const second = await store.beginAttempt({
@@ -282,7 +289,7 @@ Deno.test("unit/history: v4 codec round-trips install_directory and delivery inp
     await assertRejects(
       () => __internal.decodePlan(missingRunAs, snapshot, cluster, importer),
       ConfigurationError,
-      "缺少 run_as",
+      "is missing run_as",
     );
   });
 });

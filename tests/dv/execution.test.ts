@@ -252,7 +252,7 @@ class CancellingSession extends MemorySession {
     this.executeCount++;
     this.events.push(`${this.machine}:execute:${this.executeCount}`);
     this.controller.abort("test cancellation");
-    return Promise.reject(new CancelledError("远端命令已取消"));
+    return Promise.reject(new CancelledError("Remote command cancelled"));
   }
 }
 
@@ -557,7 +557,7 @@ Deno.test("dv/execution: missing declared secret fails the step before scripts r
       "node-a",
       undefined,
       undefined,
-      new PreflightError("密钥未部署到该机器: APP_TOKEN"),
+      new PreflightError("Secret is not deployed on this machine: APP_TOKEN"),
     );
     const result = await executePlan(inputs.plan, {
       transport,
@@ -566,7 +566,7 @@ Deno.test("dv/execution: missing declared secret fails the step before scripts r
     assertEquals(result.exitCode, 3);
     const failed = result.steps[0];
     assertEquals(failed.status, StepStatus.FAILED);
-    assert(failed.message?.includes("密钥未部署到该机器: APP_TOKEN"));
+    assert(failed.message?.includes("Secret is not deployed on this machine: APP_TOKEN"));
     assertEquals(result.steps[1].status, StepStatus.SKIPPED);
   });
 });

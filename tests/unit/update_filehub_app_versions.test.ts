@@ -68,7 +68,7 @@ Deno.test("unit/update-filehub-app-versions: rejects missing apps and invalid ha
   } catch (caught) {
     error = caught;
   }
-  if (!(error instanceof Error) || !error.message.includes("缺少 App: jx-web")) {
+  if (!(error instanceof Error) || !error.message.includes("is missing App: jx-web")) {
     throw new Error("missing jx-web was not rejected");
   }
 
@@ -89,7 +89,7 @@ Deno.test("unit/update-filehub-app-versions: rejects missing apps and invalid ha
   } catch (caught) {
     hashError = caught;
   }
-  if (!(hashError instanceof Error) || !hashError.message.includes("64 位十六进制")) {
+  if (!(hashError instanceof Error) || !hashError.message.includes("64-character hexadecimal")) {
     throw new Error("invalid hash was not rejected");
   }
 });
@@ -101,7 +101,7 @@ Deno.test("unit/update-filehub-app-versions: rejects unknown options", () => {
   } catch (caught) {
     error = caught;
   }
-  if (!(error instanceof Error) || !error.message.includes("未知参数: --yes")) {
+  if (!(error instanceof Error) || !error.message.includes("Unknown argument: --yes")) {
     throw new Error("unknown option was not rejected");
   }
 });

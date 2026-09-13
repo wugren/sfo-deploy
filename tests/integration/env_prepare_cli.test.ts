@@ -307,7 +307,7 @@ Deno.test("integration/prepare: RunOptions rejects --app for prepare", async () 
       throw new Error("expected ConfigurationError");
     } catch (error) {
       assert(error instanceof Error);
-      assert(String(error.message).includes("不能与 --app 同时使用"));
+      assert(String(error.message).includes("cannot be combined with --app"));
     }
     assertEquals(directory.length > 0, true);
   });

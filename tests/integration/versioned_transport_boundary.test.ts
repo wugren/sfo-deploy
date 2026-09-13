@@ -65,12 +65,12 @@ for (const variant of ["traversal", "sibling", "resources-symlink", "release-sym
             }]),
           variant === "sibling" ? PreflightError : TransportError,
           variant === "traversal"
-            ? "远端路径不安全"
+            ? "Unsafe remote path"
             : variant === "sibling"
-            ? "版本配置目标越界"
+            ? "Version config target is out of bounds"
             : variant === "resources-symlink"
-            ? "版本配置父目录逃逸"
-            : "版本根目录不是普通目录",
+            ? "Version config parent directory escapes"
+            : "Version root is not a regular directory",
         );
         if (variant === "traversal") {
           // safeRemotePath rejects the unnormalized target before any remote target probe.
@@ -380,7 +380,7 @@ Deno.test("integration/versioned-transport: missing release parent rejects inter
             secretFiles: [],
           }]),
         TransportError,
-        "版本配置父目录不是普通目录",
+        "Version config parent directory is not a regular directory",
       );
       assert(!calls.some((call) => call.includes("'install' '-m'")));
     } finally {

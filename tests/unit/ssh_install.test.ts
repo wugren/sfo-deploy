@@ -81,7 +81,7 @@ Deno.test("unit/ssh-install-deno: checksum failure fails closed", async () => {
   await assertRejects(
     () => installDenoOnMachine(session, "node-a", {}),
     TransportError,
-    "安装 Deno 失败",
+    "Failed to install Deno",
   );
   assertEquals(session.installCalls, 1);
   assertEquals(session.checksumChecked, true);
@@ -146,8 +146,8 @@ Deno.test("unit/ssh-install-deno: installer script passes strict transport argv 
   );
   assert(script.includes("requested_version='2.2.11'"));
   assert(script.includes("set -eu"));
-  assert(script.includes("缺少 curl 或 wget"));
-  assert(script.includes("缺少 unzip 或 7z"));
+  assert(script.includes("missing curl or wget"));
+  assert(script.includes("missing unzip or 7z"));
 });
 
 Deno.test("unit/ssh-install-deno: present toolset performs no package operations", async () => {
@@ -254,7 +254,7 @@ Deno.test("unit/ssh-install-deno: missing package manager fails closed before in
   await assertRejects(
     () => installDenoOnMachine(session, "node-a", { version: "2.2.11" }),
     TransportError,
-    "没有可用的包管理器",
+    "has no usable package manager",
   );
   assertEquals(session.installCalls, 0);
 });
@@ -274,7 +274,7 @@ Deno.test("unit/ssh-install-deno: apt update failure fails closed", async () => 
   await assertRejects(
     () => installDenoOnMachine(session, "node-a", { version: "2.2.11" }),
     TransportError,
-    "刷新 apt 软件源失败",
+    "Failed to refresh the apt package index",
   );
 });
 
@@ -294,7 +294,7 @@ Deno.test("unit/ssh-install-deno: package install failure fails closed", async (
   await assertRejects(
     () => installDenoOnMachine(session, "node-a", { version: "2.2.11" }),
     TransportError,
-    "安装远端基础工具失败",
+    "Failed to install remote base tools",
   );
 });
 
@@ -315,7 +315,7 @@ Deno.test("unit/ssh-install-deno: re-probe after install still missing fails clo
   await assertRejects(
     () => installDenoOnMachine(session, "node-a", { version: "2.2.11" }),
     TransportError,
-    "仍缺失",
+    "still missing",
   );
 });
 
@@ -332,7 +332,7 @@ Deno.test("unit/ssh-install-deno: privilege failure during tool install maps to 
     0,
     0,
     true,
-    new PreflightError("远端身份既不是 root，也不能使用非交互 sudo"),
+    new PreflightError("Remote identity is neither root nor able to use non-interactive sudo"),
   );
   await assertRejects(
     () => installDenoOnMachine(session, "node-a", { version: "2.2.11" }),
@@ -401,7 +401,7 @@ Deno.test("unit/ssh-install-deno: install failure raises transport error", async
   await assertRejects(
     () => installDenoOnMachine(session, "node-a", { version: "2.2.11" }),
     TransportError,
-    "安装 Deno 失败",
+    "Failed to install Deno",
   );
 });
 
@@ -410,7 +410,7 @@ Deno.test("unit/ssh-install-deno: post-install verification rejects version mism
   await assertRejects(
     () => installDenoOnMachine(session, "node-a", { version: "2.2.11" }),
     TransportError,
-    "版本不匹配",
+    "version mismatch",
   );
 });
 
@@ -419,6 +419,6 @@ Deno.test("unit/ssh-install-deno: missing remote home fails closed", async () =>
   await assertRejects(
     () => installDenoOnMachine(session, "node-a", { version: "2.2.11" }),
     TransportError,
-    "主目录",
+    "home directory",
   );
 });

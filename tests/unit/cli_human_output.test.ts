@@ -49,7 +49,7 @@ const prepareResult = () =>
     cluster: "multipass",
     requestedAction: "prepare",
     steps: [
-      step("check", StepStatus.SUCCEEDED, { message: "环境检查已满足" }),
+      step("check", StepStatus.SUCCEEDED, { message: "Environment check satisfied" }),
       step("install", StepStatus.SKIPPED, { skipReason: "up-to-date" }),
       step("configure", StepStatus.SKIPPED, { skipReason: "up-to-date" }),
     ],
@@ -70,10 +70,13 @@ Deno.test("unit/cli: default output is human readable step-by-step without JSON"
   });
   assertEquals(await cli(["prepare", "--cluster", "multipass", "--env", "jre"]), 0);
   const text = stdout.text();
-  assertStringIncludes(text, "[eleph-server] jre 检查（1/3）... 通过（环境检查已满足）");
-  assertStringIncludes(text, "[eleph-server] jre 安装（2/3）... 跳过（已是最新）");
-  assertStringIncludes(text, "状态：成功");
-  assertStringIncludes(text, "目标：eleph-server");
+  assertStringIncludes(
+    text,
+    "[eleph-server] jre check (1/3)... passed (Environment check satisfied)",
+  );
+  assertStringIncludes(text, "[eleph-server] jre install (2/3)... skipped (already up to date)");
+  assertStringIncludes(text, "Status: succeeded");
+  assertStringIncludes(text, "Target: eleph-server");
   assert(!text.trimStart().startsWith("{"), "human output must not be a JSON document");
   assert(stderr.text().length === 0);
 });
@@ -95,14 +98,14 @@ Deno.test("unit/cli: --json keeps stable structured result on stdout", async () 
 
 Deno.test("unit/cli: errors are human readable by default and JSON with --json", async () => {
   const { cli, stderr } = cliWith(() => {
-    throw new DeploymentError("远端执行失败：连接超时");
+    throw new DeploymentError("Remote execution failed: connection timed out");
   });
   assertEquals(await cli(["prepare", "--cluster", "multipass"]), 4);
   const text = stderr.text();
-  assertStringIncludes(text, "错误（execution）: 远端执行失败：连接超时");
+  assertStringIncludes(text, "Error (execution): Remote execution failed: connection timed out");
 
   const jsonCli = cliWith((): RunResult => {
-    throw new DeploymentError("远端执行失败：连接超时");
+    throw new DeploymentError("Remote execution failed: connection timed out");
   });
   assertEquals(
     await jsonCli.cli(["prepare", "--cluster", "multipass", "--json"]),
@@ -112,7 +115,7 @@ Deno.test("unit/cli: errors are human readable by default and JSON with --json",
     error: { category: string; message: string };
   };
   assertEquals(json.error.category, "execution");
-  assertEquals(json.error.message, "远端执行失败：连接超时");
+  assertEquals(json.error.message, "Remote execution failed: connection timed out");
 });
 
 Deno.test("unit/cli: install-deno and fetch progress lines are rendered", async () => {
@@ -142,8 +145,8 @@ Deno.test("unit/cli: install-deno and fetch progress lines are rendered", async 
   });
   assertEquals(await cli(["install-deno", "--cluster", "demo", "--machine", "node-a"]), 0);
   const text = stdout.text();
-  assertStringIncludes(text, "[node-a] install-deno ... 已安装（/usr/local/bin/deno 2.2.11）");
-  assertStringIncludes(text, "install-deno 完成：集群 demo");
+  assertStringIncludes(text, "[node-a] install-deno ... installed (/usr/local/bin/deno 2.2.11)");
+  assertStringIncludes(text, "install-deno complete: cluster demo");
 });
 
 Deno.test("unit/cli: help documents --json and argument parse accepts it", async () => {
@@ -159,18 +162,18 @@ Deno.test("unit/cli: help documents --json and argument parse accepts it", async
   });
   assertEquals(await cli(["prepare", "--help"]), 0);
   assertStringIncludes(stdout.text(), "--json");
-  assertMatch(stdout.text(), /人类可读/);
+  assertMatch(stdout.text(), /human-readable/);
 });
 
 Deno.test("unit/cli: --json rejects inline values", async () => {
   const { cli, stderr } = cliWith(() => prepareResult());
   assertEquals(await cli(["prepare", "--cluster", "multipass", "--json=1"]), 2);
-  assertStringIncludes(stderr.text(), "--json 不接受值");
+  assertStringIncludes(stderr.text(), "--json does not accept a value");
 });
 
 Deno.test("unit/cli: README documents default human output and --json contract", async () => {
   const readme = await Deno.readTextFile(new URL("../../README.md", import.meta.url));
-  assertStringIncludes(readme, "按步骤输出中文人可读的进度行");
+  assertStringIncludes(readme, "按步骤输出英文人可读的进度行");
   assertStringIncludes(readme, "--json");
   assertStringIncludes(readme, "稳定 JSON 契约");
 });

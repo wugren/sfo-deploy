@@ -163,14 +163,14 @@ function isRecord(value: unknown): value is StringRecord {
 
 function mapping(value: unknown, label: string): StringRecord {
   if (!isRecord(value)) {
-    throw new ConfigurationError(`${label} 必须是字符串键映射`);
+    throw new ConfigurationError(`${label} must be a string-keyed mapping`);
   }
   return value;
 }
 
 function list(value: unknown, label: string): unknown[] {
   if (!Array.isArray(value)) {
-    throw new ConfigurationError(`${label} 必须是列表`);
+    throw new ConfigurationError(`${label} must be a list`);
   }
   return value;
 }
@@ -186,37 +186,37 @@ function fields(
   const unknown = [...keys].filter((key) => !allowedSet.has(key)).sort();
   const missing = [...required].filter((key) => !keys.has(key)).sort();
   if (unknown.length > 0) {
-    throw new ConfigurationError(`${label} 包含未知字段: ${unknown.join(", ")}`);
+    throw new ConfigurationError(`${label} contains unknown fields: ${unknown.join(", ")}`);
   }
   if (missing.length > 0) {
-    throw new ConfigurationError(`${label} 缺少字段: ${missing.join(", ")}`);
+    throw new ConfigurationError(`${label} is missing fields: ${missing.join(", ")}`);
   }
 }
 
 function name(value: unknown, label: string): string {
   if (typeof value !== "string" || !NAME_RE.test(value)) {
-    throw new ConfigurationError(`${label} 不是合法名称: ${repr(value)}`);
+    throw new ConfigurationError(`${label} is not a valid name: ${repr(value)}`);
   }
   return value;
 }
 
 function stringValue(value: unknown, label: string, nonempty = true): string {
   if (typeof value !== "string" || (nonempty && value.trim().length === 0)) {
-    throw new ConfigurationError(`${label} 必须是字符串`);
+    throw new ConfigurationError(`${label} must be a string`);
   }
   return value.trim();
 }
 
 function version(data: StringRecord, label: string): void {
   if (data.schema_version !== 1) {
-    throw new ConfigurationError(`${label}.schema_version 只支持 1`);
+    throw new ConfigurationError(`${label}.schema_version supports only 1`);
   }
 }
 
 function clusterSchemaVersion(data: StringRecord): ClusterSchemaVersion {
   if (data.schema_version !== 2) {
     throw new ConfigurationError(
-      "cluster.yaml.schema_version 只支持 2；v1 每机环境布局已移除，请改用共享定义 + environments 映射",
+      "cluster.yaml.schema_version supports only 2; the v1 per-machine environment layout was removed, use shared definitions plus an environments mapping",
     );
   }
   return 2;
@@ -224,7 +224,7 @@ function clusterSchemaVersion(data: StringRecord): ClusterSchemaVersion {
 
 function appSchemaVersion(data: StringRecord, label: string): AppSchemaVersion {
   if (data.schema_version !== 1) {
-    throw new ConfigurationError(`${label}.schema_version 只支持 1`);
+    throw new ConfigurationError(`${label}.schema_version supports only 1`);
   }
   return data.schema_version;
 }
@@ -233,13 +233,13 @@ function appSchemaVersion(data: StringRecord, label: string): AppSchemaVersion {
 function remoteAbsolutePath(value: unknown, label: string): string {
   const text = stringValue(value, label);
   if (!text.startsWith("/")) {
-    throw new ConfigurationError(`${label} 必须是远端绝对 POSIX 路径`);
+    throw new ConfigurationError(`${label} must be a remote absolute POSIX path`);
   }
   if (text.split("/").includes("..")) {
-    throw new ConfigurationError(`${label} 不允许包含 .. 段`);
+    throw new ConfigurationError(`${label} must not contain a .. segment`);
   }
   if (/[\0\r\n\\]/.test(text)) {
-    throw new ConfigurationError(`${label} 包含非法字符`);
+    throw new ConfigurationError(`${label} contains invalid characters`);
   }
   return text;
 }
@@ -250,10 +250,12 @@ function managedTargetPath(value: unknown, label: string): string {
     text === "/" || text.startsWith("//") || posix.normalize(text) !== text ||
     text.endsWith("/")
   ) {
-    throw new ConfigurationError(`${label} 必须是规范的远端文件绝对路径`);
+    throw new ConfigurationError(`${label} must be a canonical remote absolute file path`);
   }
   if (["/dev", "/proc", "/sys"].some((root) => text === root || text.startsWith(`${root}/`))) {
-    throw new ConfigurationError(`${label} 不允许写入内核或设备文件系统: ${text}`);
+    throw new ConfigurationError(
+      `${label} must not write to kernel or device file systems: ${text}`,
+    );
   }
   return text;
 }
@@ -281,7 +283,7 @@ function managedConfigTarget(
   }
   if (variableCount > 1) {
     throw new ConfigurationError(
-      `${label} 只能包含一个目录变量`,
+      `${label} must contain exactly one directory variable`,
     );
   }
   const match = Object.entries(MANAGED_TARGET_VARIABLE_PREFIXES).find(([, prefix]) =>
@@ -289,7 +291,7 @@ function managedConfigTarget(
   );
   if (match === undefined) {
     throw new ConfigurationError(
-      `${label} 只支持以 \${INSTALL_DIRECTORY}/、\${CURRENT_VERSION_DIRECTORY}/ 或 \${LATEST_DIRECTORY}/ 开头`,
+      `${label} supports only paths starting with \${INSTALL_DIRECTORY}/, \${CURRENT_VERSION_DIRECTORY}/, or \${LATEST_DIRECTORY}/`,
     );
   }
   const [targetRoot, variablePrefix] = match as [
@@ -298,7 +300,7 @@ function managedConfigTarget(
   ];
   if (installDirectory === undefined) {
     throw new ConfigurationError(
-      `${label} 使用安装目录变量，但 App 缺少 install_directory`,
+      `${label} uses an install directory variable, but the App is missing install_directory`,
     );
   }
   const variableName = variableBareNames.find((variable) => variablePrefix.startsWith(variable))!;
@@ -309,7 +311,9 @@ function managedConfigTarget(
     relative.split("/").some((part) => part === "" || part === "." || part === "..")
   ) {
     throw new ConfigurationError(
-      `${label} 的 \${${variableName.slice(2, -1)}} 后必须是规范相对路径`,
+      `${label} must be followed by a canonical relative path after \${${
+        variableName.slice(2, -1)
+      }}`,
     );
   }
   const root = targetRoot === "install"
@@ -328,7 +332,7 @@ function enumValue<T extends string>(
 ): T {
   const text = stringValue(value, label);
   if (!allowed.has(text)) {
-    throw new ConfigurationError(`${label} 使用不支持的值: ${repr(text)}`);
+    throw new ConfigurationError(`${label} uses an unsupported value: ${repr(text)}`);
   }
   return text as T;
 }
@@ -342,7 +346,7 @@ function boundedInteger(
   if (
     typeof value !== "number" || !Number.isSafeInteger(value) || value < minimum || value > maximum
   ) {
-    throw new ConfigurationError(`${label} 必须是 ${minimum}..${maximum} 的整数`);
+    throw new ConfigurationError(`${label} must be an integer between ${minimum} and ${maximum}`);
   }
   return value;
 }
@@ -354,7 +358,7 @@ function timeoutMs(value: unknown, label: string): number {
 function accountName(value: unknown, label: string): string {
   const text = stringValue(value, label);
   if (!ACCOUNT_RE.test(text)) {
-    throw new ConfigurationError(`${label} 不是合法的 Linux 帐户名称`);
+    throw new ConfigurationError(`${label} is not a valid Linux account name`);
   }
   return text;
 }
@@ -362,19 +366,19 @@ function accountName(value: unknown, label: string): string {
 function appRunAs(value: unknown, label: string): string {
   const text = accountName(value, label);
   if (text === "root") {
-    throw new ConfigurationError(`${label} 必须是非 root Linux 用户`);
+    throw new ConfigurationError(`${label} must be a non-root Linux user`);
   }
   return text;
 }
 
 function managedFileMode(value: unknown, label: string): number {
   if (typeof value !== "string" || !/^0?[0-7]{3}$/.test(value)) {
-    throw new ConfigurationError(`${label} 必须是三位或四位八进制字符串`);
+    throw new ConfigurationError(`${label} must be a three- or four-digit octal string`);
   }
   const mode = Number.parseInt(value, 8);
   if ((mode & 0o400) === 0 || (mode & 0o133) !== 0) {
     throw new ConfigurationError(
-      `${label} 必须允许 owner 读取且不能包含执行位或 group/other 写权限`,
+      `${label} must allow owner read and must not contain execute bits or group/other write permissions`,
     );
   }
   return mode;
@@ -396,17 +400,17 @@ function configPath(
       containsAsciiControl(text) ||
       text === "__proto__" || text === "prototype" || text === "constructor"
     ) {
-      throw new ConfigurationError(`${segmentLabel} 是危险或非法字段名`);
+      throw new ConfigurationError(`${segmentLabel} is a dangerous or invalid field name`);
     }
     result.push(text);
   }
-  if (result.length === 0) throw new ConfigurationError(`${label} 不能为空`);
+  if (result.length === 0) throw new ConfigurationError(`${label} must not be empty`);
   return freezeArray(result);
 }
 
 function argvArgument(value: unknown, label: string): string {
   if (typeof value !== "string" || value.length === 0 || containsAsciiControl(value)) {
-    throw new ConfigurationError(`${label} 必须是无控制字符的非空字符串`);
+    throw new ConfigurationError(`${label} must be a non-empty string without control characters`);
   }
   return value;
 }
@@ -415,17 +419,17 @@ function argvArgument(value: unknown, label: string): string {
 function secretDirectory(value: unknown, label: string): string {
   const text = stringValue(value, label);
   if (text === "/" || text === "~" || text.includes("\\") || /[\0\r\n]/.test(text)) {
-    throw new ConfigurationError(`${label} 是非法安全目录路径`);
+    throw new ConfigurationError(`${label} is an invalid secure directory path`);
   }
   if (text.startsWith("~/")) {
     const rest = text.slice(2);
     if (!rest || rest.split("/").includes("..")) {
-      throw new ConfigurationError(`${label} 允许 ~/ 起始路径但不允许 .. 段`);
+      throw new ConfigurationError(`${label} allows ~/ paths but not .. segments`);
     }
     return text;
   }
   if (!text.startsWith("/") || text.split("/").includes("..")) {
-    throw new ConfigurationError(`${label} 必须是 ~/ 起始路径或安全绝对 POSIX 路径`);
+    throw new ConfigurationError(`${label} must be a ~/ path or a safe absolute POSIX path`);
   }
   return text;
 }
@@ -433,7 +437,7 @@ function secretDirectory(value: unknown, label: string): string {
 function secretKind(value: unknown, label: string): SecretKind {
   const text = stringValue(value, label);
   if (!SECRET_KINDS.has(text)) {
-    throw new ConfigurationError(`${label} 只支持 value 或 file: ${repr(text)}`);
+    throw new ConfigurationError(`${label} supports only value or file: ${repr(text)}`);
   }
   return text as SecretKind;
 }
@@ -447,11 +451,11 @@ function secretMachines(
     ? [...known.keys()].sort()
     : stringList(value, label, NAME_RE);
   if (raw.length === 0) {
-    throw new ConfigurationError(`${label} 至少需要一台目标机器`);
+    throw new ConfigurationError(`${label} requires at least one target machine`);
   }
   const unknown = raw.filter((machine) => !known.has(machine)).sort();
   if (unknown.length > 0) {
-    throw new ConfigurationError(`${label} 引用未知机器: ${unknown.join(", ")}`);
+    throw new ConfigurationError(`${label} references unknown machines: ${unknown.join(", ")}`);
   }
   return raw;
 }
@@ -466,12 +470,14 @@ function secretDeclarations(
   const declarations = new Map<string, SecretDeclaration>();
   for (const [rawName, rawEntry] of Object.entries(data)) {
     const entryLabel = `${label}.${rawName}`;
-    const secretName = stringValue(rawName, `${label} 密钥名`);
+    const secretName = stringValue(rawName, `${label} secret name`);
     if (!SECRET_RE.test(secretName)) {
-      throw new ConfigurationError(`${label} 密钥名不合法: ${repr(rawName)}`);
+      throw new ConfigurationError(`Invalid ${label} secret name: ${repr(rawName)}`);
     }
     if (declarations.has(secretName)) {
-      throw new ConfigurationError(`${label} 包含重复密钥声明: ${secretName}`);
+      throw new ConfigurationError(
+        `${label} contains a duplicate secret declaration: ${secretName}`,
+      );
     }
     const entry = mapping(rawEntry, entryLabel);
     const kind = secretKind(entry.kind, `${entryLabel}.kind`);
@@ -507,17 +513,17 @@ async function loadYaml(path: string): Promise<StringRecord> {
   try {
     text = await Deno.readTextFile(path);
   } catch (cause) {
-    throw new ConfigurationError(`无法读取 YAML ${path}: ${String(cause)}`, { cause });
+    throw new ConfigurationError(`Failed to read YAML ${path}: ${String(cause)}`, { cause });
   }
   let value: unknown;
   try {
     // @std/yaml 默认拒绝重复键；显式写出选项以固定安全语义。
     value = parse(text, { allowDuplicateKeys: false });
   } catch (cause) {
-    throw new ConfigurationError(`无法读取 YAML ${path}: ${String(cause)}`, { cause });
+    throw new ConfigurationError(`Failed to read YAML ${path}: ${String(cause)}`, { cause });
   }
   if (!isRecord(value)) {
-    throw new ConfigurationError(`YAML 顶层必须是映射: ${path}`);
+    throw new ConfigurationError(`YAML top level must be a mapping: ${path}`);
   }
   return value;
 }
@@ -548,7 +554,7 @@ async function contained(
 ): Promise<string> {
   const text = stringValue(rawRelative, label);
   if (isAbsolute(text) || text.includes("\\") || text.split("/").includes("..")) {
-    throw new ConfigurationError(`${label} 必须位于资源目录内: ${text}`);
+    throw new ConfigurationError(`${label} must be inside the resource directory: ${text}`);
   }
   const baseResolved = resolve(base);
   const candidate = resolve(baseResolved, text);
@@ -558,10 +564,10 @@ async function contained(
     lexicalRelative.startsWith(`..${Deno.build.os === "windows" ? "\\" : "/"}`) ||
     isAbsolute(lexicalRelative)
   ) {
-    throw new ConfigurationError(`${label} 逃逸资源目录: ${text}`);
+    throw new ConfigurationError(`${label} escapes the resource directory: ${text}`);
   }
   if (suffix && extname(candidate) !== suffix) {
-    throw new ConfigurationError(`${label} 必须是 ${suffix} 文件: ${text}`);
+    throw new ConfigurationError(`${label} must be a ${suffix} file: ${text}`);
   }
   try {
     const [realBase, realCandidate, info] = await Promise.all([
@@ -575,15 +581,15 @@ async function contained(
       realRelative.startsWith(`..${Deno.build.os === "windows" ? "\\" : "/"}`) ||
       isAbsolute(realRelative)
     ) {
-      throw new ConfigurationError(`${label} 逃逸资源目录: ${text}`);
+      throw new ConfigurationError(`${label} escapes the resource directory: ${text}`);
     }
     if (!info.isFile) {
-      throw new ConfigurationError(`${label} 文件不存在: ${candidate}`);
+      throw new ConfigurationError(`${label} file does not exist: ${candidate}`);
     }
     return realCandidate;
   } catch (cause) {
     if (cause instanceof ConfigurationError) throw cause;
-    throw new ConfigurationError(`${label} 文件不存在: ${candidate}`, { cause });
+    throw new ConfigurationError(`${label} file does not exist: ${candidate}`, { cause });
   }
 }
 
@@ -596,10 +602,10 @@ function stringList(
   for (const [index, item] of list(value, label).entries()) {
     const text = stringValue(item, `${label}[${index}]`);
     if (validator && !validator.test(text)) {
-      throw new ConfigurationError(`${label}[${index}] 名称不合法: ${text}`);
+      throw new ConfigurationError(`Invalid name for ${label}[${index}]: ${text}`);
     }
     if (result.includes(text)) {
-      throw new ConfigurationError(`${label} 包含重复值: ${text}`);
+      throw new ConfigurationError(`${label} contains a duplicate value: ${text}`);
     }
     result.push(text);
   }
@@ -662,7 +668,7 @@ function ipAddresses(value: unknown, label: string): readonly string[] {
   if (value === null || value === undefined) return freezeArray([]);
   const rawValues = typeof value === "string" ? [value] : list(value, label);
   if (rawValues.length === 0) {
-    throw new ConfigurationError(`${label} 列表不能为空`);
+    throw new ConfigurationError(`${label} list must not be empty`);
   }
   const result: string[] = [];
   const parsed = new Set<string>();
@@ -670,9 +676,9 @@ function ipAddresses(value: unknown, label: string): readonly string[] {
     const itemLabel = typeof value === "string" ? label : `${label}[${index}]`;
     const text = stringValue(raw, itemLabel);
     const normalized = normalizeIp(text);
-    if (!normalized) throw new ConfigurationError(`${itemLabel} 不是合法 IP`);
+    if (!normalized) throw new ConfigurationError(`${itemLabel} is not a valid IP`);
     if (parsed.has(normalized)) {
-      throw new ConfigurationError(`${label} 包含重复 IP: ${text}`);
+      throw new ConfigurationError(`${label} contains a duplicate IP: ${text}`);
     }
     parsed.add(normalized);
     result.push(text);
@@ -682,12 +688,12 @@ function ipAddresses(value: unknown, label: string): readonly string[] {
 
 function permissionText(value: unknown, label: string): string {
   if (typeof value !== "string" || value.length === 0) {
-    throw new ConfigurationError(`${label} 必须是非空字符串`);
+    throw new ConfigurationError(`${label} must be a non-empty string`);
   }
   if (
     value !== value.trim() || /[\s,]/u.test(value) || containsAsciiControl(value)
   ) {
-    throw new ConfigurationError(`${label} 包含空白、控制字符或逗号`);
+    throw new ConfigurationError(`${label} contains whitespace, control characters, or commas`);
   }
   return value;
 }
@@ -702,11 +708,13 @@ function containsAsciiControl(value: string): boolean {
 export function validateScriptRuntimeExecutable(value: unknown, label: string): string {
   const text = permissionText(value, label);
   if (text.includes("\\")) {
-    throw new ConfigurationError(`${label} 必须是裸命令名或规范绝对 POSIX 路径`);
+    throw new ConfigurationError(
+      `${label} must be a bare command name or a canonical absolute POSIX path`,
+    );
   }
   if (!text.includes("/")) {
     if (!COMMAND_NAME_RE.test(text) || text === "." || text === "..") {
-      throw new ConfigurationError(`${label} 不是合法的裸命令名`);
+      throw new ConfigurationError(`${label} is not a valid bare command name`);
     }
     return text;
   }
@@ -714,7 +722,7 @@ export function validateScriptRuntimeExecutable(value: unknown, label: string): 
     !posix.isAbsolute(text) || text.startsWith("//") || posix.normalize(text) !== text ||
     text === "/" || text.split("/").some((part) => part === "." || part === "..")
   ) {
-    throw new ConfigurationError(`${label} 必须是规范绝对 POSIX 路径`);
+    throw new ConfigurationError(`${label} must be a canonical absolute POSIX path`);
   }
   return text;
 }
@@ -726,7 +734,7 @@ function runPermission(value: unknown, label: string): string {
     posix.normalize(text) !== text || text === "/" ||
     text.split("/").some((part) => part === "." || part === "..")
   ) {
-    throw new ConfigurationError(`${label} 必须是规范绝对 POSIX 可执行路径`);
+    throw new ConfigurationError(`${label} must be a canonical absolute POSIX executable path`);
   }
   return text;
 }
@@ -738,35 +746,37 @@ function pathPermission(value: unknown, label: string): string {
     posix.normalize(text) !== text || text === "/" ||
     text.split("/").some((part) => part === "." || part === "..")
   ) {
-    throw new ConfigurationError(`${label} 必须是规范绝对 POSIX 文件路径`);
+    throw new ConfigurationError(`${label} must be a canonical absolute POSIX file path`);
   }
   return text;
 }
 
 function validatePort(value: string, label: string): void {
   if (!/^[0-9]+$/.test(value) || Number(value) < 1 || Number(value) > 65535) {
-    throw new ConfigurationError(`${label} 端口必须在 1..65535`);
+    throw new ConfigurationError(`${label} port must be within 1..65535`);
   }
 }
 
 function netPermission(value: unknown, label: string): string {
   const text = permissionText(value, label);
   if (["//", "@", "/", "*", "?", "#", "\\"].some((item) => text.includes(item))) {
-    throw new ConfigurationError(`${label} 只能是无 scheme、用户信息、路径或通配符的主机/IP`);
+    throw new ConfigurationError(
+      `${label} must be a host/IP without scheme, user information, path, or wildcards`,
+    );
   }
   if (text.startsWith("[")) {
     const match = /^\[([^\[\]]+)\](?::([^:]+))?$/.exec(text);
-    if (!match) throw new ConfigurationError(`${label} IPv6 地址格式不合法`);
+    if (!match) throw new ConfigurationError(`Invalid ${label} IPv6 address format`);
     const normalized = normalizeIp(match[1]);
     if (!normalized?.startsWith("6:")) {
-      throw new ConfigurationError(`${label} IPv6 地址不合法`);
+      throw new ConfigurationError(`Invalid ${label} IPv6 address`);
     }
     if (match[2] !== undefined) validatePort(match[2], label);
     return text;
   }
   if (normalizeIp(text)) return text;
   if ((text.match(/:/g) ?? []).length > 1) {
-    throw new ConfigurationError(`${label} 带端口的 IPv6 必须使用方括号`);
+    throw new ConfigurationError(`${label} IPv6 with a port must use square brackets`);
   }
   const colon = text.indexOf(":");
   const host = colon < 0 ? text : text.slice(0, colon);
@@ -776,10 +786,10 @@ function netPermission(value: unknown, label: string): string {
     host.length === 0 || host.length > 253 ||
     host.split(".").some((part) => !HOST_LABEL_RE.test(part))
   ) {
-    throw new ConfigurationError(`${label} 主机名不合法`);
+    throw new ConfigurationError(`Invalid ${label} host name`);
   }
   if (host.includes(".") && /^[0-9.]+$/.test(host)) {
-    throw new ConfigurationError(`${label} IPv4 地址不合法`);
+    throw new ConfigurationError(`Invalid ${label} IPv4 address`);
   }
   return text;
 }
@@ -793,7 +803,7 @@ function permissionList(
   for (const [index, item] of list(value, label).entries()) {
     const validated = validator(item, `${label}[${index}]`);
     if (result.includes(validated)) {
-      throw new ConfigurationError(`${label} 包含重复值: ${validated}`);
+      throw new ConfigurationError(`${label} contains a duplicate value: ${validated}`);
     }
     result.push(validated);
   }
@@ -821,11 +831,11 @@ function packageSpec(value: unknown, label: string): PackageSpec {
   const algorithm = stringValue(hash.algorithm, `${label}.hash.algorithm`).toLowerCase();
   const digestSize = HASH_DIGEST_SIZES[algorithm];
   if (digestSize === undefined) {
-    throw new ConfigurationError(`${label} 使用不支持的哈希算法: ${algorithm}`);
+    throw new ConfigurationError(`${label} uses an unsupported hash algorithm: ${algorithm}`);
   }
   const digest = stringValue(hash.value, `${label}.hash.value`).toLowerCase();
   if (digest.length !== digestSize * 2 || !/^[0-9a-f]+$/.test(digest)) {
-    throw new ConfigurationError(`${label}.hash.value 长度或格式不合法`);
+    throw new ConfigurationError(`Invalid ${label}.hash.value length or format`);
   }
   return Object.freeze({
     provider: name(data.provider, `${label}.provider`),
@@ -867,7 +877,9 @@ async function scripts(
   const unknownActions = Object.keys(actionsData).filter((item) => !SCRIPT_ACTION_SET.has(item))
     .sort();
   if (unknownActions.length > 0) {
-    throw new ConfigurationError(`${label}.scripts 包含未知动作: ${unknownActions.join(", ")}`);
+    throw new ConfigurationError(
+      `${label}.scripts contains unknown actions: ${unknownActions.join(", ")}`,
+    );
   }
   const actions = new Map<string, readonly ScriptInvocation[]>();
   for (const [action, rawEntries] of Object.entries(actionsData)) {
@@ -896,21 +908,21 @@ function environmentPackageInstall(
     label,
   );
   if (item.kind !== "package") {
-    throw new ConfigurationError(`${label}.kind 只支持 package`);
+    throw new ConfigurationError(`${label}.kind supports only package`);
   }
   const rawPackages = list(item.packages, `${label}.packages`);
   if (rawPackages.length === 0) {
-    throw new ConfigurationError(`${label}.packages 不能为空`);
+    throw new ConfigurationError(`${label}.packages must not be empty`);
   }
   const packages = rawPackages.map((raw, index) => {
     const text = stringValue(raw, `${label}.packages[${index}]`);
     if (!PACKAGE_MANAGER_RE.test(text)) {
-      throw new ConfigurationError(`${label}.packages[${index}] 不是合法包名`);
+      throw new ConfigurationError(`${label}.packages[${index}] is not a valid package name`);
     }
     return text;
   });
   if (new Set(packages).size !== packages.length) {
-    throw new ConfigurationError(`${label}.packages 包含重复包名`);
+    throw new ConfigurationError(`${label}.packages contains duplicate package names`);
   }
   return Object.freeze({
     kind: "package",
@@ -932,7 +944,7 @@ async function environmentScriptInstall(
   const item = mapping(value, label);
   fields(item, ["kind", "path", "permissions"], ["kind", "path", "permissions"], label);
   if (item.kind !== "script") {
-    throw new ConfigurationError(`${label}.kind 只支持 script`);
+    throw new ConfigurationError(`${label}.kind supports only script`);
   }
   return Object.freeze({
     kind: "script",
@@ -986,11 +998,11 @@ function environmentSystemManager(
     label,
   );
   if (value.kind !== "system") {
-    throw new ConfigurationError(`${label}.kind 只支持 system`);
+    throw new ConfigurationError(`${label}.kind supports only system`);
   }
   const serviceName = stringValue(value.name, `${label}.name`);
   if (!ENVIRONMENT_SERVICE_NAME_RE.test(serviceName) || serviceName.includes("..")) {
-    throw new ConfigurationError(`${label}.name 不是合法服务名称`);
+    throw new ConfigurationError(`${label}.name is not a valid service name`);
   }
   return Object.freeze({
     kind: "system",
@@ -1021,7 +1033,7 @@ async function environmentScriptManager(
     label,
   );
   if (item.kind !== "script") {
-    throw new ConfigurationError(`${label}.kind 只支持 script`);
+    throw new ConfigurationError(`${label}.kind supports only script`);
   }
   const start = await scriptInvocation(item.start, directory, `${label}.start`);
   const stop = await scriptInvocation(item.stop, directory, `${label}.stop`);
@@ -1039,9 +1051,9 @@ function rejectTopLevelSecretDeclarations(
   );
   if (removed.length > 0) {
     throw new ConfigurationError(
-      `${label} 的 ${
+      `${label} ${
         removed.join("/")
-      } 已移除：秘密由 cluster.yaml.secrets 唯一声明，managed 绑定与脚本直接引用本机已声明秘密`,
+      } was removed: secrets are declared only in cluster.yaml.secrets; managed bindings and scripts reference machine-declared secrets directly`,
     );
   }
 }
@@ -1053,7 +1065,7 @@ function rejectTopLevelTemplates(
 ): void {
   if (data.templates === undefined) return;
   throw new ConfigurationError(
-    `${label} 的顶层 templates 已移除：模板文件交付请改用 management.configs(...)`,
+    `Top-level templates in ${label} were removed: deliver template files through management.configs(...) instead`,
   );
 }
 
@@ -1074,10 +1086,12 @@ function managedVariables(value: unknown, label: string): readonly ManagedConfig
     fields(item, ["name", "path", "type"], ["name", "path"], itemLabel);
     const variableName = stringValue(item.name, `${itemLabel}.name`);
     if (!CONFIG_VARIABLE_RE.test(variableName)) {
-      throw new ConfigurationError(`${itemLabel}.name 不是合法的大写配置变量名称`);
+      throw new ConfigurationError(
+        `${itemLabel}.name is not a valid uppercase config variable name`,
+      );
     }
     if (seen.has(variableName)) {
-      throw new ConfigurationError(`${label} 包含重复变量: ${variableName}`);
+      throw new ConfigurationError(`${label} contains a duplicate variable: ${variableName}`);
     }
     seen.add(variableName);
     result.push(Object.freeze({
@@ -1096,13 +1110,15 @@ function managedValidator(value: unknown, label: string): ManagedConfigValidator
   const argv = list(item.argv, `${label}.argv`).map((argument, index) =>
     argvArgument(argument, `${label}.argv[${index}]`)
   );
-  if (argv.length === 0) throw new ConfigurationError(`${label}.argv 不能为空`);
+  if (argv.length === 0) throw new ConfigurationError(`${label}.argv must not be empty`);
   argv[0] = runPermission(argv[0], `${label}.argv[0]`);
   if (argv.some((argument) => argument.includes(CANDIDATE_ARG) && argument !== CANDIDATE_ARG)) {
-    throw new ConfigurationError(`${label}.argv 的 ${CANDIDATE_ARG} 必须是独立参数`);
+    throw new ConfigurationError(`${CANDIDATE_ARG} in ${label}.argv must be a standalone argument`);
   }
   if (argv.filter((argument) => argument === CANDIDATE_ARG).length !== 1) {
-    throw new ConfigurationError(`${label}.argv 必须包含且只包含一个独立 ${CANDIDATE_ARG} 参数`);
+    throw new ConfigurationError(
+      `${label}.argv must contain exactly one standalone ${CANDIDATE_ARG} argument`,
+    );
   }
   return Object.freeze({
     argv: freezeArray(argv),
@@ -1121,7 +1137,7 @@ async function managedSecretReferences(
   try {
     text = await Deno.readTextFile(source);
   } catch (cause) {
-    throw new ConfigurationError(`无法读取 ${label}.source 配置 ${source}`, { cause });
+    throw new ConfigurationError(`Failed to read ${label}.source config ${source}`, { cause });
   }
   if (format === "nginx") {
     validateManagedPlainText(text, configName);
@@ -1133,7 +1149,7 @@ async function managedSecretReferences(
     const declaration = secrets.get(secretName);
     if (declaration === undefined) {
       throw new ConfigurationError(
-        `配置 ${configName} 的 \${${secretName}} 未在 cluster.yaml.secrets 声明`,
+        `\${${secretName}} in config ${configName} is not declared in cluster.yaml.secrets`,
       );
     }
     references.set(
@@ -1159,7 +1175,7 @@ async function managedConfigFiles(
     const item = mapping(raw, itemLabel);
     if (item.updater !== undefined) {
       throw new ConfigurationError(
-        `${itemLabel}.updater 已移除：请在配置值中使用 \${SECRET_NAME}，并声明 format`,
+        `${itemLabel}.updater was removed: use \${SECRET_NAME} in config values and declare format`,
       );
     }
     fields(
@@ -1180,11 +1196,11 @@ async function managedConfigFiles(
       itemLabel,
     );
     if (item.kind !== "file") {
-      throw new ConfigurationError(`${itemLabel}.kind 只支持 file`);
+      throw new ConfigurationError(`${itemLabel}.kind supports only file`);
     }
     const configName = `file-${index}`;
     if (names.has(configName)) {
-      throw new ConfigurationError(`${label} 包含内部重复名称: ${configName}`);
+      throw new ConfigurationError(`${label} contains an internal duplicate name: ${configName}`);
     }
     names.add(configName);
     const parsedTarget = managedConfigTarget(
@@ -1193,7 +1209,9 @@ async function managedConfigFiles(
       `${itemLabel}.target`,
     );
     if (targets.has(parsedTarget.target)) {
-      throw new ConfigurationError(`${label} 包含重复目标路径: ${parsedTarget.target}`);
+      throw new ConfigurationError(
+        `${label} contains a duplicate target path: ${parsedTarget.target}`,
+      );
     }
     targets.add(parsedTarget.target);
     const rawSource = stringValue(item.source, `${itemLabel}.source`);
@@ -1205,7 +1223,7 @@ async function managedConfigFiles(
     );
     const source = await contained(directory, rawSource, `${itemLabel}.source`);
     if (format === "nginx" && variables.length > 0) {
-      throw new ConfigurationError(`${itemLabel}.variables 与 format: nginx 不兼容`);
+      throw new ConfigurationError(`${itemLabel}.variables is incompatible with format: nginx`);
     }
     const secretReferences = await managedSecretReferences(
       configName,
@@ -1259,17 +1277,17 @@ function appServiceManagement(
     label,
   );
   if (item.kind !== "service") {
-    throw new ConfigurationError(`${label}.kind 只支持 service`);
+    throw new ConfigurationError(`${label}.kind supports only service`);
   }
   const unit = stringValue(item.name, `${label}.name`);
   if (!SYSTEMD_UNIT_RE.test(unit) || unit.includes("..")) {
-    throw new ConfigurationError(`${label}.name 必须是合法的 .service unit 名称`);
+    throw new ConfigurationError(`${label}.name must be a valid .service unit name`);
   }
   if (item.enabled !== undefined && typeof item.enabled !== "boolean") {
-    throw new ConfigurationError(`${label}.enabled 必须是布尔值`);
+    throw new ConfigurationError(`${label}.enabled must be a boolean`);
   }
   if (item.daemon_reload !== undefined && typeof item.daemon_reload !== "boolean") {
-    throw new ConfigurationError(`${label}.daemon_reload 必须是布尔值`);
+    throw new ConfigurationError(`${label}.daemon_reload must be a boolean`);
   }
   const tool = enumValue<EnvironmentServiceTool>(
     item.tool ?? "auto",
@@ -1278,10 +1296,10 @@ function appServiceManagement(
   );
   if (tool === "service") {
     if (item.daemon_reload === true) {
-      throw new ConfigurationError(`${label}.daemon_reload 与 tool: service 不兼容`);
+      throw new ConfigurationError(`${label}.daemon_reload is incompatible with tool: service`);
     }
     if (item.enabled !== undefined) {
-      throw new ConfigurationError(`${label}.enabled 与 tool: service 不兼容`);
+      throw new ConfigurationError(`${label}.enabled is incompatible with tool: service`);
     }
   }
   const service: AppServiceManagement = Object.freeze({
@@ -1299,7 +1317,7 @@ function appServiceManagement(
   });
   if (item.unit_config === undefined) return Promise.resolve(service);
   if (service.tool === "service") {
-    throw new ConfigurationError(`${label}.unit_config 与 tool: service 不兼容`);
+    throw new ConfigurationError(`${label}.unit_config is incompatible with tool: service`);
   }
   return Promise.resolve(Object.freeze({
     ...service,
@@ -1319,7 +1337,7 @@ async function appScriptManagement(
 ): Promise<AppScriptManagement> {
   fields(item, ["kind", "start", "stop", "restart"], ["kind", "start", "stop", "restart"], label);
   if (item.kind !== "script") {
-    throw new ConfigurationError(`${label}.kind 只支持 script`);
+    throw new ConfigurationError(`${label}.kind supports only script`);
   }
   const invocation = async (action: "start" | "stop" | "restart") =>
     await scriptInvocation(item[action], directory, `${label}.${action}`);
@@ -1342,7 +1360,7 @@ async function appManagement(
   if (value === undefined || value === null) {
     if (fileConfigs.some((config) => config.onChange !== "none")) {
       throw new ConfigurationError(
-        `${label.replace(".management", ".configs")}.on_change 需要声明 management.kind: service`,
+        `${label.replace(".management", ".configs")}.on_change requires management.kind: service`,
       );
     }
     return undefined;
@@ -1381,17 +1399,17 @@ async function appManagement(
   const systemService = manager.kind === "service" ? manager : undefined;
   if (systemService === undefined && fileConfigs.some((config) => config.onChange !== "none")) {
     throw new ConfigurationError(
-      `${label} 需要 management.kind: service 才能声明 configs.on_change`,
+      `${label} requires management.kind: service to declare configs.on_change`,
     );
   }
   if (systemService?.unitConfig !== undefined) {
     if (!systemService.daemonReload) {
-      throw new ConfigurationError(`${label}.unit_config 需要 daemon_reload: true`);
+      throw new ConfigurationError(`${label}.unit_config requires daemon_reload: true`);
     }
     const unitTarget = systemService.unitConfig.target;
     if (fileConfigs.some((config) => config.target === unitTarget)) {
       throw new ConfigurationError(
-        `${label} 配置与 service.unit_config 不能声明同一个目标路径: ${unitTarget}`,
+        `${label} config and service.unit_config must not declare the same target path: ${unitTarget}`,
       );
     }
   }
@@ -1436,7 +1454,9 @@ async function appConfigs(
       `${itemLabel}.script`,
     );
     if (scriptPaths.has(invocation.relativePath)) {
-      throw new ConfigurationError(`${label} 包含重复配置脚本: ${invocation.relativePath}`);
+      throw new ConfigurationError(
+        `${label} contains a duplicate config script: ${invocation.relativePath}`,
+      );
     }
     scriptPaths.add(invocation.relativePath);
     scriptInvocations.push(invocation);
@@ -1480,7 +1500,7 @@ function systemdUnitConfig(
     ? `/etc/systemd/system/${unit}`
     : managedTargetPath(item.target, `${label}.target`);
   if (posix.basename(target) !== unit) {
-    throw new ConfigurationError(`${label}.target 文件名必须与 service.unit 一致`);
+    throw new ConfigurationError(`${label}.target file name must match service.unit`);
   }
   const workingDirectory = systemdWorkingDirectory(
     item.working_directory,
@@ -1489,7 +1509,7 @@ function systemdUnitConfig(
   );
   const commandText = argvArgument(item.command, `${label}.command`);
   if (!commandText.includes("/")) {
-    throw new ConfigurationError(`${label}.command 必须是路径，不能只写裸命令名`);
+    throw new ConfigurationError(`${label}.command must be a path, not a bare command name`);
   }
   const command = absoluteOrRelativeRemotePath(commandText, workingDirectory, `${label}.command`);
   const args = list(item.args ?? [], `${label}.args`).map((argument, index) =>
@@ -1535,24 +1555,30 @@ function systemdWorkingDirectory(
   if (variableCount === 0) {
     if (text.includes("$") || text.includes("%") || text.includes('"')) {
       throw new ConfigurationError(
-        `${label} 只支持 ${variableBareNames.join("、")} 目录变量，不支持其他展开或引号字符`,
+        `${label} supports only the ${
+          variableBareNames.join(", ")
+        } directory variable and no other expansion or quote characters`,
       );
     }
     return remoteDirectoryPath(value, installDirectory, label);
   }
   if (variableCount > 1) {
-    throw new ConfigurationError(`${label} 只能包含一个目录变量`);
+    throw new ConfigurationError(`${label} must contain exactly one directory variable`);
   }
   const match = Object.entries(MANAGED_TARGET_VARIABLE_PREFIXES).find(
     ([, prefix]) => text === prefix.slice(0, -1) || text.startsWith(prefix),
   );
   if (match === undefined) {
     throw new ConfigurationError(
-      `${label} 只支持以 ${variableBareNames.join("、")} 开头或作为裸值`,
+      `${label} supports only values starting with ${
+        variableBareNames.join(", ")
+      } or the bare variable`,
     );
   }
   if (installDirectory === undefined) {
-    throw new ConfigurationError(`${label} 使用目录变量，但 App 缺少 install_directory`);
+    throw new ConfigurationError(
+      `${label} uses a directory variable, but the App is missing install_directory`,
+    );
   }
   const [targetRoot, variablePrefix] = match as [
     Exclude<ManagedConfigTargetRoot, "absolute">,
@@ -1568,11 +1594,13 @@ function systemdWorkingDirectory(
     )
   ) {
     throw new ConfigurationError(
-      `${label} 的目录变量后必须是规范相对路径`,
+      `${label} must be followed by a canonical relative path after the directory variable`,
     );
   }
   if (!bareValue && relative === "") {
-    throw new ConfigurationError(`${label} 的目录变量后必须是规范相对路径`);
+    throw new ConfigurationError(
+      `${label} must be followed by a canonical relative path after the directory variable`,
+    );
   }
   const root = targetRoot === "install"
     ? posix.normalize(installDirectory)
@@ -1588,22 +1616,26 @@ function remoteDirectoryPath(
 ): string {
   const text = stringValue(value, label);
   if (text.includes("\\") || /[\0\r\n]/.test(text)) {
-    throw new ConfigurationError(`${label} 包含非法字符`);
+    throw new ConfigurationError(`${label} contains invalid characters`);
   }
   if (posix.isAbsolute(text)) return managedTargetPath(text, label);
   if (
     text === "" || text.startsWith("//") || posix.normalize(text) !== text ||
     text.split("/").some((part) => part === "..")
   ) {
-    throw new ConfigurationError(`${label} 必须是规范相对 POSIX 路径或远端绝对路径`);
+    throw new ConfigurationError(
+      `${label} must be a canonical relative POSIX path or a remote absolute path`,
+    );
   }
   if (installDirectory === undefined) {
-    throw new ConfigurationError(`${label} 是相对路径，但 App 缺少 install_directory`);
+    throw new ConfigurationError(
+      `${label} is a relative path, but the App is missing install_directory`,
+    );
   }
   const base = posix.normalize(installDirectory);
   const resolved = posix.normalize(posix.join(base, text));
   if (resolved !== base && !resolved.startsWith(`${base}/`)) {
-    throw new ConfigurationError(`${label} 逃逸 App 安装目录`);
+    throw new ConfigurationError(`${label} escapes the App install directory`);
   }
   return resolved;
 }
@@ -1615,14 +1647,14 @@ function absoluteOrRelativeRemotePath(
 ): string {
   if (posix.isAbsolute(value)) {
     if (value === "/" || value.startsWith("//") || posix.normalize(value) !== value) {
-      throw new ConfigurationError(`${label} 必须是规范的远端绝对路径`);
+      throw new ConfigurationError(`${label} must be a canonical remote absolute path`);
     }
     return value;
   }
   const normalizedBase = posix.normalize(base);
   const resolved = posix.normalize(posix.join(normalizedBase, value));
   if (resolved !== normalizedBase && !resolved.startsWith(`${normalizedBase}/`)) {
-    throw new ConfigurationError(`${label} 逃逸 working_directory`);
+    throw new ConfigurationError(`${label} escapes working_directory`);
   }
   return resolved;
 }
@@ -1653,12 +1685,14 @@ async function loadMachines(path: string, root: string): Promise<Map<string, Mac
       label,
     );
     const machineName = name(item.name, `${label}.name`);
-    if (machines.has(machineName)) throw new ConfigurationError(`重复机器名称: ${machineName}`);
+    if (machines.has(machineName)) {
+      throw new ConfigurationError(`Duplicate machine name: ${machineName}`);
+    }
     const sshPort = item.ssh_port ?? 22;
     if (
       typeof sshPort !== "number" || !Number.isInteger(sshPort) || sshPort < 1 || sshPort > 65535
     ) {
-      throw new ConfigurationError(`${label}.ssh_port 不合法`);
+      throw new ConfigurationError(`Invalid ${label}.ssh_port`);
     }
     const key = item.ssh_private_key;
     const secretsDir = item.secrets_dir === undefined || item.secrets_dir === null
@@ -1694,7 +1728,7 @@ async function childDirectories(parent: string): Promise<string[]> {
       if (entry.isDirectory) entries.push(entry.name);
     }
   } catch (cause) {
-    throw new ConfigurationError(`无法读取配置目录: ${parent}`, { cause });
+    throw new ConfigurationError(`Failed to read config directory: ${parent}`, { cause });
   }
   return entries.sort();
 }
@@ -1704,7 +1738,7 @@ async function loadEnvironment(
   directoryName: string,
   label: string,
 ): Promise<LoadedEnvironment> {
-  const environmentName = name(directoryName, `${label} 目录名`);
+  const environmentName = name(directoryName, `${label} directory name`);
   const data = await loadYaml(join(directory, "environment.yaml"));
   version(data, label);
   rejectTopLevelSecretDeclarations(data, label);
@@ -1729,21 +1763,23 @@ async function loadEnvironment(
   );
   const declaredName = name(data.name, `${label}.name`);
   if (declaredName !== environmentName) {
-    throw new ConfigurationError(`环境名称 ${declaredName} 必须与目录 ${directoryName} 相同`);
+    throw new ConfigurationError(
+      `Environment name ${declaredName} must match directory ${directoryName}`,
+    );
   }
   const privilege = data.requires_privilege;
   if (privilege !== undefined && privilege !== null && typeof privilege !== "boolean") {
-    throw new ConfigurationError(`${label}.requires_privilege 必须是布尔值`);
+    throw new ConfigurationError(`${label}.requires_privilege must be a boolean`);
   }
   const hasScripts = data.scripts !== undefined && data.scripts !== null;
   const hasLifecycle = data.install !== undefined || data.manager !== undefined;
   if (hasScripts === hasLifecycle) {
     throw new ConfigurationError(
-      `${label} 必须且只能选择旧顶层 scripts 或新的 install/manager 生命周期`,
+      `${label} must choose exactly one of the legacy top-level scripts or the new install/manager lifecycle`,
     );
   }
   if (hasLifecycle && (data.install === undefined || data.install === null)) {
-    throw new ConfigurationError(`${label}.install 是新生命周期的必需字段`);
+    throw new ConfigurationError(`${label}.install is a required field of the new lifecycle`);
   }
   const environmentScripts = hasScripts
     ? await scripts(data, directory, label)
@@ -1826,14 +1862,14 @@ async function loadV2PlacedEnvironments(
   }
   if (legacyDirectories.length > 0) {
     throw new ConfigurationError(
-      `cluster.yaml schema_version 2 不允许 v1 Environment 布局: ${
+      `cluster.yaml schema_version 2 does not allow the v1 Environment layout: ${
         legacyDirectories.map((item) => `environments/${item}/<environment>`).join(", ")
       }`,
     );
   }
 
   const definitionNames = directoryNames.map((directoryName) =>
-    name(directoryName, `environment[${directoryName}] 目录名`)
+    name(directoryName, `environment[${directoryName}] directory name`)
   );
   const placementNames = Object.keys(placementData).map((environmentName) =>
     name(environmentName, `cluster.yaml.environments.${environmentName}`)
@@ -1844,9 +1880,9 @@ async function loadV2PlacedEnvironments(
   const unknown = placementNames.filter((environmentName) => !definitionSet.has(environmentName));
   if (missing.length > 0 || unknown.length > 0) {
     throw new ConfigurationError(
-      `cluster.yaml Environment 映射不一致；缺失=${JSON.stringify(missing)} 未知=${
-        JSON.stringify(unknown)
-      }`,
+      `cluster.yaml Environment mapping is inconsistent; missing=${
+        JSON.stringify(missing)
+      } unknown=${JSON.stringify(unknown)}`,
     );
   }
 
@@ -1859,19 +1895,21 @@ async function loadV2PlacedEnvironments(
       )].sort(),
     );
     if (assigned.length === 0) {
-      throw new ConfigurationError(`Environment ${environmentName} 至少需要一台目标机器`);
+      throw new ConfigurationError(
+        `Environment ${environmentName} requires at least one target machine`,
+      );
     }
     const unknownMachines = assigned.filter((machineName) => !machines.has(machineName));
     if (unknownMachines.length > 0) {
       throw new ConfigurationError(
-        `Environment ${environmentName} 引用未知机器: ${unknownMachines.join(", ")}`,
+        `Environment ${environmentName} references unknown machines: ${unknownMachines.join(", ")}`,
       );
     }
 
     const directory = join(parent, environmentName);
     if (!(await isFile(join(directory, "environment.yaml")))) {
       throw new ConfigurationError(
-        `cluster.yaml schema_version 2 要求共享定义: environments/${environmentName}/environment.yaml`,
+        `cluster.yaml schema_version 2 requires a shared definition: environments/${environmentName}/environment.yaml`,
       );
     }
     const environment = await loadEnvironment(
@@ -1913,7 +1951,7 @@ const APP_FIELDS = [
 function rejectTopLevelAppScripts(data: StringRecord, label: string): void {
   if (data.scripts === undefined) return;
   throw new ConfigurationError(
-    `${label} 的顶层 scripts 已移除：配置脚本请使用 configs.kind: script，服务脚本请使用 management.kind: script`,
+    `Top-level scripts in ${label} were removed: use configs.kind: script for config scripts and management.kind: script for service scripts`,
   );
 }
 
@@ -1921,7 +1959,7 @@ function deploymentDefinition(value: unknown, label: string): DeploymentDefiniti
   const item = mapping(value, label);
   fields(item, ["kind"], ["kind"], label);
   if (item.kind !== "versioned") {
-    throw new ConfigurationError(`${label}.kind 首版只支持 versioned`);
+    throw new ConfigurationError(`${label}.kind supports only versioned in this version`);
   }
   return Object.freeze({ kind: "versioned" as const });
 }
@@ -1940,7 +1978,7 @@ async function loadAppVersions(root: string): Promise<Map<string, AppVersionEntr
     )
   ) {
     const entryLabel = `app_versions.yaml.apps.${appName}`;
-    const key = name(appName, `${entryLabel} 名称`);
+    const key = name(appName, `${entryLabel} name`);
     const entry = mapping(rawValue, entryLabel);
     fields(entry, ["version", "package"], ["version", "package"], entryLabel);
     entries.set(
@@ -1964,7 +2002,7 @@ async function loadApps(
   if (!(await isDirectory(parent))) {
     if (appVersions !== undefined && appVersions.size > 0) {
       throw new ConfigurationError(
-        "app_versions.yaml 声明了 App，但集群 apps 目录不存在",
+        "app_versions.yaml declares Apps, but the cluster apps directory does not exist",
       );
     }
     return apps;
@@ -1978,16 +2016,16 @@ async function loadApps(
     rejectTopLevelTemplates(data, label);
     rejectTopLevelAppScripts(data, label);
     if (data.packageless !== undefined && typeof data.packageless !== "boolean") {
-      throw new ConfigurationError(`${label}.packageless 必须是布尔值`);
+      throw new ConfigurationError(`${label}.packageless must be a boolean`);
     }
     const packageless = data.packageless === true;
     const appName = name(data.name, `${label}.name`);
     if (appName !== directoryName) {
-      throw new ConfigurationError(`App 名称 ${appName} 必须与目录 ${directoryName} 相同`);
+      throw new ConfigurationError(`App name ${appName} must match directory ${directoryName}`);
     }
     if (appVersions === undefined) {
       throw new ConfigurationError(
-        `App ${appName} 使用 schema 1，但集群缺少 app_versions.yaml`,
+        `App ${appName} uses schema 1, but the cluster is missing app_versions.yaml`,
       );
     }
     fields(
@@ -2000,11 +2038,13 @@ async function loadApps(
     if (packageless) {
       if (entry) {
         throw new ConfigurationError(
-          `packageless App ${appName} 不允许 app_versions.yaml 版本记录`,
+          `packageless App ${appName} must not have app_versions.yaml version records`,
         );
       }
     } else if (!entry) {
-      throw new ConfigurationError(`app_versions.yaml 缺少 App ${appName} 的版本记录`);
+      throw new ConfigurationError(
+        `app_versions.yaml is missing a version record for App ${appName}`,
+      );
     }
     const installDirectory = data.install_directory === undefined
       ? undefined
@@ -2015,7 +2055,7 @@ async function loadApps(
     }
     if (deployment !== undefined) {
       if (packageless) {
-        throw new ConfigurationError(`${label}.deployment 不能用于 packageless App`);
+        throw new ConfigurationError(`${label}.deployment cannot be used for a packageless App`);
       }
     } else if (!packageless) {
       deployment = Object.freeze({ kind: "versioned" as const });
@@ -2036,11 +2076,11 @@ async function loadApps(
       appConfig.configScripts,
     );
     if (appConfig.configs.length > 0 && management?.runAs === undefined) {
-      throw new ConfigurationError(`${label}.configs.file 需要声明 management.run_as`);
+      throw new ConfigurationError(`${label}.configs.file requires management.run_as`);
     }
     if (deployment !== undefined && management?.runAs === undefined) {
       throw new ConfigurationError(
-        `${label}.deployment.versioned 需要声明 management.run_as`,
+        `${label}.deployment.versioned requires management.run_as`,
       );
     }
     apps.set(
@@ -2066,7 +2106,7 @@ async function loadApps(
       .sort();
     if (unknownVersions.length > 0) {
       throw new ConfigurationError(
-        `app_versions.yaml 声明未知 App: ${unknownVersions.join(", ")}`,
+        `app_versions.yaml declares unknown Apps: ${unknownVersions.join(", ")}`,
       );
     }
   }
@@ -2087,15 +2127,17 @@ function validateDependencies(
   ): void => {
     const declaration = secrets.get(secretName);
     if (declaration === undefined) {
-      throw new ConfigurationError(`密钥 ${secretName} 未在 cluster.yaml.secrets 声明`);
+      throw new ConfigurationError(`Secret ${secretName} is not declared in cluster.yaml.secrets`);
     }
     if (kind !== undefined && declaration.kind !== kind) {
       throw new ConfigurationError(
-        `密钥 ${secretName} 类型冲突；App 要求 ${kind}，cluster.yaml 声明 ${declaration.kind}`,
+        `Secret ${secretName} type conflict: the App requires ${kind} but cluster.yaml declares ${declaration.kind}`,
       );
     }
     if (!declaration.machines.includes(machineName)) {
-      throw new ConfigurationError(`密钥 ${secretName} 未声明放置到机器 ${machineName}`);
+      throw new ConfigurationError(
+        `Secret ${secretName} is not declared for machine ${machineName}`,
+      );
     }
   };
   const environmentIds = new Set<string>();
@@ -2109,19 +2151,19 @@ function validateDependencies(
     for (const environment of machine.environments) {
       if (!definitions.has(environment.definition)) {
         throw new ConfigurationError(
-          `${machine.name}/${environment.name} 引用未知环境定义: ${environment.definition}`,
+          `${machine.name}/${environment.name} references an unknown environment definition: ${environment.definition}`,
         );
       }
       for (const dependency of environment.dependsOn) {
         const target = dependency.includes("/") ? dependency : `${machine.name}/${dependency}`;
         if (!environmentIds.has(target)) {
           throw new ConfigurationError(
-            `${machine.name}/${environment.name} 引用未知环境实例: ${dependency}`,
+            `${machine.name}/${environment.name} references an unknown environment instance: ${dependency}`,
           );
         }
         if (!dependency.includes("/") && !local.has(dependency)) {
           throw new ConfigurationError(
-            `${machine.name}/${environment.name} 引用未知本机环境实例: ${dependency}`,
+            `${machine.name}/${environment.name} references an unknown local environment instance: ${dependency}`,
           );
         }
       }
@@ -2133,7 +2175,7 @@ function validateDependencies(
         const target = dependency.includes("/") ? dependency : `${machineName}/${dependency}`;
         if (!environmentIds.has(target)) {
           throw new ConfigurationError(
-            `App ${appName} 在 ${machineName} 引用未知环境实例: ${dependency}`,
+            `App ${appName} on ${machineName} references an unknown environment instance: ${dependency}`,
           );
         }
       }
@@ -2151,9 +2193,13 @@ export async function loadCluster(directory: string | URL): Promise<ClusterConfi
   const rawDirectory = directory instanceof URL
     ? (directory.protocol === "file:" ? decodeURIComponent(directory.pathname) : "")
     : directory;
-  if (!rawDirectory) throw new ConfigurationError(`集群目录不存在: ${String(directory)}`);
+  if (!rawDirectory) {
+    throw new ConfigurationError(`Cluster directory does not exist: ${String(directory)}`);
+  }
   const root = resolve(rawDirectory);
-  if (!(await isDirectory(root))) throw new ConfigurationError(`集群目录不存在: ${root}`);
+  if (!(await isDirectory(root))) {
+    throw new ConfigurationError(`Cluster directory does not exist: ${root}`);
+  }
   const realRoot = await Deno.realPath(root);
   const clusterData = await loadYaml(join(realRoot, "cluster.yaml"));
   clusterSchemaVersion(clusterData);
@@ -2182,7 +2228,7 @@ export async function loadCluster(directory: string | URL): Promise<ClusterConfi
   const unknownApps = Object.keys(placementData).filter((app) => !apps.has(app)).sort();
   if (missingApps.length > 0 || unknownApps.length > 0) {
     throw new ConfigurationError(
-      `cluster.yaml App 映射不一致；缺失=${JSON.stringify(missingApps)} 未知=${
+      `cluster.yaml App mapping is inconsistent; missing=${JSON.stringify(missingApps)} unknown=${
         JSON.stringify(unknownApps)
       }`,
     );
@@ -2190,10 +2236,14 @@ export async function loadCluster(directory: string | URL): Promise<ClusterConfi
   const placements = new Map<string, readonly string[]>();
   for (const [appName, rawMachines] of Object.entries(placementData)) {
     const assigned = stringList(rawMachines, `cluster.yaml.apps.${appName}`);
-    if (assigned.length === 0) throw new ConfigurationError(`App ${appName} 至少需要一台目标机器`);
+    if (assigned.length === 0) {
+      throw new ConfigurationError(`App ${appName} requires at least one target machine`);
+    }
     const unknown = assigned.filter((machine) => !machines.has(machine)).sort();
     if (unknown.length > 0) {
-      throw new ConfigurationError(`App ${appName} 引用未知机器: ${unknown.join(", ")}`);
+      throw new ConfigurationError(
+        `App ${appName} references unknown machines: ${unknown.join(", ")}`,
+      );
     }
     placements.set(appName, assigned);
   }

@@ -45,7 +45,10 @@ Deno.test("unit/config: app without app_versions.yaml fails closed", async () =>
   await withTempDir(async (root) => {
     const directory = await writeCluster(root, { appV1Inline: true });
     const error = await assertRejects(() => loadCluster(directory), ConfigurationError);
-    assertStringIncludes(error.message, "App demo 使用 schema 1，但集群缺少 app_versions.yaml");
+    assertStringIncludes(
+      error.message,
+      "App demo uses schema 1, but the cluster is missing app_versions.yaml",
+    );
   });
 });
 
@@ -59,7 +62,7 @@ Deno.test("unit/config: app_versions.yaml and install_directory are fail-closed"
       }"}\ndepends_on: [base]\nmanagement:\n  run_as: deploy\n  kind: service\n  name: demo.service\n  tool: systemctl\n`,
     );
     const mixing = await assertRejects(() => loadCluster(directory), ConfigurationError);
-    assertStringIncludes(mixing.message, "app[demo] 包含未知字段: package, version");
+    assertStringIncludes(mixing.message, "app[demo] contains unknown fields: package, version");
 
     await Deno.remove(directory, { recursive: true });
     const missingEntry = await writeCluster(root);
@@ -68,7 +71,7 @@ Deno.test("unit/config: app_versions.yaml and install_directory are fail-closed"
       "schema_version: 1\napps: {}\n",
     );
     const missing = await assertRejects(() => loadCluster(missingEntry), ConfigurationError);
-    assertStringIncludes(missing.message, "缺少 App demo");
+    assertStringIncludes(missing.message, "is missing a version record for App demo");
 
     await Deno.writeTextFile(
       `${missingEntry}/app_versions.yaml`,
@@ -79,7 +82,7 @@ Deno.test("unit/config: app_versions.yaml and install_directory are fail-closed"
       }"}}}\n`,
     );
     const extra = await assertRejects(() => loadCluster(missingEntry), ConfigurationError);
-    assertStringIncludes(extra.message, "未知 App");
+    assertStringIncludes(extra.message, "declares unknown Apps");
 
     const appYamlPath = join(missingEntry, "apps", "demo", "app.yaml");
     await Deno.writeTextFile(
@@ -90,7 +93,7 @@ Deno.test("unit/config: app_versions.yaml and install_directory are fail-closed"
       ),
     );
     const relative = await assertRejects(() => loadCluster(missingEntry), ConfigurationError);
-    assertStringIncludes(relative.message, "远端绝对 POSIX");
+    assertStringIncludes(relative.message, "remote absolute POSIX");
   });
 });
 
@@ -98,7 +101,7 @@ Deno.test("unit/config: unknown YAML fields fail before planning", async () => {
   await withTempDir(async (root) => {
     const directory = await writeCluster(root, { unknownField: true });
     const error = await assertRejects(() => loadCluster(directory), ConfigurationError);
-    assertStringIncludes(error.message, "未知字段");
+    assertStringIncludes(error.message, "unknown fields");
   });
 });
 
@@ -154,7 +157,7 @@ Deno.test("unit/config: packageless app constraints fail closed", async () => {
       }"}\n`,
     );
     const error = await assertRejects(() => loadCluster(directory), ConfigurationError);
-    assertStringIncludes(error.message, "不允许 app_versions.yaml 版本记录");
+    assertStringIncludes(error.message, "must not have app_versions.yaml version records");
   });
 });
 
@@ -173,7 +176,7 @@ Deno.test("unit/config: duplicate YAML keys and resource path escape fail closed
     const app = await Deno.readTextFile(appPath);
     await Deno.writeTextFile(appPath, app.replace("templates/application.json", "../outside.json"));
     const error = await assertRejects(() => loadCluster(escaped), ConfigurationError);
-    assertStringIncludes(error.message, "资源目录内");
+    assertStringIncludes(error.message, "inside the resource directory");
   });
 });
 
@@ -205,7 +208,7 @@ Deno.test("unit/planning: filters reject unknown and excluded dependencies", asy
         throw new Error("expected PlanningError");
       } catch (error) {
         if (!(error instanceof PlanningError)) throw error;
-        assertStringIncludes(error.message, "未知机器过滤器");
+        assertStringIncludes(error.message, "Unknown machine filter");
       }
     });
     const directed = buildPlan(cluster, { action: "deploy", apps: ["demo"] });

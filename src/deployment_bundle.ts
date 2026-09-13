@@ -109,9 +109,11 @@ export async function buildDeploymentBundle(
     "maxTotalBytes",
   );
   const pending = collectMembers(options);
-  if (pending.length === 0) throw new PreflightError("部署包至少需要一个内容成员");
+  if (pending.length === 0) {
+    throw new PreflightError("Deployment bundle requires at least one content member");
+  }
   if (pending.length + 1 > maxMembers) {
-    throw new PreflightError(`部署包成员数量超过 ${maxMembers} 限制`);
+    throw new PreflightError(`Deployment bundle member count exceeds the ${maxMembers} limit`);
   }
 
   await Deno.mkdir(dirname(destination), { recursive: true, mode: 0o700 });
@@ -130,17 +132,21 @@ export async function buildDeploymentBundle(
         ? await writeContentStable(member.content!, stagedPath, maxMemberBytes)
         : await copyFileStable(member.source, stagedPath, maxMemberBytes, options.signal);
       if (member.purpose === "package") {
-        await assertGzipTar(stagedPath, "部署包中的 App 原始包");
+        await assertGzipTar(stagedPath, "raw App package in the deployment bundle");
       }
       if (
         member.expectedSha256 !== undefined &&
         !constantTimeHexEqual(identity.sha256, normalizeSha256(member.expectedSha256))
       ) {
-        throw new PreflightError(`部署包成员 ${member.path} 的 SHA-256 与声明不匹配`);
+        throw new PreflightError(
+          `Deployment bundle member ${member.path} SHA-256 does not match the declaration`,
+        );
       }
       total += identity.size;
       if (!Number.isSafeInteger(total) || total > maxTotalBytes) {
-        throw new PreflightError(`部署包内容总量超过 ${maxTotalBytes} 字节限制`);
+        throw new PreflightError(
+          `Deployment bundle total content exceeds the ${maxTotalBytes} byte limit`,
+        );
       }
       staged.push(Object.freeze({
         path: member.path,
@@ -182,9 +188,15 @@ export async function buildDeploymentBundle(
       await Deno.link(gzipPath, destination);
     } catch (cause) {
       if (cause instanceof Deno.errors.AlreadyExists) {
-        throw new PreflightError(`部署包输出已存在，拒绝覆盖: ${destination}`, { cause });
+        throw new PreflightError(
+          `Deployment bundle output already exists; refusing to overwrite: ${destination}`,
+          { cause },
+        );
       }
-      throw new PreflightError(`无法原子发布部署包: ${destination}`, { cause });
+      throw new PreflightError(
+        `Failed to publish the deployment bundle atomically: ${destination}`,
+        { cause },
+      );
     }
     return Object.freeze({
       path: destination,
@@ -194,7 +206,7 @@ export async function buildDeploymentBundle(
     });
   } catch (cause) {
     if (cause instanceof PreflightError || cause instanceof CancelledError) throw cause;
-    throw new PreflightError("构建部署包失败", { cause });
+    throw new PreflightError("Failed to build the deployment bundle", { cause });
   } finally {
     await Deno.remove(staging, { recursive: true }).catch(() => undefined);
   }
@@ -216,7 +228,9 @@ function collectMembers(options: BuildDeploymentBundleOptions): PendingMember[] 
     const member = fileMember("scripts", "script", input, 0o700);
     if (member.path === `scripts/${REMOTE_CONFIG_UPDATER_BUNDLE_PATH}`) {
       if (resolve(input.source) !== resolve(REMOTE_CONFIG_UPDATER_SOURCE)) {
-        throw new PreflightError("App 脚本不能覆盖框架保留的配置 updater 成员");
+        throw new PreflightError(
+          "App scripts must not override the framework-reserved config updater member",
+        );
       }
       hasFrameworkUpdater = true;
     }
@@ -272,7 +286,11 @@ function collectMembers(options: BuildDeploymentBundleOptions): PendingMember[] 
   result.sort((left, right) => compareText(left.path, right.path));
   const seen = new Set<string>(["manifest.json"]);
   for (const member of result) {
-    if (seen.has(member.path)) throw new PreflightError(`部署包包含重复成员路径: ${member.path}`);
+    if (seen.has(member.path)) {
+      throw new PreflightError(
+        `Deployment bundle contains a duplicate member path: ${member.path}`,
+      );
+    }
     seen.add(member.path);
   }
   return result;
@@ -301,10 +319,14 @@ function safeRelative(value: string): string {
     value.split("/").some((part) => part === "" || part === "." || part === "..") ||
     /[\0\r\n]/u.test(value)
   ) {
-    throw new PreflightError(`部署包成员必须是规范相对 POSIX 路径: ${String(value)}`);
+    throw new PreflightError(
+      `Deployment bundle member must be a canonical relative POSIX path: ${String(value)}`,
+    );
   }
   if (TEXT_ENCODER.encode(value).byteLength > 255) {
-    throw new PreflightError(`部署包成员路径超过 ustar 255 字节限制: ${value}`);
+    throw new PreflightError(
+      `Deployment bundle member path exceeds the ustar 255-byte limit: ${value}`,
+    );
   }
   return value;
 }
@@ -321,7 +343,7 @@ async function copyFileStable(
   signal?: AbortSignal,
 ): Promise<{ readonly size: number; readonly sha256: string }> {
   const input = await Deno.open(source, { read: true }).catch((cause) => {
-    throw new PreflightError(`无法读取部署包输入 ${source}`, { cause });
+    throw new PreflightError(`Failed to read deployment bundle input ${source}`, { cause });
   });
   let before: Deno.FileInfo;
   try {
@@ -330,9 +352,13 @@ async function copyFileStable(
     if (
       !before.isFile || !pathInfo.isFile || pathInfo.isSymlink || !sameIdentity(before, pathInfo)
     ) {
-      throw new PreflightError(`部署包输入不是稳定普通文件: ${source}`);
+      throw new PreflightError(`Deployment bundle input is not a stable regular file: ${source}`);
     }
-    if (before.size > maxBytes) throw new PreflightError(`部署包输入超过单成员限制: ${source}`);
+    if (before.size > maxBytes) {
+      throw new PreflightError(
+        `Deployment bundle input exceeds the single-member limit: ${source}`,
+      );
+    }
     const output = await Deno.open(destination, { createNew: true, write: true, mode: 0o600 });
     const hash = createHash("sha256");
     let size = 0;
@@ -344,7 +370,11 @@ async function copyFileStable(
         if (count === null) break;
         if (count === 0) continue;
         size += count;
-        if (size > maxBytes) throw new PreflightError(`部署包输入超过单成员限制: ${source}`);
+        if (size > maxBytes) {
+          throw new PreflightError(
+            `Deployment bundle input exceeds the single-member limit: ${source}`,
+          );
+        }
         const chunk = buffer.subarray(0, count);
         hash.update(chunk);
         await writeAll(output, chunk);
@@ -356,7 +386,7 @@ async function copyFileStable(
     const after = await input.stat();
     const pathAfter = await Deno.lstat(source);
     if (size !== before.size || !sameIdentity(before, after) || !sameIdentity(after, pathAfter)) {
-      throw new PreflightError(`复制部署包输入时文件发生变化: ${source}`);
+      throw new PreflightError(`File changed while copying deployment bundle input: ${source}`);
     }
     return Object.freeze({ size, sha256: hash.digest("hex") });
   } finally {
@@ -369,7 +399,9 @@ async function writeContentStable(
   destination: string,
   maxBytes: number,
 ): Promise<{ readonly size: number; readonly sha256: string }> {
-  if (content.byteLength > maxBytes) throw new PreflightError("生成内容超过部署包单成员限制");
+  if (content.byteLength > maxBytes) {
+    throw new PreflightError("Generated content exceeds the deployment bundle single-member limit");
+  }
   await Deno.writeFile(destination, content, { createNew: true, mode: 0o600 });
   return Object.freeze({ size: content.byteLength, sha256: sha256Bytes(content) });
 }
@@ -395,7 +427,7 @@ async function appendTarEntry(
   } finally {
     input.close();
   }
-  if (written !== size) throw new PreflightError(`暂存成员 ${path} 在归档时发生变化`);
+  if (written !== size) throw new PreflightError(`Staged member ${path} changed during archiving`);
   const padding = (TAR_BLOCK_SIZE - (size % TAR_BLOCK_SIZE)) % TAR_BLOCK_SIZE;
   if (padding > 0) await writeAll(tar, new Uint8Array(padding));
 }
@@ -433,19 +465,23 @@ function splitUstarPath(path: string): { readonly name: string; readonly prefix:
       return { name, prefix };
     }
   }
-  throw new PreflightError(`部署包成员路径无法写入 ustar: ${path}`);
+  throw new PreflightError(`Deployment bundle member path cannot be written to ustar: ${path}`);
 }
 
 function writeField(buffer: Uint8Array, offset: number, length: number, value: string): void {
   const encoded = TEXT_ENCODER.encode(value);
-  if (encoded.byteLength > length) throw new PreflightError(`tar 字段超过 ${length} 字节限制`);
+  if (encoded.byteLength > length) {
+    throw new PreflightError(`tar field exceeds the ${length} byte limit`);
+  }
   buffer.set(encoded, offset);
 }
 
 function writeOctal(buffer: Uint8Array, offset: number, length: number, value: number): void {
-  if (!Number.isSafeInteger(value) || value < 0) throw new PreflightError("tar 数值字段非法");
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new PreflightError("Invalid tar numeric field");
+  }
   const encoded = `${value.toString(8).padStart(length - 1, "0")}\0`;
-  if (encoded.length > length) throw new PreflightError("tar 数值字段溢出");
+  if (encoded.length > length) throw new PreflightError("tar numeric field overflow");
   writeField(buffer, offset, length, encoded);
 }
 
@@ -458,7 +494,9 @@ async function gzipDeterministic(source: string, destination: string, signal?: A
       .pipeThrough(new CompressionStream("gzip"))
       .pipeTo(output.writable, { signal });
   } catch (cause) {
-    if (signal?.aborted) throw new CancelledError("部署包压缩已取消", { cause });
+    if (signal?.aborted) {
+      throw new CancelledError("Deployment bundle compression cancelled", { cause });
+    }
     throw cause;
   }
 }
@@ -469,8 +507,10 @@ async function hashRegularFile(
   signal?: AbortSignal,
 ): Promise<{ readonly size: number; readonly sha256: string }> {
   const info = await Deno.lstat(path);
-  if (!info.isFile || info.isSymlink) throw new PreflightError(`输出不是普通文件: ${path}`);
-  if (info.size > maxBytes) throw new PreflightError(`输出文件过大: ${path}`);
+  if (!info.isFile || info.isSymlink) {
+    throw new PreflightError(`Output is not a regular file: ${path}`);
+  }
+  if (info.size > maxBytes) throw new PreflightError(`Output file is too large: ${path}`);
   const handle = await Deno.open(path, { read: true });
   const hash = createHash("sha256");
   let size = 0;
@@ -507,7 +547,7 @@ function sha256Bytes(content: Uint8Array): string {
 
 function normalizeSha256(value: string): string {
   const normalized = value.toLowerCase();
-  if (!/^[0-9a-f]{64}$/.test(normalized)) throw new PreflightError("expectedSha256 格式非法");
+  if (!/^[0-9a-f]{64}$/.test(normalized)) throw new PreflightError("Invalid expectedSha256 format");
   return normalized;
 }
 
@@ -522,7 +562,7 @@ function constantTimeHexEqual(left: string, right: string): boolean {
 
 function validMode(value: number): number {
   if (!Number.isSafeInteger(value) || value < 0 || value > 0o777 || (value & 0o6000) !== 0) {
-    throw new PreflightError(`部署包成员 mode 非法: ${value}`);
+    throw new PreflightError(`Invalid deployment bundle member mode: ${value}`);
   }
   return value;
 }
@@ -534,7 +574,7 @@ function modeText(value: number): string {
 function boundedLimit(value: number | undefined, fallback: number, label: string): number {
   const result = value ?? fallback;
   if (!Number.isSafeInteger(result) || result < 1) {
-    throw new PreflightError(`${label} 必须是正安全整数`);
+    throw new PreflightError(`${label} must be a positive safe integer`);
   }
   return result;
 }
@@ -544,13 +584,19 @@ async function assertMissing(path: string): Promise<void> {
     await Deno.lstat(path);
   } catch (cause) {
     if (cause instanceof Deno.errors.NotFound) return;
-    throw new PreflightError(`无法检查部署包输出: ${basename(path)}`, { cause });
+    throw new PreflightError(`Failed to inspect the deployment bundle output: ${basename(path)}`, {
+      cause,
+    });
   }
-  throw new PreflightError(`部署包输出已存在，拒绝覆盖: ${path}`);
+  throw new PreflightError(
+    `Deployment bundle output already exists; refusing to overwrite: ${path}`,
+  );
 }
 
 function throwIfAborted(signal?: AbortSignal): void {
-  if (signal?.aborted) throw new CancelledError("部署包构建已取消", { cause: signal.reason });
+  if (signal?.aborted) {
+    throw new CancelledError("Deployment bundle build cancelled", { cause: signal.reason });
+  }
 }
 
 function compareText(left: string, right: string): number {

@@ -58,7 +58,7 @@ Deno.test("unit/cli: prepare rejects --app and requires user config context", as
   const { cli, stderr } = prepareCli(captured);
   const code = await cli(["prepare", "--cluster", "demo", "--app", "demo"]);
   assertEquals(code, 2);
-  assertStringIncludes(stderr.text(), "不能与 --app 同时使用");
+  assertStringIncludes(stderr.text(), "cannot be combined with --app");
   assertEquals(captured.length, 0);
 });
 
@@ -77,7 +77,7 @@ Deno.test("unit/cli: prepare help documents environment-app semantics", async ()
   assertEquals(await cli(["prepare", "--help"]), 0);
   const text = stdout.text();
   assertStringIncludes(text, "--env");
-  assertStringIncludes(text, "首次安装成功");
-  assertStringIncludes(text, "更新成功");
+  assertStringIncludes(text, "start after the first install");
+  assertStringIncludes(text, "restart after an update");
   assert(stderr.text().length === 0);
 });

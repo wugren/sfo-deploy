@@ -47,13 +47,13 @@ export class PackageCache {
       !options || typeof options !== "object" ||
       typeof options.packagesDir !== "string" || options.packagesDir.trim().length === 0
     ) {
-      throw new ConfigurationError("packagesDir 必须是非空路径");
+      throw new ConfigurationError("packagesDir must be a non-empty path");
     }
     if (
       options.registry === null || typeof options.registry !== "object" ||
       typeof options.registry.fetch !== "function"
     ) {
-      throw new TypeError("PackageCache 需要下载提供方注册表");
+      throw new TypeError("PackageCache requires a download provider registry");
     }
     this.packagesDir = resolve(options.packagesDir);
     this.registry = options.registry;
@@ -145,16 +145,20 @@ export class PackageCache {
       info = await Deno.lstat(target);
     } catch (cause) {
       if (cause instanceof Deno.errors.NotFound) return undefined;
-      throw new PreflightError(`无法检查本地部署包缓存 ${target}`, { cause });
+      throw new PreflightError(`Failed to stat the local deployment package cache ${target}`, {
+        cause,
+      });
     }
     if (!info.isFile || info.isSymlink) {
-      throw new PreflightError(`本地部署包缓存路径不是普通文件: ${target}`);
+      throw new PreflightError(
+        `Local deployment package cache path is not a regular file: ${target}`,
+      );
     }
     const { actual, size } = await hashFile(target, request);
     if (!constantTimeEqual(actual, request.expectedHash.toLowerCase())) {
       throw new PreflightError(
-        `本地部署包缓存校验失败: ${target} expected=${request.expectedHash.toLowerCase()} ` +
-          `actual=${actual}；请移除该文件后重新运行 fetch`,
+        `Local deployment package cache verification failed: ${target} expected=${request.expectedHash.toLowerCase()} ` +
+          `actual=${actual}; remove the file and run fetch again`,
       );
     }
     return Object.freeze({
@@ -188,13 +192,17 @@ export class PackageCache {
         if (cause instanceof Deno.errors.AlreadyExists) {
           const existing = await this.#verified(target, request);
           if (existing === undefined) {
-            throw new PreflightError(`并发下载后的缓存文件校验失败: ${target}`);
+            throw new PreflightError(
+              `Cache file verification failed after concurrent download: ${target}`,
+            );
           }
           await artifact.cleanup();
           artifact = undefined;
           return Object.freeze({ hit: true, entry: existing });
         }
-        throw new DownloadError("无法原子发布本地部署包缓存", { cause });
+        throw new DownloadError("Failed to publish the local deployment package cache atomically", {
+          cause,
+        });
       }
       await artifact.cleanup();
       artifact = undefined;
@@ -211,7 +219,7 @@ export class PackageCache {
       await Deno.remove(staged).catch(() => undefined);
       if (cause instanceof PreflightError) throw cause;
       if (cause instanceof DownloadError) throw cause;
-      throw new DownloadError("本地部署包缓存下载失败", { cause });
+      throw new DownloadError("Local deployment package cache download failed", { cause });
     }
   }
 
@@ -255,14 +263,14 @@ export class PackageCache {
       await Deno.rename(temporary, metadataPath);
     } catch (cause) {
       await Deno.remove(temporary).catch(() => undefined);
-      throw new DownloadError("无法写入本地部署包缓存元数据", { cause });
+      throw new DownloadError("Failed to write local deployment package cache metadata", { cause });
     }
   }
 }
 
 function providerName(value: unknown): string {
   if (typeof value !== "string" || !PROVIDER_NAME_RE.test(value)) {
-    throw new ConfigurationError("package provider 名称不合法");
+    throw new ConfigurationError("Invalid package provider name");
   }
   return value.toLowerCase();
 }
@@ -276,17 +284,19 @@ function missingLocalPackageError(
     ? `--app ${metadata.name}`
     : `--cluster ${metadata.cluster} --app ${metadata.name}`;
   return new PreflightError(
-    `本地部署包缓存缺失: app=${metadata.name}` +
+    `Local deployment package cache is missing: app=${metadata.name}` +
       (metadata.version === undefined ? "" : ` version=${metadata.version}`) +
       ` hash=${request.hashAlgorithm.toLowerCase()}-${request.expectedHash.toLowerCase()}` +
-      `（缓存路径 ${target}）。请先运行: sfo-deploy fetch ${selection}`,
+      `(cache path ${target}). Run first: sfo-deploy fetch ${selection}`,
   );
 }
 
 async function verifiedSize(target: string): Promise<number> {
   const info = await Deno.lstat(target);
   if (!info.isFile || info.isSymlink) {
-    throw new PreflightError(`本地部署包缓存路径不是普通文件: ${target}`);
+    throw new PreflightError(
+      `Local deployment package cache path is not a regular file: ${target}`,
+    );
   }
   return info.size;
 }
@@ -306,7 +316,7 @@ async function hashFile(
       size += count;
       if (size > request.maxBytes) {
         throw new PreflightError(
-          `本地部署包缓存超过最大字节数: received=${size} max=${request.maxBytes}`,
+          `Local deployment package cache exceeds the maximum byte count: received=${size} max=${request.maxBytes}`,
         );
       }
       digest.update(buffer.subarray(0, count));
@@ -331,7 +341,9 @@ async function copyVerified(
   try {
     const before = await Deno.lstat(source);
     if (!before.isFile || before.isSymlink) {
-      throw new PreflightError(`本地部署包缓存路径不是普通文件: ${source}`);
+      throw new PreflightError(
+        `Local deployment package cache path is not a regular file: ${source}`,
+      );
     }
     input = await Deno.open(source, { read: true });
     output = await Deno.open(destination, { write: true, createNew: true, mode: 0o600 });
@@ -343,7 +355,7 @@ async function copyVerified(
       size += count;
       if (size > request.maxBytes) {
         throw new PreflightError(
-          `本地部署包缓存超过最大字节数: received=${size} max=${request.maxBytes}`,
+          `Local deployment package cache exceeds the maximum byte count: received=${size} max=${request.maxBytes}`,
         );
       }
       digest.update(buffer.subarray(0, count));
@@ -356,7 +368,7 @@ async function copyVerified(
     const actual = digest.digest("hex").toLowerCase();
     if (!constantTimeEqual(actual, request.expectedHash.toLowerCase())) {
       throw new PreflightError(
-        `缓存拷贝哈希不匹配: expected=${request.expectedHash.toLowerCase()} actual=${actual}`,
+        `Cache copy hash mismatch: expected=${request.expectedHash.toLowerCase()} actual=${actual}`,
       );
     }
     await Deno.chmod(destination, 0o600);
@@ -382,5 +394,5 @@ function constantTimeEqual(left: string, right: string): boolean {
 }
 
 function throwIfAborted(signal?: AbortSignal): void {
-  if (signal?.aborted) throw new DownloadError("下载已取消", { cause: signal.reason });
+  if (signal?.aborted) throw new DownloadError("Download cancelled", { cause: signal.reason });
 }

@@ -76,8 +76,8 @@ Deno.test("unit/deploy confirm: deploy prompts and rejects unless user types yes
   assertEquals(await declined.cli(["deploy", "--cluster", "demo"]), 0);
   assert(declined.confirmCalled());
   assertEquals(declined.confirmed(), false);
-  assertStringIncludes(declined.stderr.text(), "部署将处理 2 个步骤");
-  assertStringIncludes(declined.stderr.text(), "确认执行部署");
+  assertStringIncludes(declined.stderr.text(), "Deployment will process 2 steps");
+  assertStringIncludes(declined.stderr.text(), "Confirm deployment?");
 
   const accepted = deployCliStub(new QueueReader(["yes\n"]));
   assertEquals(await accepted.cli(["deploy", "--cluster", "demo"]), 0);
@@ -99,7 +99,7 @@ Deno.test("unit/deploy confirm: deploy rejects environment and dependency filter
   );
   assertStringIncludes(
     environment.stderr.text(),
-    "deploy/plan 只处理 App；环境请先使用 prepare",
+    "deploy/plan handle only Apps; prepare environments first",
   );
 
   const dependencies = deployCliStub(new QueueReader([]));
@@ -107,7 +107,10 @@ Deno.test("unit/deploy confirm: deploy rejects environment and dependency filter
     await dependencies.cli(["deploy", "--cluster", "demo", "--with-dependencies"]),
     2,
   );
-  assertStringIncludes(dependencies.stderr.text(), "不能与 --environment/--with-dependencies");
+  assertStringIncludes(
+    dependencies.stderr.text(),
+    "do not combine with --environment/--with-dependencies",
+  );
 });
 
 Deno.test("unit/deploy confirm: unconfirmed deploy connects nowhere and leaves no release attempt", async () => {
@@ -135,7 +138,7 @@ Deno.test("unit/deploy confirm: unconfirmed deploy connects nowhere and leaves n
           transport,
         }),
       CancelledError,
-      "未确认部署",
+      "deployment was not confirmed",
     );
     assertEquals(connects, 0);
     await assertRejects(

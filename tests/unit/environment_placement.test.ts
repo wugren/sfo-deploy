@@ -78,7 +78,7 @@ Deno.test("unit/environment placement v2: an explicitly empty mapping is valid o
   const error = await configurationFailure(async (cluster) => {
     await replaceInFile(join(cluster, "cluster.yaml"), "  base: [node-a]", "  {}");
   });
-  assertStringIncludes(error.message, '缺失=["base"]');
+  assertStringIncludes(error.message, 'missing=["base"]');
 });
 
 Deno.test("unit/environment placement v2: missing, extra, empty, duplicate and unknown placements fail closed", async () => {
@@ -87,12 +87,12 @@ Deno.test("unit/environment placement v2: missing, extra, empty, duplicate and u
       "missing mapping",
       (cluster) =>
         replaceInFile(join(cluster, "cluster.yaml"), "  base: [node-a]", "  ghost: [node-a]"),
-      '缺失=["base"] 未知=["ghost"]',
+      'missing=["base"] unknown=["ghost"]',
     ],
     [
       "empty target list",
       (cluster) => replaceInFile(join(cluster, "cluster.yaml"), "base: [node-a]", "base: []"),
-      "至少需要一台目标机器",
+      "requires at least one target machine",
     ],
     [
       "duplicate target",
@@ -102,30 +102,30 @@ Deno.test("unit/environment placement v2: missing, extra, empty, duplicate and u
           "base: [node-a]",
           "base: [node-a, node-a]",
         ),
-      "包含重复值: node-a",
+      "contains a duplicate value: node-a",
     ],
     [
       "unknown target",
       (cluster) => replaceInFile(join(cluster, "cluster.yaml"), "base: [node-a]", "base: [node-z]"),
-      "引用未知机器: node-z",
+      "references unknown machines: node-z",
     ],
     [
       "non-list target",
       (cluster) => replaceInFile(join(cluster, "cluster.yaml"), "base: [node-a]", "base: node-a"),
-      "cluster.yaml.environments.base 必须是列表",
+      "cluster.yaml.environments.base must be a list",
     ],
     [
       "invalid environment key",
       (cluster) =>
         replaceInFile(join(cluster, "cluster.yaml"), "base: [node-a]", "bad/name: [node-a]"),
-      "不是合法名称",
+      "is not a valid name",
     ],
     [
       "missing definition file",
       async (cluster) => {
         await Deno.remove(join(cluster, "environments", "base", "environment.yaml"));
       },
-      "要求共享定义: environments/base/environment.yaml",
+      "requires a shared definition: environments/base/environment.yaml",
     ],
   ];
 
@@ -143,7 +143,7 @@ Deno.test("unit/environment placement: unknown versions, required fields and v1 
         configurationFailure((cluster) =>
           replaceInFile(join(cluster, "cluster.yaml"), "schema_version: 2", "schema_version: 3")
         ),
-      "cluster.yaml.schema_version 只支持 2",
+      "cluster.yaml.schema_version supports only 2",
     ],
     [
       "v2 missing environments field",
@@ -155,7 +155,7 @@ Deno.test("unit/environment placement: unknown versions, required fields and v1 
             "",
           )
         ),
-      "缺少字段: environments",
+      "is missing fields: environments",
     ],
     [
       "cluster v1 layout rejected",
@@ -164,7 +164,7 @@ Deno.test("unit/environment placement: unknown versions, required fields and v1 
           const cluster = await writePlacementCluster(root, { schemaVersion: 1 });
           return await assertRejects(() => loadCluster(cluster), ConfigurationError);
         }),
-      "cluster.yaml.schema_version 只支持 2",
+      "cluster.yaml.schema_version supports only 2",
     ],
     [
       "cluster v1 layout with v2 field rejected at schema gate",
@@ -178,7 +178,7 @@ Deno.test("unit/environment placement: unknown versions, required fields and v1 
           );
           return await assertRejects(() => loadCluster(cluster), ConfigurationError);
         }),
-      "cluster.yaml.schema_version 只支持 2",
+      "cluster.yaml.schema_version supports only 2",
     ],
     [
       "v2 rejects v1 layout",
@@ -192,7 +192,7 @@ Deno.test("unit/environment placement: unknown versions, required fields and v1 
             'schema_version: 1\nname: legacy\nversion: "1"\nscripts: {}\n',
           );
         }),
-      "schema_version 2 不允许 v1 Environment 布局",
+      "schema_version 2 does not allow the v1 Environment layout",
     ],
   ];
 
@@ -210,7 +210,7 @@ Deno.test("unit/environment placement v2: definition identity and contained reso
       "name: renamed",
     )
   );
-  assertStringIncludes(nameError.message, "环境名称 renamed 必须与目录 base 相同");
+  assertStringIncludes(nameError.message, "Environment name renamed must match directory base");
 
   const pathError = await configurationFailure((cluster) =>
     replaceInFile(
@@ -219,7 +219,7 @@ Deno.test("unit/environment placement v2: definition identity and contained reso
       "../outside.ts",
     )
   );
-  assertStringIncludes(pathError.message, "必须位于资源目录内");
+  assertStringIncludes(pathError.message, "must be inside the resource directory");
 });
 
 Deno.test("unit/environment placement v2: local and explicit cross-machine dependencies resolve per placement", async () => {
@@ -254,7 +254,10 @@ Deno.test("unit/environment placement v2: local and explicit cross-machine depen
       apps: [],
     });
     const error = await assertRejects(() => loadCluster(localMissing), ConfigurationError);
-    assertStringIncludes(error.message, "node-b/runtime 引用未知环境实例: base");
+    assertStringIncludes(
+      error.message,
+      "node-b/runtime references an unknown environment instance: base",
+    );
   });
 
   await withTempDir(async (root) => {
@@ -264,7 +267,10 @@ Deno.test("unit/environment placement v2: local and explicit cross-machine depen
       apps: [{ name: "demo", machines: ["node-b"], dependsOn: ["node-z/base"] }],
     });
     const error = await assertRejects(() => loadCluster(explicitMissing), ConfigurationError);
-    assertStringIncludes(error.message, "App demo 在 node-b 引用未知环境实例: node-z/base");
+    assertStringIncludes(
+      error.message,
+      "App demo on node-b references an unknown environment instance: node-z/base",
+    );
   });
 });
 
@@ -277,8 +283,8 @@ Deno.test("unit/environment placement v1: legacy per-machine layout and inline a
       apps: [{ name: "demo", machines: ["node-a"], dependsOn: ["base"] }],
     });
     const error = await assertRejects(() => loadCluster(directory), ConfigurationError);
-    assertStringIncludes(error.message, "cluster.yaml.schema_version 只支持 2");
-    assertStringIncludes(error.message, "v1 每机环境布局已移除");
+    assertStringIncludes(error.message, "cluster.yaml.schema_version supports only 2");
+    assertStringIncludes(error.message, "the v1 per-machine environment layout was removed");
   });
 
   await withTempDir(async (root) => {
@@ -291,7 +297,7 @@ Deno.test("unit/environment placement v1: legacy per-machine layout and inline a
       () => loadCluster(noEnvironmentDirectory),
       ConfigurationError,
     );
-    assertStringIncludes(error.message, "cluster.yaml.schema_version 只支持 2");
+    assertStringIncludes(error.message, "cluster.yaml.schema_version supports only 2");
   });
 
   await withTempDir(async (root) => {
@@ -306,6 +312,6 @@ Deno.test("unit/environment placement v1: legacy per-machine layout and inline a
         '"}\ndepends_on: []\nmanagement:\n  run_as: deploy\n  kind: service\n  name: demo.service\n  tool: systemctl\n',
     );
     const error = await assertRejects(() => loadCluster(v1App), ConfigurationError);
-    assertStringIncludes(error.message, "app[demo] 包含未知字段: package, version");
+    assertStringIncludes(error.message, "app[demo] contains unknown fields: package, version");
   });
 });

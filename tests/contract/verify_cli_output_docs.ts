@@ -9,15 +9,19 @@ function fail(message: string): never {
 
 const root = join(import.meta.dirname ?? ".", "..", "..");
 const readme = await Deno.readTextFile(join(root, "README.md"));
-for (const marker of ["按步骤输出中文人可读的进度行", "--json", "稳定 JSON 契约"]) {
+for (const marker of ["按步骤输出英文人可读的进度行", "--json", "稳定 JSON 契约"]) {
   if (!readme.includes(marker)) {
-    fail(`README 缺少输出契约标记: ${marker}`);
+    fail(`README is missing the output contract marker: ${marker}`);
   }
 }
 
 const cliSource = await Deno.readTextFile(join(root, "src", "cli.ts"));
-if (!cliSource.includes("以稳定 JSON 输出结果与错误（默认输出人类可读的分步进度）")) {
-  fail("CLI 帮助文本缺少 --json 说明");
+if (
+  !cliSource.includes(
+    "Output results and errors as stable JSON (default: step-by-step human-readable progress)",
+  )
+) {
+  fail("CLI help text is missing the --json description");
 }
 
-console.log("CLI 输出文档契约通过");
+console.log("CLI output documentation contract passed");

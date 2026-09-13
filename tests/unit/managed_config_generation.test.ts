@@ -89,7 +89,7 @@ Deno.test("unit/config-generation: 整值与嵌入字符串使用不同 marker",
       () => generateConfigSkeleton(config(source, "yaml", "integer"), { server: { port: 1 } }),
       PreflightError,
     );
-    assertStringIncludes(error.message, "只能作为完整值占位符");
+    assertStringIncludes(error.message, "can only be a whole-value placeholder");
   });
   await withTempDir(async (root) => {
     const source = join(root, "app.yaml");
@@ -126,15 +126,15 @@ Deno.test("unit/config-generation: 未知、缺席、非法占位符和重复键
   const cases = [
     {
       text: `password: \${UNDECLARED}\nserver:\n  port: ${configVariableMarker("PORT")}\n`,
-      message: "未声明秘密",
+      message: "has no declared secret",
     },
     {
       text: `password: none\nserver:\n  port: ${configVariableMarker("PORT")}\n`,
-      message: "占位符未出现在值中",
+      message: "does not appear in the value",
     },
     {
       text: `server:\n  port: ${configVariableMarker("PORT")}\npassword: \${lower}\n`,
-      message: "占位符名称不合法",
+      message: "Invalid placeholder name",
     },
   ] as const;
   for (const testCase of cases) {
@@ -163,7 +163,7 @@ Deno.test("unit/config-generation: JSON 重复键失败关闭", async () => {
       () => generateConfigSkeleton(config(source, "json"), { server: { port: 1 } }),
       PreflightError,
     );
-    assertStringIncludes(error.message, "重复键");
+    assertStringIncludes(error.message, "duplicate key");
   });
 });
 
@@ -223,7 +223,7 @@ Deno.test("unit/config-generation: nginx raw skeleton preserves UTF-8 and reject
           validator: undefined,
         }, {}),
       PreflightError,
-      "框架保留占位符",
+      "framework-reserved placeholder",
     );
   });
 });

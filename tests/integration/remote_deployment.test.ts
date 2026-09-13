@@ -144,7 +144,7 @@ Deno.test("integration/remote-deployment: 成员篡改清理 pending/archive 且
     () => stageDeploymentBundle(channel, bundle, { workspace: "/tmp/sfo-deploy-attempt" }),
     TransportError,
   );
-  assertStringIncludes(error.message, "成员 SHA-256");
+  assertStringIncludes(error.message, "member SHA-256");
   assertEquals(channel.calls.some((argv) => argv[0] === "touch"), false);
   assert(channel.calls.some((argv) => argv[0] === "rm" && argv[1] === "-rf"));
   assert(channel.calls.some((argv) => argv[0] === "rm" && argv[1] === "-f"));
@@ -316,7 +316,7 @@ Deno.test("integration/remote-deployment: 恶意内层 tar 在任何 extract/脚
     );
     assert(
       !channel.calls.some((argv) => argv[0] === "tar" && argv.includes("--extract")),
-      `${testCase.name} 不得进入解包`,
+      `${testCase.name} must not be unpacked`,
     );
   }
 });

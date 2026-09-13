@@ -11,12 +11,12 @@ async function readFile(path: string): Promise<string> {
   try {
     return await Deno.readTextFile(path);
   } catch (cause) {
-    return fail(`无法读取契约输入 ${path}: ${(cause as Error).message}`);
+    return fail(`Failed to read contract input ${path}: ${(cause as Error).message}`);
   }
 }
 
 if (!(CLI_ACTIONS as readonly string[]).includes("install-deno")) {
-  fail("CLI_ACTIONS 缺少 install-deno");
+  fail("CLI_ACTIONS is missing install-deno");
 }
 
 const root = join(import.meta.dirname ?? ".", "..", "..");
@@ -38,7 +38,7 @@ const docs: Array<[string, string]> = [
 for (const [path, example] of docs) {
   const text = await readFile(path);
   if (!text.includes(example)) {
-    fail(`${path} 缺少可执行示例: ${example}`);
+    fail(`${path} is missing the runnable example: ${example}`);
   }
 }
 
@@ -60,7 +60,7 @@ const autoInstallMentions: Array<[string, string]> = [
 for (const [path, marker] of autoInstallMentions) {
   const text = await readFile(path);
   if (!text.includes(marker)) {
-    fail(`${path} 缺少自动补齐说明: ${marker}`);
+    fail(`${path} is missing the auto-install note: ${marker}`);
   }
 }
 
@@ -82,7 +82,7 @@ const noSyncMentions: Array<[string, string]> = [
 for (const [path, marker] of noSyncMentions) {
   const text = await readFile(path);
   if (!text.includes(marker)) {
-    fail(`${path} 缺少 install-deno 不修改 machines.yaml 说明: ${marker}`);
+    fail(`${path} is missing the install-deno machines.yaml no-modification note: ${marker}`);
   }
 }
 
@@ -103,9 +103,9 @@ for (
   const text = await readFile(path);
   for (const phrase of oldSyncPhrases) {
     if (text.includes(phrase)) {
-      fail(`${path} 仍包含已移除的自动同步旧说明: ${phrase}`);
+      fail(`${path} still contains the removed auto-sync legacy statement: ${phrase}`);
     }
   }
 }
 
-console.log("install-deno 文档示例契约通过");
+console.log("install-deno documentation example contract passed");

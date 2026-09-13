@@ -213,7 +213,7 @@ async function v1Rejection(): Promise<void> {
     }
     check(error instanceof ConfigurationError, "cluster v1 must be rejected as ConfigurationError");
     check(
-      (error?.message ?? "").includes("cluster.yaml.schema_version 只支持 2"),
+      (error?.message ?? "").includes("cluster.yaml.schema_version supports only 2"),
       "cluster v1 rejection must name the v2-only restriction",
     );
 
@@ -241,8 +241,8 @@ async function v1Rejection(): Promise<void> {
     }
     check(error instanceof ConfigurationError, "app v1 must be rejected as ConfigurationError");
     check(
-      (error?.message ?? "").includes("app[demo].schema_version 只支持 2 或 3"),
-      "app v1 rejection must name the v2/v3-only restriction",
+      (error?.message ?? "").includes("Top-level scripts in app[demo] were removed"),
+      "app v1 rejection must name the removed top-level scripts gate",
     );
   } finally {
     await Deno.remove(directory, { recursive: true });

@@ -47,37 +47,37 @@ Deno.test("unit/generate-cluster-secrets: rejects malformed declarations", () =>
   assertThrows(
     () => parseSecretDeclarations("schema_version: 2\nname: multipass\n"),
     Error,
-    "没有 secrets 声明",
+    "has no secrets declaration",
   );
   assertThrows(
     () => parseSecretDeclarations("schema_version: 2\nsecrets: {}\n"),
     Error,
-    "secrets 声明为空",
+    "secrets declaration is empty",
   );
   assertThrows(
     () => parseSecretDeclarations("schema_version: 2\nsecrets: [A]\n"),
     Error,
-    "secrets 必须是映射",
+    "secrets must be a mapping",
   );
   assertThrows(
     () => parseSecretDeclarations("secrets:\n  lower_case:\n    kind: value\n"),
     Error,
-    "密钥名不合法",
+    "Invalid secret name",
   );
   assertThrows(
     () => parseSecretDeclarations("secrets:\n  DB_PASSWORD:\n    kind: text\n"),
     Error,
-    "kind 必须是 value 或 file",
+    "kind must be value or file",
   );
   assertThrows(
     () => parseSecretDeclarations('secrets:\n  DB_PASSWORD: "value"\n'),
     Error,
-    "声明必须是映射",
+    "must be a mapping",
   );
   assertThrows(
     () => parseSecretDeclarations("secrets:\n  DB_PASSWORD:\n    kind: value\nsecrets: {}\n"),
     Error,
-    "cluster.yaml 不是有效 YAML",
+    "cluster.yaml is not valid YAML",
   );
 });
 
@@ -102,12 +102,12 @@ Deno.test("unit/generate-cluster-secrets: generates hex values only for value se
   assertThrows(
     () => generateSecretValues(declarations, 2),
     Error,
-    "单值字节数必须是 8-64 的整数",
+    "Value size in bytes must be an integer between 8 and 64",
   );
   assertThrows(
     () => generateSecretValues(declarations, 8, () => new Uint8Array(4)),
     Error,
-    "随机源返回了 4 字节",
+    "Random source returned 4 bytes",
   );
 });
 
@@ -122,11 +122,11 @@ Deno.test("unit/generate-cluster-secrets: refuses to write when file secrets are
 Deno.test("unit/generate-cluster-secrets: renders quoted yaml lines and rejects empty values", () => {
   const text = renderSecretsYaml(new Map([["DB_PASSWORD", "deadbeef"]]));
   assertEquals(text, 'DB_PASSWORD: "deadbeef"\n');
-  assertThrows(() => renderSecretsYaml(new Map()), Error, "没有可写入的密钥值");
+  assertThrows(() => renderSecretsYaml(new Map()), Error, "No secret values to write");
   assertThrows(
     () => renderSecretsYaml(new Map([["bad_name", "deadbeef"]])),
     Error,
-    "密钥名不合法",
+    "Invalid secret name",
   );
 });
 
@@ -141,15 +141,31 @@ Deno.test("unit/generate-cluster-secrets: parses options and rejects unsafe comb
     force: true,
     lengthBytes: 16,
   });
-  assertThrows(() => parseGenerateOptions(["--unknown"]), Error, "未知参数");
-  assertThrows(() => parseGenerateOptions(["--force"]), Error, "--force 只能与 --write");
-  assertThrows(() => parseGenerateOptions(["--write", "--length"]), Error, "--length 需要字节数");
-  assertThrows(() => parseGenerateOptions(["--write", "--length", "7"]), Error, "--length 必须在");
-  assertThrows(() => parseGenerateOptions(["--write", "--length", "65"]), Error, "--length 必须在");
+  assertThrows(() => parseGenerateOptions(["--unknown"]), Error, "Unknown argument");
+  assertThrows(
+    () => parseGenerateOptions(["--force"]),
+    Error,
+    "--force can only be used with --write",
+  );
+  assertThrows(
+    () => parseGenerateOptions(["--write", "--length"]),
+    Error,
+    "--length requires a byte count",
+  );
+  assertThrows(
+    () => parseGenerateOptions(["--write", "--length", "7"]),
+    Error,
+    "--length must be between",
+  );
+  assertThrows(
+    () => parseGenerateOptions(["--write", "--length", "65"]),
+    Error,
+    "--length must be between",
+  );
   assertThrows(
     () => parseGenerateOptions(["--write", "--length", "1e2"]),
     Error,
-    "--length 必须是整数",
+    "--length must be an integer",
   );
 });
 
@@ -163,7 +179,7 @@ Deno.test("unit/generate-cluster-secrets: refuses overwrite and backs up only wi
     await assertRejects(
       () => ensureWritableTarget(target, { force: false, now: new Date() }),
       Error,
-      "拒绝覆盖",
+      "refusing to overwrite",
     );
     assertEquals(await Deno.readTextFile(target), 'DB_PASSWORD: "old-value"\n');
 
@@ -179,7 +195,7 @@ Deno.test("unit/generate-cluster-secrets: refuses overwrite and backs up only wi
     await assertRejects(
       () => ensureWritableTarget(target, { force: true, now }),
       Error,
-      "备份目标已存在",
+      "Backup target already exists",
     );
   });
 });
@@ -211,7 +227,7 @@ Deno.test("unit/generate-cluster-secrets: rejects symlinked targets", async () =
     await assertRejects(
       () => ensureWritableTarget(link, { force: true, now: new Date() }),
       Error,
-      "不是普通文件",
+      "is not a regular file",
     );
   });
 });

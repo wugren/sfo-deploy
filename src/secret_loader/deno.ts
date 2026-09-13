@@ -13,18 +13,18 @@ export interface LoadSecretsOptions {
 
 function validateSecretName(name: string): string {
   if (typeof name !== "string" || !SECRET_NAME_RE.test(name)) {
-    throw new TypeError(`密钥名不合法: ${JSON.stringify(name)}`);
+    throw new TypeError(`Invalid secret name: ${JSON.stringify(name)}`);
   }
   return name;
 }
 
 function validateDirectory(dir: string): string {
   if (typeof dir !== "string" || dir.length === 0 || dir.includes("\0") || dir.includes("\\")) {
-    throw new TypeError(`秘密副本目录不合法: ${JSON.stringify(dir)}`);
+    throw new TypeError(`Invalid secret copy directory: ${JSON.stringify(dir)}`);
   }
   const parts = dir.split("/");
   if (!dir.startsWith("/") || parts.includes("..") || dir === "/") {
-    throw new TypeError(`秘密副本目录必须是安全绝对 POSIX 路径`);
+    throw new TypeError(`Secret copy directory must be a safe absolute POSIX path`);
   }
   return dir;
 }
@@ -36,10 +36,10 @@ async function readTextFile(path: string, name: string): Promise<string> {
     info = await Deno.lstat(path);
     content = await Deno.readTextFile(path);
   } catch (cause) {
-    throw new Error(`读取密钥 ${name} 失败`, { cause });
+    throw new Error(`Failed to read secret ${name}`, { cause });
   }
   if (!info.isFile || info.isSymlink) {
-    throw new Error(`密钥 ${name} 不是普通文件`);
+    throw new Error(`Secret ${name} is not a regular file`);
   }
   return content;
 }
@@ -58,18 +58,20 @@ export async function loadSecrets(
     valueNames.includes(name) && fileNames.includes(name)
   );
   if (duplicate.length > 0) {
-    throw new Error(`密钥 ${duplicate.join("、")} 同时声明为值密钥与文件密钥`);
+    throw new Error(
+      `Secret ${duplicate.join(", ")} is declared as both a value secret and a file secret`,
+    );
   }
   const values: Record<string, string> = {};
   for (const name of valueNames) {
     values[name] = await readTextFile(`${dir}/${name}`, name);
-    if (values[name].length === 0) throw new Error(`密钥 ${name} 为空`);
+    if (values[name].length === 0) throw new Error(`Secret ${name} is empty`);
   }
   const files: Record<string, string> = {};
   for (const name of fileNames) {
     const path = `${dir}/${name}`;
     const info = await Deno.lstat(path);
-    if (!info.isFile || info.isSymlink) throw new Error(`密钥 ${name} 不是普通文件`);
+    if (!info.isFile || info.isSymlink) throw new Error(`Secret ${name} is not a regular file`);
     files[name] = path;
   }
   return Object.freeze({

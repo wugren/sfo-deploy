@@ -61,19 +61,19 @@ Deno.test("integration/secret loader: Deno loader rejects missing, empty, invali
         `  await loadSecrets({ dir: ${JSON.stringify(secretsDir)}, values: ["MISSING"] });\n` +
         `  throw new Error("missing secret unexpectedly passed");\n` +
         `} catch (error) {\n` +
-        `  if (!/读取密钥 MISSING 失败/.test(String(error))) throw error;\n` +
+        `  if (!/Failed to read secret MISSING/.test(String(error))) throw error;\n` +
         `}\n` +
         `try {\n` +
         `  await loadSecrets({ dir: ${JSON.stringify(secretsDir)}, values: ["APP_TOKEN"] });\n` +
         `  throw new Error("empty secret unexpectedly passed");\n` +
         `} catch (error) {\n` +
-        `  if (!/密钥 APP_TOKEN 为空/.test(String(error))) throw error;\n` +
+        `  if (!/Secret APP_TOKEN is empty/.test(String(error))) throw error;\n` +
         `}\n` +
         `try {\n` +
         `  await loadSecrets({ dir: ${JSON.stringify(secretsDir)}, values: ["bad_name"] });\n` +
         `  throw new Error("invalid name unexpectedly passed");\n` +
         `} catch (error) {\n` +
-        `  if (!/密钥名不合法/.test(String(error))) throw error;\n` +
+        `  if (!/Invalid secret name/.test(String(error))) throw error;\n` +
         `}\n`,
     );
     const output = await new Deno.Command(Deno.execPath(), {

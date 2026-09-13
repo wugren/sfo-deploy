@@ -47,7 +47,7 @@ Deno.test("unit/secrets config: invalid kinds, machines and duplicates fail clos
           ),
         ),
       ConfigurationError,
-      "value 或 file",
+      "only value or file",
     );
     await assertRejects(
       async () =>
@@ -58,7 +58,7 @@ Deno.test("unit/secrets config: invalid kinds, machines and duplicates fail clos
           ),
         ),
       ConfigurationError,
-      "未知机器",
+      "unknown machines",
     );
     await assertRejects(
       async () =>
@@ -69,7 +69,7 @@ Deno.test("unit/secrets config: invalid kinds, machines and duplicates fail clos
           ),
         ),
       ConfigurationError,
-      "密钥名不合法",
+      "secret name",
     );
   });
 });
@@ -89,7 +89,7 @@ Deno.test("unit/secrets config: app.yaml top-level secret declarations are rejec
       () => loadCluster(directory),
       ConfigurationError,
     );
-    assertStringIncludes(error.message, "已移除：秘密由 cluster.yaml.secrets 唯一声明");
+    assertStringIncludes(error.message, "secrets are declared only in cluster.yaml.secrets");
   });
 });
 
@@ -108,7 +108,7 @@ Deno.test("unit/secrets config: environment definition top-level secret declarat
       () => loadCluster(directory),
       ConfigurationError,
     );
-    assertStringIncludes(error.message, "已移除：秘密由 cluster.yaml.secrets 唯一声明");
+    assertStringIncludes(error.message, "secrets are declared only in cluster.yaml.secrets");
   });
 });
 
@@ -127,7 +127,11 @@ Deno.test("unit/secrets config: machine secrets_dir accepts ~/ and absolute POSI
       machines,
       `schema_version: 1\nmachines:\n  - name: node-a\n    private_ip: [10.0.0.1]\n    public_ip: 203.0.113.10\n    region: local\n    ssh_user: deploy\n    ssh_port: 22\n    deno: /usr/bin/deno\n    secrets_dir: relative/path\n`,
     );
-    await assertRejects(() => loadCluster(directory), ConfigurationError, "~/ 起始路径或安全绝对");
+    await assertRejects(
+      () => loadCluster(directory),
+      ConfigurationError,
+      "must be a ~/ path or a safe absolute",
+    );
   });
 });
 

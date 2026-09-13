@@ -227,7 +227,7 @@ Deno.test("unit/transport: synchronous factory abort cannot return success and a
     await assertRejects(
       () => transport.connect(resolved("node-a"), controller.signal),
       CancelledError,
-      "已取消",
+      "cancelled",
     );
     assertEquals(factoryCalls, 1);
     assert(killed);
@@ -258,7 +258,7 @@ Deno.test("unit/transport: command timeout terminates and reaps local OpenSSH pr
     await assertRejects(
       () => transport.connect(resolved("node-a")),
       TransportError,
-      "超时",
+      "timed out",
     );
     assert(killed);
   });
@@ -291,13 +291,13 @@ Deno.test("unit/transport: remote /usr/bin/test argv does not use --", async () 
     await assertRejects(
       () => session.removeSecret("ELEPH_DB_PASSWORD", "~/.sfo-deploy/secrets/"),
       PreflightError,
-      "未部署",
+      "is not deployed",
     );
     const workspace = await session.createWorkspace();
     await assertRejects(
       () => session.exposeStepSecrets(["ELEPH_DB_PASSWORD"], "~/.sfo-deploy/secrets/", workspace),
       PreflightError,
-      "未部署",
+      "is not deployed",
     );
     await session.close();
 
@@ -364,7 +364,7 @@ Deno.test("unit/cli: help, argument errors, stable JSON and exit codes", async (
       ),
   });
   assertEquals(await cli(["--help"]), 0);
-  assertStringIncludes(stdout.text(), "用法: sfo-deploy");
+  assertStringIncludes(stdout.text(), "Usage: sfo-deploy");
   assertEquals(await cli(["validate"]), 2);
   assertStringIncludes(stderr.text(), "--cluster");
 
@@ -396,7 +396,10 @@ Deno.test("unit/cli: per-action help shows action-specific parameters", async ()
     stderr: new BufferWriter(),
   });
   assertEquals(await globalCli(["--help"]), 0);
-  assertStringIncludes(global.text(), "运行 sfo-deploy <action> --help 查看该动作参数。");
+  assertStringIncludes(
+    global.text(),
+    "Run sfo-deploy <action> --help to see action-specific arguments.",
+  );
 
   const history = new BufferWriter();
   const historyCli = createCli({
@@ -407,15 +410,15 @@ Deno.test("unit/cli: per-action help shows action-specific parameters", async ()
   assertEquals(await historyCli(["history", "--help"]), 0);
   assertStringIncludes(
     history.text(),
-    "用法: sfo-deploy history --cluster NAME [--release-id ID]",
+    "Usage: sfo-deploy history --cluster NAME [--release-id ID]",
   );
   assertStringIncludes(
     history.text(),
-    "查看指定发布记录；省略时列出全部记录",
+    "View the given release record; when omitted, list all records",
   );
   assertStringIncludes(
     history.text(),
-    "不能与 --machine/--app/--environment/--executor-region/--address-kind/--with-dependencies 混用",
+    "Cannot be combined with --machine/--app/--environment/--executor-region/--address-kind/--with-dependencies",
   );
 
   const rollback = new BufferWriter();
@@ -427,9 +430,9 @@ Deno.test("unit/cli: per-action help shows action-specific parameters", async ()
   assertEquals(await rollbackCli(["--help", "rollback"]), 0);
   assertStringIncludes(
     rollback.text(),
-    "用法: sfo-deploy rollback --cluster NAME --release-id ID",
+    "Usage: sfo-deploy rollback --cluster NAME --release-id ID",
   );
-  assertStringIncludes(rollback.text(), "要回退到的发布 ID（必填）");
+  assertStringIncludes(rollback.text(), "Release ID to roll back to (required)");
 
   const check = new BufferWriter();
   const checkCli = createCli({
@@ -438,7 +441,7 @@ Deno.test("unit/cli: per-action help shows action-specific parameters", async ()
     stderr: new BufferWriter(),
   });
   assertEquals(await checkCli(["check", "--help"]), 0);
-  assertStringIncludes(check.text(), "环境动作，不支持 --app");
+  assertStringIncludes(check.text(), "Environment action; --app is not supported");
   assert(!check.text().includes("  --app NAME"));
 
   const deploy = new BufferWriter();

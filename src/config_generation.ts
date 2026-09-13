@@ -45,7 +45,7 @@ export interface GeneratedConfigSkeleton {
 /** app 模板中普通变量的完整值占位符。 */
 export function configVariableMarker(name: string): string {
   if (!/^[A-Z][A-Z0-9_]*$/.test(name)) {
-    throw new PreflightError(`配置变量名称不合法: ${name}`);
+    throw new PreflightError(`Invalid config variable name: ${name}`);
   }
   return `__SFO_CONFIG_VAR_V1_${name}__`;
 }
@@ -58,7 +58,9 @@ export function parseManagedStructured(
 ): unknown {
   try {
     if (format === "nginx") {
-      throw new PreflightError(`配置 ${name} 不支持结构化解析 format: nginx`);
+      throw new PreflightError(
+        `Config ${name} does not support structured parsing for format: nginx`,
+      );
     }
     if (format === "yaml") return requireContainer(parseYaml(text, { allowDuplicateKeys: false }));
     if (format === "json") {
@@ -70,18 +72,22 @@ export function parseManagedStructured(
     return requireContainer(parseIni(text));
   } catch (cause) {
     if (cause instanceof PreflightError) throw cause;
-    throw new PreflightError(`无法解析 ${format.toUpperCase()} 配置 ${name}`, { cause });
+    throw new PreflightError(`Failed to parse ${format.toUpperCase()} config ${name}`, { cause });
   }
 }
 
 /** Nginx 原生配置只做文本安全边界检查，不做 DSL 解析。 */
 export function validateManagedPlainText(text: string, name: string): void {
   if (text.includes(RESERVED_MARKER_PREFIX)) {
-    throw new PreflightError(`配置 ${name} 源文件包含框架保留占位符`);
+    throw new PreflightError(
+      `Config ${name} source file contains a framework-reserved placeholder`,
+    );
   }
   const invalid = SECRET_PLACEHOLDER_CANDIDATE_RE.exec(text);
   if (invalid !== null) {
-    throw new PreflightError(`配置 ${name} 不支持占位符: \${${invalid?.[1] ?? ""}}`);
+    throw new PreflightError(
+      `Config ${name} does not support the placeholder: \${${invalid?.[1] ?? ""}}`,
+    );
   }
 }
 
@@ -100,7 +106,9 @@ export function collectManagedSecretPlaceholders(
         .map((match) => match[1]!)
         .find((name) => !SECRET_NAME_PATTERN.test(name));
       if (invalid !== undefined) {
-        throw new PreflightError(`配置 ${configName} 的占位符名称不合法: \${${invalid}}`);
+        throw new PreflightError(
+          `Invalid placeholder name in config ${configName}: \${${invalid}}`,
+        );
       }
       for (const match of item.matchAll(SECRET_PLACEHOLDER_RE)) found.add(match[1]!);
       return;
@@ -112,7 +120,9 @@ export function collectManagedSecretPlaceholders(
     if (!isPlainRecord(item)) return;
     for (const key of Object.keys(item)) {
       if (key.includes("${") || key.includes(RESERVED_MARKER_PREFIX)) {
-        throw new PreflightError(`配置 ${configName} 的键名不能包含占位符或框架保留标记`);
+        throw new PreflightError(
+          `Config ${configName} keys must not contain placeholders or framework-reserved markers`,
+        );
       }
       visit(item[key], configName, found);
     }
@@ -128,7 +138,7 @@ export async function generateConfigSkeleton(
   parameters: Readonly<Record<string, unknown>>,
 ): Promise<GeneratedConfigSkeleton> {
   if (config.format === "systemd") {
-    throw new PreflightError(`配置 ${config.name} 不支持 systemd format`);
+    throw new PreflightError(`Config ${config.name} does not support systemd format`);
   }
   const format = config.format;
   const source = await readStableConfig(config.source, config.name);
@@ -136,23 +146,31 @@ export async function generateConfigSkeleton(
   try {
     text = TEXT_DECODER.decode(source);
   } catch (cause) {
-    throw new PreflightError(`配置 ${config.name} 必须是有效 UTF-8 文本`, { cause });
+    throw new PreflightError(`Config ${config.name} must be valid UTF-8 text`, { cause });
   }
   if (text.includes(SECRET_MARKER_PREFIX)) {
-    throw new PreflightError(`配置 ${config.name} 源文件包含框架保留占位符`);
+    throw new PreflightError(
+      `Config ${config.name} source file contains a framework-reserved placeholder`,
+    );
   }
 
   if (format === "nginx") {
     if (config.variables.length > 0) {
-      throw new PreflightError(`配置 ${config.name} 的 format: nginx 不支持 variables`);
+      throw new PreflightError(
+        `Config ${config.name} with format: nginx does not support variables`,
+      );
     }
     if (config.secretReferences.size > 0) {
-      throw new PreflightError(`配置 ${config.name} 的 format: nginx 不支持秘密占位符`);
+      throw new PreflightError(
+        `Config ${config.name} with format: nginx does not support secret placeholders`,
+      );
     }
     validateManagedPlainText(text, config.name);
     const plainContent = TEXT_ENCODER.encode(text);
     if (plainContent.byteLength > MAX_CONFIG_BYTES) {
-      throw new PreflightError(`配置 ${config.name} 骨架超过 ${MAX_CONFIG_BYTES} 字节限制`);
+      throw new PreflightError(
+        `Config ${config.name} skeleton exceeds the ${MAX_CONFIG_BYTES} byte limit`,
+      );
     }
     return Object.freeze({
       name: config.name,
@@ -175,7 +193,9 @@ export async function generateConfigSkeleton(
     if (
       (wholeCounts.get(binding.secret) ?? 0) === 0 && (textCounts.get(binding.secret) ?? 0) === 0
     ) {
-      throw new PreflightError(`配置 ${config.name} 的秘密 ${binding.secret} 占位符未出现在值中`);
+      throw new PreflightError(
+        `Secret placeholder ${binding.secret} of config ${config.name} does not appear in the value`,
+      );
     }
   }
   const rendered = stringifyStructured(format, canonicalize(parsed), config.name);
@@ -183,7 +203,9 @@ export async function generateConfigSkeleton(
 
   const content = TEXT_ENCODER.encode(rendered);
   if (content.byteLength > MAX_CONFIG_BYTES) {
-    throw new PreflightError(`配置 ${config.name} 骨架超过 ${MAX_CONFIG_BYTES} 字节限制`);
+    throw new PreflightError(
+      `Config ${config.name} skeleton exceeds the ${MAX_CONFIG_BYTES} byte limit`,
+    );
   }
   return Object.freeze({
     name: config.name,
@@ -245,7 +267,7 @@ function replaceSecretPlaceholders(
         const binding = requiredMarker(configName, markers, name);
         if (binding.valueType !== "string") {
           throw new PreflightError(
-            `配置 ${configName} 的 ${name} 是 ${binding.valueType}，只能作为完整值占位符`,
+            `Config ${configName} ${name} is ${binding.valueType} and can only be a whole-value placeholder`,
           );
         }
         textCounts.set(name, (textCounts.get(name) ?? 0) + 1);
@@ -265,7 +287,9 @@ function requiredMarker(
 ): ConfigSkeletonSecretBinding {
   const binding = markers.get(name);
   if (binding === undefined) {
-    throw new PreflightError(`配置 ${configName} 的占位符 \${${name}} 未声明秘密`);
+    throw new PreflightError(
+      `Placeholder \${${name}} in config ${configName} has no declared secret`,
+    );
   }
   return binding;
 }
@@ -282,7 +306,9 @@ function rejectInvalidPlaceholders(value: unknown, configName: string): void {
         .map((match) => match[1]!)
         .find((name) => !SECRET_NAME_PATTERN.test(name));
       if (invalid !== undefined) {
-        throw new PreflightError(`配置 ${configName} 的占位符名称不合法: \${${invalid}}`);
+        throw new PreflightError(
+          `Invalid placeholder name in config ${configName}: \${${invalid}}`,
+        );
       }
     }
     rejectInvalidPlaceholders(item, configName);
@@ -311,9 +337,9 @@ function replaceStructuredVariables(
     const count = counts.get(marker) ?? 0;
     if (count !== 1) {
       throw new PreflightError(
-        `配置 ${config.name} 的变量 ${
+        `Config ${config.name} variable ${
           expected.get(marker)!.name
-        } 必须且只能作为完整值出现一次，实际 ${count} 次`,
+        } must appear exactly once as a whole value; actual count ${count}`,
       );
     }
   }
@@ -329,26 +355,28 @@ function typedParameter(
   for (const segment of path) {
     if (typeof segment === "number") {
       if (!Array.isArray(value) || segment >= value.length) {
-        throw new PreflightError(`配置变量 ${name} 的参数路径不存在`);
+        throw new PreflightError(`Config variable ${name} parameter path does not exist`);
       }
       value = value[segment];
     } else {
       if (!isPlainRecord(value) || !Object.hasOwn(value, segment)) {
-        throw new PreflightError(`配置变量 ${name} 的参数路径不存在`);
+        throw new PreflightError(`Config variable ${name} parameter path does not exist`);
       }
       value = value[segment];
     }
   }
   if (type === "string" && typeof value === "string") {
     if (value.includes(RESERVED_MARKER_PREFIX)) {
-      throw new PreflightError(`配置变量 ${name} 的值包含框架保留标记`);
+      throw new PreflightError(
+        `Config variable ${name} value contains a framework-reserved marker`,
+      );
     }
     return value;
   }
   if (type === "boolean" && typeof value === "boolean") return value;
   if (type === "integer" && typeof value === "number" && Number.isSafeInteger(value)) return value;
   if (type === "number" && typeof value === "number" && Number.isFinite(value)) return value;
-  throw new PreflightError(`配置变量 ${name} 的参数值不符合 ${type} 类型`);
+  throw new PreflightError(`Config variable ${name} parameter value does not match type ${type}`);
 }
 
 function stringifyStructured(
@@ -364,7 +392,9 @@ function stringifyStructured(
     if (format === "toml") return stringifyToml(value as Record<string, unknown>);
     return stringifyIni(value);
   } catch (cause) {
-    throw new PreflightError(`无法序列化 ${format.toUpperCase()} 配置 ${name}`, { cause });
+    throw new PreflightError(`Failed to serialize ${format.toUpperCase()} config ${name}`, {
+      cause,
+    });
   }
 }
 
@@ -383,7 +413,9 @@ function walkMutable(
   if (!isPlainRecord(value)) return;
   for (const key of Object.keys(value)) {
     if (key.includes(RESERVED_MARKER_PREFIX) || key.includes("${")) {
-      throw new PreflightError("配置键名中不允许出现占位符或框架保留标记");
+      throw new PreflightError(
+        "Config keys must not contain placeholders or framework-reserved markers",
+      );
     }
     const item = value[key];
     visit(item, (next) => value[key] = next);
@@ -393,14 +425,14 @@ function walkMutable(
 
 function canonicalize(value: unknown, seen = new Set<object>()): unknown {
   if (Array.isArray(value)) {
-    if (seen.has(value)) throw new PreflightError("配置包含循环引用");
+    if (seen.has(value)) throw new PreflightError("Config contains a circular reference");
     seen.add(value);
     const result = value.map((item) => canonicalize(item, seen));
     seen.delete(value);
     return result;
   }
   if (!isPlainRecord(value)) return value;
-  if (seen.has(value)) throw new PreflightError("配置包含循环引用");
+  if (seen.has(value)) throw new PreflightError("Config contains a circular reference");
   seen.add(value);
   const result: Record<string, unknown> = Object.create(null);
   for (const key of Object.keys(value).sort()) result[key] = canonicalize(value[key], seen);
@@ -416,7 +448,7 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 
 function requireContainer(value: unknown): unknown {
   if (!Array.isArray(value) && !isPlainRecord(value)) {
-    throw new PreflightError("配置顶层必须是映射或列表");
+    throw new PreflightError("Config top level must be a mapping or a list");
   }
   return value;
 }
@@ -432,10 +464,10 @@ async function readStableConfig(path: string, name: string): Promise<Uint8Array>
     content = await Deno.readFile(path);
     after = await Deno.lstat(path);
   } catch (cause) {
-    throw new PreflightError(`无法稳定读取配置 ${name}`, { cause });
+    throw new PreflightError(`Failed to read config ${name} consistently`, { cause });
   }
   if (!sameFileIdentity(before, after) || content.byteLength !== before.size) {
-    throw new PreflightError(`读取配置 ${name} 时源文件发生变化`);
+    throw new PreflightError(`Source file changed while reading config ${name}`);
   }
   return content;
 }
@@ -493,7 +525,7 @@ function rejectDuplicateJsonKeys(text: string): void {
       whitespace();
       if (text[index] !== '"') throw new SyntaxError("JSON object key must be a string");
       const key = stringToken();
-      if (keys.has(key)) throw new PreflightError(`JSON 配置包含重复键: ${key}`);
+      if (keys.has(key)) throw new PreflightError(`JSON config contains a duplicate key: ${key}`);
       keys.add(key);
       whitespace();
       if (text[index++] !== ":") throw new SyntaxError("missing JSON colon");
@@ -535,7 +567,7 @@ function rejectDuplicateIniKeys(text: string, name: string): void {
     if (sectionMatch) {
       section = sectionMatch[1].trim();
       if (seenSections.has(section)) {
-        throw new PreflightError(`INI 配置 ${name} 包含重复 section: ${section}`);
+        throw new PreflightError(`INI config ${name} contains a duplicate section: ${section}`);
       }
       seenSections.add(section);
       continue;
@@ -544,7 +576,7 @@ function rejectDuplicateIniKeys(text: string, name: string): void {
     if (!keyMatch) continue;
     const identity = `${section}\0${keyMatch[1].trim()}`;
     if (seenKeys.has(identity)) {
-      throw new PreflightError(`INI 配置 ${name} 第 ${lineIndex + 1} 行包含重复键`);
+      throw new PreflightError(`INI config ${name} line ${lineIndex + 1} contains a duplicate key`);
     }
     seenKeys.add(identity);
   }

@@ -36,15 +36,15 @@ Deno.test("unit/download: assertGzipTar accepts gzip and rejects plain files", a
   await withTempDir(async (root) => {
     const gzipFile = join(root, "app.tar.gz");
     await Deno.writeFile(gzipFile, gzipSync(new TextEncoder().encode("tar archive bytes")));
-    await assertGzipTar(gzipFile, "测试包");
+    await assertGzipTar(gzipFile, "test package");
 
     const plain = join(root, "plain.bin");
     await Deno.writeFile(plain, new TextEncoder().encode("plain content"));
-    await assertRejects(() => assertGzipTar(plain, "测试包"), DownloadError, "tar.gz");
+    await assertRejects(() => assertGzipTar(plain, "test package"), DownloadError, "tar.gz");
 
     const short = join(root, "short.bin");
     await Deno.writeFile(short, new TextEncoder().encode("\x1f"));
-    await assertRejects(() => assertGzipTar(short, "测试包"), DownloadError, "tar.gz");
+    await assertRejects(() => assertGzipTar(short, "test package"), DownloadError, "tar.gz");
   });
 });
 
@@ -66,7 +66,7 @@ Deno.test("unit/download: HTTP verifies hash, size and publishes without overwri
       await assertRejects(
         () => new HttpDownloadProvider().fetch(request, destination),
         DownloadError,
-        "拒绝覆盖",
+        "refusing to overwrite",
       );
       await artifact.cleanup();
       assert(artifact.cleaned);
@@ -90,7 +90,7 @@ Deno.test("unit/download: hash mismatch, credentials, protocol and capacity fail
       await assertRejects(
         () => provider.fetch(wrong, join(root, "wrong.bin")),
         DownloadError,
-        "哈希不匹配",
+        "hash mismatch",
       );
       await assertRejects(
         () =>
@@ -104,7 +104,7 @@ Deno.test("unit/download: hash mismatch, credentials, protocol and capacity fail
             join(root, "large.bin"),
           ),
         DownloadError,
-        "最大字节数",
+        "maximum byte count",
       );
       await assertRejects(
         () =>
@@ -130,7 +130,7 @@ Deno.test("unit/download: hash mismatch, credentials, protocol and capacity fail
             join(root, "credentials.bin"),
           ),
         DownloadError,
-        "凭据",
+        "credentials",
       );
     } finally {
       await server.shutdown();
@@ -185,7 +185,7 @@ Deno.test("unit/filehub release source: server segment allows one explicit port"
     assertThrows(
       () => registry.exportReleaseSource("filehub", { target: invalidTarget }),
       DownloadError,
-      "规范四段",
+      "canonical four-part",
     );
   }
 });
@@ -214,7 +214,7 @@ Deno.test("unit/filehub: direct provider rejects wrong hash and removes staging"
       await assertRejects(
         () => new FilehubDownloadProvider().fetch(request, destination),
         DownloadError,
-        "哈希不匹配",
+        "hash mismatch",
       );
       const argv = (await Deno.readTextFile(log)).trimEnd().split("\n");
       assertEquals(argv, ["pull", "owner/repo/channel/artifact", argv[2]]);
@@ -256,7 +256,7 @@ Deno.test("unit/filehub: direct provider enforces maxBytes without publishing", 
       await assertRejects(
         () => new FilehubDownloadProvider().fetch(request, destination),
         DownloadError,
-        "最大字节数",
+        "maximum byte count",
       );
       await assertRejects(() => Deno.lstat(destination), Deno.errors.NotFound);
       assertEquals(
@@ -310,7 +310,7 @@ Deno.test("unit/filehub: direct provider returns verified metadata and fixed arg
       await assertRejects(
         () => new FilehubDownloadProvider().fetch(request, join(root, "failed.bin")),
         DownloadError,
-        "认证失败",
+        "authentication failed",
       );
     } finally {
       Deno.env.set("PATH", previousPath);
@@ -350,7 +350,7 @@ Deno.test("unit/filehub: direct provider pre-abort spawns nothing and leaves no 
             controller.signal,
           ),
         DownloadError,
-        "已取消",
+        "cancelled",
       );
       await assertRejects(() => Deno.lstat(marker), Deno.errors.NotFound);
       await assertRejects(() => Deno.lstat(destination), Deno.errors.NotFound);
@@ -404,7 +404,7 @@ Deno.test("unit/filehub registry: pre-abort spawns nothing and cleans provider s
             controller.signal,
           ),
         DownloadError,
-        "已取消",
+        "cancelled",
       );
       assertEquals(makeTempDirCalls, 0);
       await assertRejects(() => Deno.lstat(marker), Deno.errors.NotFound);
@@ -458,7 +458,7 @@ Deno.test("unit/download registry: inner provider abort-before-return is never p
           controller.signal,
         ),
       DownloadError,
-      "已取消",
+      "cancelled",
     );
     assert(returnedArtifact?.cleaned);
     await assertRejects(() => Deno.lstat(destination), Deno.errors.NotFound);
@@ -510,7 +510,7 @@ Deno.test("unit/download registry: cancellation after hard-link removes owned ta
             controller.signal,
           ),
         DownloadError,
-        "已取消",
+        "cancelled",
       );
     } finally {
       Deno.link = originalLink;
@@ -541,8 +541,8 @@ Deno.test("unit/secrets: lazy selection, missing values and redaction are fail c
   assertEquals(reads, 0);
   assertEquals(await bindings.secret("TOKEN"), "sensitive-token");
   assertEquals(reads, 1);
-  await assertRejects(() => bindings.secret("MISSING"), PreflightError, "未绑定");
-  await assertRejects(() => bindings.secret("EMPTY"), PreflightError, "非空字符串");
+  await assertRejects(() => bindings.secret("MISSING"), PreflightError, "no config secret binding");
+  await assertRejects(() => bindings.secret("EMPTY"), PreflightError, "non-empty string");
   assertEquals(
     new Redactor(["sensitive-token"]).redact("value=sensitive-token"),
     "value=[REDACTED]",
@@ -631,7 +631,7 @@ Deno.test("unit/secrets: prepareSecretDeployments fixes values and files with ha
           { prefix: "missing" },
         ),
       PreflightError,
-      "未绑定",
+      "no config secret binding",
     );
     assertEquals(DEFAULT_SECRETS_DIR, "~/.sfo-deploy/secrets/");
     assertEquals(validateSecretKind("value"), "value");

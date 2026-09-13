@@ -140,7 +140,7 @@ export class PreparedExecution implements AsyncDisposable {
     }
     this.#closed = true;
     if (primary === undefined && errors.length > 0) {
-      throw new PreflightError(`本地准备资源清理失败: ${errors[0]}`);
+      throw new PreflightError(`Local preparation resource cleanup failed: ${errors[0]}`);
     }
     return Object.freeze(errors);
   }
@@ -166,7 +166,7 @@ export async function prepareExecution(
   throwIfAborted(options.signal);
   if (plan.steps.some(legacySingleVersionedDeploy)) {
     throw new PreflightError(
-      "旧版单步 versioned deploy 计划不可安全重放，请重新生成 stage/activate 计划",
+      "Legacy single-step versioned deploy plans cannot be replayed safely; regenerate a stage/activate plan",
     );
   }
   const downloads = options.downloadProviders ?? new DownloadProviderRegistry();
@@ -182,7 +182,7 @@ export async function prepareExecution(
     for (const [index, original] of normalizeVersionedSteps(plan.steps).entries()) {
       throwIfAborted(options.signal);
       if (prepared.has(original.id)) {
-        throw new PreflightError(`执行计划包含重复步骤 ID: ${original.id}`);
+        throw new PreflightError(`Execution plan contains a duplicate step ID: ${original.id}`);
       }
       let stagedKey: string | undefined;
       const key = original.machine.machine.sshPrivateKey;
@@ -190,27 +190,31 @@ export async function prepareExecution(
         stagedKey = privateKeys.get(key);
         if (!stagedKey) {
           stagedKey = join(directory, `ssh-key-${privateKeys.size}`);
-          await copyStableLocalInput(key, stagedKey, "SSH 私钥");
+          await copyStableLocalInput(key, stagedKey, "SSH private key");
           privateKeys.set(key, stagedKey);
         }
       }
       const scripts: ScriptInvocation[] = [];
       for (const [scriptIndex, invocation] of original.scripts.entries()) {
         const path = join(directory, `step-${index}-script-${scriptIndex}`);
-        await copyStableLocalInput(invocation.source, path, `步骤 ${original.id} 脚本`);
+        await copyStableLocalInput(invocation.source, path, `script for step ${original.id}`);
         scripts.push(Object.freeze({ ...invocation, source: path }));
       }
       const templates = [];
       for (const [templateIndex, template] of original.templates.entries()) {
         const path = join(directory, `step-${index}-template-${templateIndex}`);
-        await copyStableLocalInput(template.source, path, `步骤 ${original.id} 模板`);
+        await copyStableLocalInput(template.source, path, `template for step ${original.id}`);
         templates.push(Object.freeze({ ...template, source: path }));
       }
       const deliveryScripts: ScriptInvocation[] = [];
       const rawDeliveryScripts = original.deliveryInputs?.scripts ?? original.bundleScripts ?? [];
       for (const [scriptIndex, invocation] of rawDeliveryScripts.entries()) {
         const path = join(directory, `step-${index}-delivery-script-${scriptIndex}`);
-        await copyStableLocalInput(invocation.source, path, `步骤 ${original.id} 部署包脚本`);
+        await copyStableLocalInput(
+          invocation.source,
+          path,
+          `deployment bundle script for step ${original.id}`,
+        );
         deliveryScripts.push(Object.freeze({ ...invocation, source: path }));
       }
       const deliveryFiles = [];
@@ -218,7 +222,11 @@ export async function prepareExecution(
         (original.bundleScripts === undefined ? [] : original.templates);
       for (const [fileIndex, file] of rawDeliveryFiles.entries()) {
         const path = join(directory, `step-${index}-delivery-file-${fileIndex}`);
-        await copyStableLocalInput(file.source, path, `步骤 ${original.id} 部署包普通文件`);
+        await copyStableLocalInput(
+          file.source,
+          path,
+          `deployment bundle plain file for step ${original.id}`,
+        );
         deliveryFiles.push(Object.freeze({ ...file, source: path }));
       }
       const machine = Object.freeze({ ...original.machine.machine, sshPrivateKey: stagedKey });
@@ -265,7 +273,7 @@ export async function prepareExecution(
           artifact = await downloads.fetchPackage(packageValue, packagePath, {}, options.signal);
         }
         if (step.kind === "app") {
-          await assertGzipTar(artifact.path, `步骤 ${step.id} 安装包`);
+          await assertGzipTar(artifact.path, `installer package for step ${step.id}`);
         }
         artifacts.push(artifact);
       }
@@ -328,7 +336,9 @@ export async function prepareExecution(
       }
       const runtime = step.machine.machine.scriptRuntime;
       if (runtime.kind !== "deno") {
-        throw new PreflightError(`步骤 ${step.id} 使用不支持的脚本运行时: ${runtime.kind}`);
+        throw new PreflightError(
+          `Step ${step.id} uses an unsupported script runtime: ${runtime.kind}`,
+        );
       }
       prepared.set(
         step.id,
@@ -391,7 +401,9 @@ export class DeploymentExecutor {
     this.packageCache = options.packageCache;
     const keepVersions = options.keepVersions ?? DEFAULT_KEEP_VERSIONS;
     if (!Number.isInteger(keepVersions) || keepVersions < 1 || keepVersions > MAX_KEEP_VERSIONS) {
-      throw new PreflightError(`keep_versions 必须是 1-${MAX_KEEP_VERSIONS} 的整数`);
+      throw new PreflightError(
+        `keep_versions must be an integer between 1 and ${MAX_KEEP_VERSIONS}`,
+      );
     }
     this.keepVersions = keepVersions;
     this.onStep = options.onStep;
@@ -434,7 +446,7 @@ export class DeploymentExecutor {
     signal?: AbortSignal,
   ): Promise<DeploymentResult> {
     if (!(prepared instanceof PreparedExecution) || prepared.closed) {
-      throw new PreflightError("PreparedExecution 无效或已关闭");
+      throw new PreflightError("PreparedExecution is invalid or already closed");
     }
     const plan = prepared.plan;
     const results: StepResult[] = [];
@@ -476,7 +488,7 @@ export class DeploymentExecutor {
         let result: StepResult | undefined;
         if (cancelled || signal?.aborted) {
           cancelled = true;
-          result = skipped(step, "cancelled", StepStatus.CANCELLED, "用户取消");
+          result = skipped(step, "cancelled", StepStatus.CANCELLED, "User cancelled");
         } else {
           const blocked = step.dependsOn.filter((dependency) =>
             !byStep.get(dependency)?.satisfiesDependency
@@ -491,7 +503,7 @@ export class DeploymentExecutor {
               step,
               "dependency-failed",
               StepStatus.BLOCKED,
-              `依赖未成功: ${externalBlockers.join(", ")}`,
+              `Dependencies did not succeed: ${externalBlockers.join(", ")}`,
             );
           } else if (failedMachines.has(machineName)) {
             result = skipped(step, "target-fail-fast");
@@ -500,7 +512,7 @@ export class DeploymentExecutor {
               step,
               "dependency-failed",
               StepStatus.BLOCKED,
-              `依赖未成功: ${blocked.join(", ")}`,
+              `Dependencies did not succeed: ${blocked.join(", ")}`,
             );
           } else if (
             step.kind === "environment" && step.action === "install" &&
@@ -551,7 +563,9 @@ export class DeploymentExecutor {
               try {
                 if (managedLifecycleStep(step)) {
                   if (acquireLock === undefined || releaseLock === undefined) {
-                    throw new PreflightError("远端会话不支持 managed App 目标操作锁");
+                    throw new PreflightError(
+                      "Remote session does not support managed App target operation locks",
+                    );
                   }
                   operationLease = await acquireLock.call(session, {
                     app: step.resource,
@@ -629,7 +643,7 @@ export class DeploymentExecutor {
                   if (result) result = result.withCleanupError(cleanup);
                   else if (executionError instanceof CancelledError) {
                     executionError = new CancelledError(
-                      `${executionError.message}; 远端工作目录清理失败: ${cleanup}`,
+                      `${executionError.message}; remote workspace cleanup failed: ${cleanup}`,
                       { cause: executionError },
                     );
                   } else if (executionError !== undefined) {
@@ -637,7 +651,7 @@ export class DeploymentExecutor {
                       `${
                         safeRedact(prepared.steps.get(step.id)!.redactor, errorText(executionError))
                       }; ` +
-                        `远端工作目录清理失败: ${cleanup}`,
+                        `Remote workspace cleanup failed: ${cleanup}`,
                       { cause: executionError },
                     );
                   } else executionError = cause;
@@ -653,7 +667,7 @@ export class DeploymentExecutor {
               const safeMessage = safeRedact(redactor, errorText(cause));
               if (cause instanceof CancelledError || signal?.aborted) {
                 cancelled = true;
-                result = skipped(step, "cancelled", StepStatus.CANCELLED, "用户取消");
+                result = skipped(step, "cancelled", StepStatus.CANCELLED, "User cancelled");
               } else if (cause instanceof PreflightError) {
                 result = failed(step, safeMessage, "preflight");
               } else {
@@ -663,7 +677,7 @@ export class DeploymentExecutor {
             if (result?.status === StepStatus.FAILED) failedMachines.add(machineName);
           }
         }
-        if (!result) result = failed(step, "执行器未生成步骤结果");
+        if (!result) result = failed(step, "Executor produced no step result");
         if (prepareState !== undefined && plan.requestedAction === "prepare") {
           if (
             step.action === "install" && result.status === StepStatus.SUCCEEDED &&
@@ -692,7 +706,7 @@ export class DeploymentExecutor {
               } catch (cause) {
                 result = failed(
                   step,
-                  `环境应用版本标记写入失败: ${errorText(cause)}`,
+                  `Failed to write the environment app version marker: ${errorText(cause)}`,
                   "preflight",
                 );
               }
@@ -713,11 +727,13 @@ export class DeploymentExecutor {
           : undefined;
         const errors = [...recovery?.errors ?? []];
         if (deployment.recoveryFailed) {
-          errors.push(`恢复不完整，已保留恢复资料: ${deployment.workspace}`);
+          errors.push(`Recovery is incomplete; recovery material kept at ${deployment.workspace}`);
           try {
             if (deployment.session.preserveWorkspace === undefined) {
               sessionsWithRecoveryData.add(deployment.session);
-              errors.push("远端会话不支持保留工作目录，已跳过会话自动清理");
+              errors.push(
+                "Remote session does not support keeping the workspace; skipping automatic session cleanup",
+              );
             } else {
               deployment.session.preserveWorkspace(deployment.workspace);
             }
@@ -806,7 +822,7 @@ export class DeploymentExecutor {
     if (legacySingleVersionedDeploy(step)) {
       return failed(
         step,
-        "旧版单步 versioned deploy 计划不可安全重放，请重新生成 stage/activate 计划",
+        "Legacy single-step versioned deploy plans cannot be replayed safely; regenerate a stage/activate plan",
         "preflight",
       );
     }
@@ -865,19 +881,25 @@ export class DeploymentExecutor {
           validateIdentity === undefined || createScopedSecrets === undefined ||
           cleanupScopedSecrets === undefined
         ) {
-          throw new PreflightError("远端会话不支持 managed App 身份或逐消费者秘密原语");
+          throw new PreflightError(
+            "Remote session does not support managed App identity or per-consumer secret primitives",
+          );
         }
         await validateIdentity.call(options.session, runAs, options.signal);
       }
       if (prepared.deliveryBundle !== undefined && stageBundle === undefined) {
-        throw new PreflightError("远端会话不支持单部署包暂存能力");
+        throw new PreflightError(
+          "Remote session does not support single deployment bundle staging",
+        );
       }
       if (managedConfigs.length > 0) {
         if (
           createBuiltinCandidate === undefined || publishConfigs === undefined ||
           restoreConfigs === undefined || commitConfigs === undefined
         ) {
-          throw new PreflightError("远端会话不支持完整 managed config 事务能力");
+          throw new PreflightError(
+            "Remote session does not support full managed config transactions",
+          );
         }
       }
       if (prepared.deliveryBundle !== undefined) {
@@ -898,7 +920,9 @@ export class DeploymentExecutor {
         staged?.packagePath !== undefined
       ) {
         if (extractAppPackage === undefined) {
-          throw new PreflightError("远端会话不支持 App 内层包安全解包");
+          throw new PreflightError(
+            "Remote session does not support safe unpacking of the inner App package",
+          );
         }
         extractedPackageRoot = (await extractAppPackage.call(options.session, {
           workspace: options.workspace,
@@ -913,10 +937,10 @@ export class DeploymentExecutor {
         step.deployment?.kind === "versioned"
       ) {
         if (runAs === undefined) {
-          throw new PreflightError("versioned App 发布缺少 run_as");
+          throw new PreflightError("versioned App release is missing run_as");
         }
         if (step.installDirectory === undefined) {
-          throw new PreflightError("versioned App 发布缺少 install_directory");
+          throw new PreflightError("versioned App release is missing install_directory");
         }
         await options.session.run(
           ["/usr/bin/install", "-d", "-m", "0750", "-o", runAs, "--", step.installDirectory],
@@ -991,7 +1015,9 @@ export class DeploymentExecutor {
       };
       if (step.deployment !== undefined) metadata.deployment = step.deployment;
       if (needsPackage(step)) {
-        if (!prepared.artifact) throw new PreflightError(`步骤 ${step.id} 缺少已准备下载工件`);
+        if (!prepared.artifact) {
+          throw new PreflightError(`Step ${step.id} is missing a prepared download artifact`);
+        }
         const remotePackage = staged?.packagePath ??
           `${options.workspace}/package-${options.index}.bin`;
         if (staged === undefined) {
@@ -1025,7 +1051,9 @@ export class DeploymentExecutor {
           const remote = staged?.files.get(bundleFileKey(template.relativePath)) ??
             `${options.workspace}/template-${options.index}-${templateIndex}`;
           if (staged !== undefined && !staged.files.has(bundleFileKey(template.relativePath))) {
-            throw new PreflightError(`部署包缺少模板成员: ${template.relativePath}`);
+            throw new PreflightError(
+              `Deployment bundle is missing template member: ${template.relativePath}`,
+            );
           }
           if (staged === undefined) {
             await options.session.uploadFile(template.source, remote, { signal: options.signal });
@@ -1043,7 +1071,9 @@ export class DeploymentExecutor {
         for (const invocation of step.bundleScripts) {
           const remote = staged?.scripts.get(bundleScriptKey(invocation.relativePath));
           if (remote === undefined) {
-            throw new PreflightError(`部署包缺少 App 脚本成员: ${invocation.relativePath}`);
+            throw new PreflightError(
+              `Deployment bundle is missing App script member: ${invocation.relativePath}`,
+            );
           }
           remoteScripts[invocation.relativePath] = remote;
         }
@@ -1066,7 +1096,9 @@ export class DeploymentExecutor {
         const executeInvocation = async (invocation: ScriptInvocation): Promise<CommandResult> => {
           const member = staged?.scripts.get(bundleScriptKey(invocation.relativePath));
           if (staged !== undefined && member === undefined) {
-            throw new PreflightError(`部署包缺少执行脚本成员: ${invocation.relativePath}`);
+            throw new PreflightError(
+              `Deployment bundle is missing execution script member: ${invocation.relativePath}`,
+            );
           }
           const remoteScript = member ??
             `${options.workspace}/script-${options.index}-${invocationIndex++}.ts`;
@@ -1105,7 +1137,7 @@ export class DeploymentExecutor {
             try {
               await cleanupScopedSecrets!.call(options.session, invocationSecrets);
             } catch (cleanupCause) {
-              throw new TransportError("App 生命周期脚本秘密副本清理失败", {
+              throw new TransportError("Failed to clean up App lifecycle script secret copies", {
                 cause: invocationError === undefined
                   ? cleanupCause
                   : new AggregateError([invocationError, cleanupCause]),
@@ -1124,16 +1156,18 @@ export class DeploymentExecutor {
               `${machine.name}\0${step.resource}`,
               EnvironmentCheckResult.UNSATISFIED,
             );
-            if (options.checkCanInstall) message = "环境检查未满足，将执行 install";
-            else {
+            if (options.checkCanInstall) {
+              message = "Environment check not satisfied; running install";
+            } else {
               status = StepStatus.FAILED;
-              message = "环境依赖检查未满足；定向部署不会自动安装依赖，请先运行 sfo-deploy prepare";
+              message =
+                "Environment dependency check not satisfied; targeted deployment does not install dependencies automatically, run sfo-deploy prepare first";
             }
             break;
           }
           if (command.exitCode !== 0) {
             status = StepStatus.FAILED;
-            message = `脚本退出码为 ${command.exitCode}`;
+            message = `Script exit code is ${command.exitCode}`;
             break;
           }
         }
@@ -1157,14 +1191,18 @@ export class DeploymentExecutor {
             }
             if (managedConfigs.length > 0) {
               if (staged === undefined || runAs === undefined) {
-                throw new PreflightError("managed config 缺少部署包或 run_as");
+                throw new PreflightError(
+                  "managed config is missing the deployment bundle or run_as",
+                );
               }
               const needsUpdater = managedConfigs.some((config) => config.format !== "systemd");
               const updaterScript = needsUpdater
                 ? staged.scripts.get(REMOTE_CONFIG_UPDATER_BUNDLE_PATH)
                 : undefined;
               if (needsUpdater && updaterScript === undefined) {
-                throw new PreflightError("部署包缺少框架配置更新器");
+                throw new PreflightError(
+                  "Deployment bundle is missing the framework config updater",
+                );
               }
               const candidates = [];
               for (const config of managedConfigs) {
@@ -1172,7 +1210,9 @@ export class DeploymentExecutor {
                 const skeleton = staged.configSkeletons.get(skeletonKey);
                 const bindings = staged.configBindings.get(`${skeletonKey}.bindings.json`);
                 if (skeleton === undefined || bindings === undefined) {
-                  throw new PreflightError(`部署包缺少配置骨架或绑定: ${config.name}`);
+                  throw new PreflightError(
+                    `Deployment bundle is missing the config skeleton or bindings: ${config.name}`,
+                  );
                 }
                 let candidate;
                 if (config.format === "systemd") {
@@ -1187,7 +1227,7 @@ export class DeploymentExecutor {
                     await options.session.run(["rm", "-f", "--", candidatePath]).catch(() =>
                       undefined
                     );
-                    throw new TransportError(`创建 ${config.name} 候选失败`);
+                    throw new TransportError(`Failed to create the ${config.name} candidate`);
                   }
                   candidate = Object.freeze({
                     name: config.name,
@@ -1224,11 +1264,14 @@ export class DeploymentExecutor {
                   try {
                     await cleanupScopedSecrets!.call(options.session, scopedSecrets);
                   } catch (cleanupCause) {
-                    throw new TransportError(`配置 ${config.name} 的秘密副本清理失败`, {
-                      cause: candidateError === undefined
-                        ? cleanupCause
-                        : new AggregateError([candidateError, cleanupCause]),
-                    });
+                    throw new TransportError(
+                      `Failed to clean up secret copies for config ${config.name}`,
+                      {
+                        cause: candidateError === undefined
+                          ? cleanupCause
+                          : new AggregateError([candidateError, cleanupCause]),
+                      },
+                    );
                   }
                   if (candidateError !== undefined) throw candidateError;
                 }
@@ -1356,7 +1399,7 @@ export class DeploymentExecutor {
               serviceAttempted: systemdAttempted,
             });
             if (recoveryErrors.length > 0) {
-              throw new TransportError("managed App 执行失败且恢复不完整", {
+              throw new TransportError("managed App execution failed and recovery is incomplete", {
                 cause: new AggregateError([cause, ...recoveryErrors]),
               });
             }
@@ -1367,12 +1410,12 @@ export class DeploymentExecutor {
               await commitConfigs!.call(options.session, publications, options.signal);
             } catch (cause) {
               cleanupErrors.push(
-                safeRedact(prepared.redactor, `配置备份清理失败: ${errorText(cause)}`),
+                safeRedact(prepared.redactor, `Config backup cleanup failed: ${errorText(cause)}`),
               );
             }
             message = publications.some((publication) => publication.changed)
-              ? "managed 配置已更新"
-              : "managed 配置 unchanged";
+              ? "managed config updated"
+              : "managed config unchanged";
           }
         }
         if (
@@ -1381,7 +1424,7 @@ export class DeploymentExecutor {
           outputs.every((output) => output.exitCode === 0)
         ) {
           options.checks.set(`${machine.name}\0${step.resource}`, EnvironmentCheckResult.SATISFIED);
-          message = "环境检查已满足";
+          message = "Environment check satisfied";
         }
       } finally {
         try {
@@ -1572,7 +1615,11 @@ async function activateDeployment(
   signal?: AbortSignal,
 ): Promise<StepResult> {
   if (deployment === undefined || !deployment.ready || deployment.release === undefined) {
-    return failed(step, "versioned activate 缺少已完成准备的 stage 事务", "preflight");
+    return failed(
+      step,
+      "versioned activate is missing a fully prepared stage transaction",
+      "preflight",
+    );
   }
   let serviceResult: StepServiceResult | undefined;
   try {
@@ -1585,7 +1632,7 @@ async function activateDeployment(
         ? deployment.step.management.manager
         : undefined;
       if (service === undefined) {
-        throw new PreflightError("versioned activate 缺少 system 服务声明");
+        throw new PreflightError("versioned activate is missing the system service declaration");
       }
       const convergence = await executePreparedSystemd(
         deployment.session,
@@ -1734,7 +1781,9 @@ function requiredManagedRunAs(step: PlanStep): string {
     !/^[a-z_][a-z0-9_-]{0,31}\$?$/u.test(value) ||
     (declared !== undefined && declared !== value)
   ) {
-    throw new PreflightError(`managed App ${step.resource} 缺少或包含不一致的 run_as`);
+    throw new PreflightError(
+      `managed App ${step.resource} is missing run_as or contains an inconsistent value`,
+    );
   }
   return value;
 }
@@ -1786,11 +1835,11 @@ async function copyStableLocalInput(
       !beforePath.isFile || beforePath.isSymlink ||
       (beforePath.nlink !== null && beforePath.nlink !== 1)
     ) {
-      throw new PreflightError(`${label}必须是非链接普通文件`);
+      throw new PreflightError(`${label} must be a non-symlink regular file`);
     }
     input = await Deno.open(source, { read: true });
     const before = await input.stat();
-    if (!sameSnapshot(beforePath, before)) throw new PreflightError(`${label}在打开期间发生变化`);
+    if (!sameSnapshot(beforePath, before)) throw new PreflightError(`${label} changed while open`);
     output = await Deno.open(destination, { write: true, createNew: true, mode: 0o600 });
     const buffer = new Uint8Array(64 * 1024);
     while (true) {
@@ -1803,7 +1852,7 @@ async function copyStableLocalInput(
     const after = await input.stat();
     const afterPath = await Deno.lstat(source);
     if (!sameSnapshot(before, after) || !sameSnapshot(after, afterPath)) {
-      throw new PreflightError(`${label}在固定期间发生变化`);
+      throw new PreflightError(`${label} changed while pinned`);
     }
     await Deno.chmod(destination, 0o600);
   } catch (cause) {
@@ -1813,7 +1862,7 @@ async function copyStableLocalInput(
     input = undefined;
     await Deno.remove(destination).catch(() => undefined);
     if (cause instanceof PreflightError) throw cause;
-    throw new PreflightError(`固定${label}失败`, { cause });
+    throw new PreflightError(`Failed to pin ${label}`, { cause });
   } finally {
     output?.close();
     input?.close();
@@ -1831,7 +1880,7 @@ function validatePlanShape(plan: ExecutionPlan): void {
     !plan || typeof plan !== "object" ||
     (plan.schemaVersion !== 3 && plan.schemaVersion !== 4) || !Array.isArray(plan.steps)
   ) {
-    throw new TypeError("plan 必须是 schemaVersion=3/4 的 ExecutionPlan");
+    throw new TypeError("plan must be an ExecutionPlan with schemaVersion=3/4");
   }
 }
 
@@ -1882,7 +1931,7 @@ function appendCleanupError(
 }
 
 function throwIfAborted(signal?: AbortSignal): void {
-  if (signal?.aborted) throw new CancelledError("部署已取消");
+  if (signal?.aborted) throw new CancelledError("Deployment cancelled");
 }
 
 function errorText(cause: unknown): string {

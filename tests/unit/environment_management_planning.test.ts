@@ -86,7 +86,7 @@ Deno.test("unit/environment management planning: system manager does not plan st
         buildPlan(cluster, { action: "stop" });
       },
       PlanningError,
-      "未定义动作脚本",
+      "has no action script",
     );
   });
 });
@@ -100,7 +100,7 @@ Deno.test("unit/environment management planning: direct check fails closed", asy
         buildPlan(cluster, { action: "check" });
       },
       PlanningError,
-      "不支持 check",
+      "does not support a check step",
     );
   });
 });

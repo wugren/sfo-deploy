@@ -241,12 +241,12 @@ Deno.test("integration/managed-transport: Deno 在 root 与非 root 下使用已
           environment: { HOME: "/root" },
         }),
       TransportError,
-      "不能覆盖",
+      "must not override",
     );
     await assertRejects(
       () => rootSession.validateManagedIdentity!("root"),
       PreflightError,
-      "非 root",
+      "non-root",
     );
     await rootSession.close();
 
@@ -265,7 +265,7 @@ Deno.test("integration/managed-transport: Deno 在 root 与非 root 下使用已
     await assertRejects(
       () => mismatch.validateManagedIdentity!("deploy"),
       PreflightError,
-      "必须与 run_as 一致",
+      "must match run_as",
     );
     await mismatch.close();
 
@@ -311,7 +311,7 @@ Deno.test("integration/managed-transport: Deno 在 root 与非 root 下使用已
     await assertRejects(
       () => dangerousHome.validateManagedIdentity!("deploy"),
       PreflightError,
-      "HOME 不合法",
+      "Invalid App run user HOME",
     );
     await dangerousHome.close();
   });
@@ -371,7 +371,7 @@ Deno.test("integration/managed-transport: flock 成功释放、争用超时和�
     await assertRejects(
       () => contention.acquireOperationLock!({ app: "demo", target: "node-a", timeoutMs: 50 }),
       PreflightError,
-      "获取超时",
+      "acquisition timed out",
     );
     await contention.close();
 

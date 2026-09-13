@@ -105,7 +105,7 @@ Deno.test("integration/fetch: filters, unknown apps and missing config fail clea
       stderr: missing,
     });
     assertEquals(await missingCli(["fetch", "--cluster", "demo", "--app", "nope"]), 2);
-    assertStringIncludes(missing.text(), "未知 App");
+    assertStringIncludes(missing.text(), "Unknown App");
     assertEquals(await cli(["fetch", "--cluster", "demo", "--environment", "base"]), 2);
     assertEquals(await cli(["fetch", "--cluster", "demo", "--machine", "node-a"]), 2);
     assertEquals(await cli(["fetch", "--cluster", "demo", "--with-dependencies"]), 2);
@@ -120,7 +120,7 @@ Deno.test("integration/fetch: filters, unknown apps and missing config fail clea
           machines: ["node-a"],
         }),
       ConfigurationError,
-      "fetch 仅支持",
+      "fetch supports only",
     );
     new RunOptions({ configRoot: root, cluster: "demo", action: "fetch", apps: ["demo"] });
   });

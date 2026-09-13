@@ -34,7 +34,7 @@ async function run(
 ): Promise<string> {
   const result = await session.run(argv, { privileged: true, signal });
   if (result.exitCode !== 0) {
-    throw new TransportError(`版本操作 ${argv[0]} 失败: ${result.stderr.trim()}`);
+    throw new TransportError(`Version operation ${argv[0]} failed: ${result.stderr.trim()}`);
   }
   return result.stdout.trim();
 }
@@ -47,7 +47,7 @@ async function test(
 ): Promise<boolean> {
   const result = await session.run(["/usr/bin/test", flag, path], { privileged: true, signal });
   if (result.exitCode !== 0 && result.exitCode !== 1) {
-    throw new TransportError(`检查版本路径失败 ${path}`);
+    throw new TransportError(`Failed to inspect version path ${path}`);
   }
   return result.exitCode === 0;
 }
@@ -68,13 +68,13 @@ export async function prepareVersionedRelease(
     (request.keepVersions !== undefined && (!Number.isInteger(request.keepVersions) ||
       request.keepVersions < 1 || request.keepVersions > 100))
   ) {
-    throw new PreflightError("版本提交参数不合法");
+    throw new PreflightError("Invalid version commit arguments");
   }
   await session.preflightPrivilege(signal);
   const releasePath = `${root}/${request.version}`;
   for (const path of [root, releasePath]) {
     if (!(await test(session, "-d", path, signal)) || await test(session, "-L", path, signal)) {
-      throw new TransportError(`版本路径不是普通目录 ${path}`);
+      throw new TransportError(`Version path is not a regular directory ${path}`);
     }
     await run(session, ["/usr/bin/test", "-r", path], signal);
     await run(session, ["/usr/bin/test", "-x", path], signal);
@@ -82,7 +82,7 @@ export async function prepareVersionedRelease(
   if (
     await run(session, ["/usr/bin/cat", "--", `${releasePath}/VERSION`], signal) !== request.version
   ) {
-    throw new TransportError(`版本目录 VERSION 不匹配 ${releasePath}`);
+    throw new TransportError(`Version directory VERSION mismatch ${releasePath}`);
   }
   const latestPath = `${root}/latest`;
   const markerPath = `${root}/.${request.resource}.version`;
@@ -91,14 +91,14 @@ export async function prepareVersionedRelease(
     await test(session, "-L", markerPath, signal) ||
     (markerExists && !(await test(session, "-f", markerPath, signal)))
   ) {
-    throw new TransportError(`版本标记不是普通文件 ${markerPath}`);
+    throw new TransportError(`Version marker is not a regular file ${markerPath}`);
   }
   const previousVersion = markerExists
     ? await run(session, ["/usr/bin/cat", "--", markerPath], signal)
     : undefined;
   const linked = await test(session, "-L", latestPath, signal);
   if (!linked && await test(session, "-e", latestPath, signal)) {
-    throw new TransportError(`latest 不是软链接 ${latestPath}`);
+    throw new TransportError(`latest is not a symlink ${latestPath}`);
   }
   const previousTarget = linked
     ? await run(session, ["/usr/bin/readlink", "--", latestPath], signal)
@@ -108,14 +108,14 @@ export async function prepareVersionedRelease(
     (previousVersion !== undefined && (!VERSION.test(previousVersion) ||
       (previousTarget !== previousVersion && previousTarget !== `${root}/${previousVersion}`)))
   ) {
-    throw new TransportError("latest 与版本标记不一致，拒绝提交");
+    throw new TransportError("latest and the version marker disagree; refusing to commit");
   }
   if (
     previousVersion !== undefined &&
     (!(await test(session, "-d", `${root}/${previousVersion}`, signal)) ||
       await test(session, "-L", `${root}/${previousVersion}`, signal))
   ) {
-    throw new TransportError("latest 旧目标不是可恢复版本目录");
+    throw new TransportError("The previous latest target is not a recoverable version directory");
   }
   const nonce = crypto.randomUUID();
   const state: PreparedVersionedRelease = {
@@ -155,7 +155,10 @@ export async function prepareVersionedRelease(
     try {
       await cleanupVersionedRelease(session, state);
     } catch (cleanup) {
-      throw new AggregateError([cause, cleanup], "版本准备失败且临时资源清理失败");
+      throw new AggregateError(
+        [cause, cleanup],
+        "Version preparation failed and temporary resource cleanup failed",
+      );
     }
     throw cause;
   }
@@ -227,7 +230,9 @@ export async function restoreVersionedRelease(
     errors.push(cause);
   }
   state.finalized = false;
-  if (errors.length) throw new AggregateError(errors, "版本软链接/标记恢复不完整");
+  if (errors.length) {
+    throw new AggregateError(errors, "Version symlink/marker recovery is incomplete");
+  }
   state.switched = false;
 }
 
@@ -238,7 +243,9 @@ export async function cleanupVersionedRelease(
   signal?: AbortSignal,
 ): Promise<void> {
   if (state.switched && !state.finalized) {
-    throw new TransportError("版本恢复未完成，保留临时标记备份以供恢复");
+    throw new TransportError(
+      "Version recovery is incomplete; keeping the temporary marker backup for recovery",
+    );
   }
   const errors: unknown[] = [];
   if (state.finalized && state.request.keepVersions !== undefined) {
@@ -292,5 +299,5 @@ export async function cleanupVersionedRelease(
   } catch (cause) {
     errors.push(cause);
   }
-  if (errors.length) throw new AggregateError(errors, "版本清理失败");
+  if (errors.length) throw new AggregateError(errors, "Version cleanup failed");
 }

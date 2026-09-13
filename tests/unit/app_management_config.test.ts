@@ -133,7 +133,7 @@ management:
       content: "server { error_log /tmp/${DB_PASSWORD}; }\n",
     }]);
     const error = await assertRejects(() => loadCluster(directory), PreflightError);
-    assertStringIncludes(error.message, "不支持占位符");
+    assertStringIncludes(error.message, "does not support the placeholder");
   });
 
   await withTempDir(async (root) => {
@@ -150,7 +150,7 @@ management:
       content: "server { listen 80; }\n",
     }]);
     const error = await assertRejects(() => loadCluster(directory), ConfigurationError);
-    assertStringIncludes(error.message, "variables 与 format: nginx 不兼容");
+    assertStringIncludes(error.message, "is incompatible with format: nginx");
   });
 });
 
@@ -207,27 +207,27 @@ Deno.test("unit/app schema 1: script file permissions fail closed", async () => 
     [
       "relative read path",
       "      read: [etc/demo/input.json]\n      write: []\n",
-      "必须是规范绝对 POSIX 文件路径",
+      "must be a canonical absolute POSIX file path",
     ],
     [
       "root write path",
       "      read: []\n      write: [/]\n",
-      "必须是规范绝对 POSIX 文件路径",
+      "must be a canonical absolute POSIX file path",
     ],
     [
       "comma-containing path",
       "      read: []\n      write: ['/srv/a,b']\n",
-      "包含空白、控制字符或逗号",
+      "contains whitespace, control characters, or commas",
     ],
     [
       "duplicate read paths",
       "      read: [/etc/a, /etc/a]\n      write: []\n",
-      "包含重复值",
+      "contains a duplicate value",
     ],
     [
       "unknown permission field",
       "      file: []\n",
-      "包含未知字段: file",
+      "contains unknown fields: file",
     ],
   ];
   for (const [label, permissionExtra, message] of cases) {
@@ -335,7 +335,7 @@ management:
     const error = await assertRejects(() => loadCluster(directory), ConfigurationError);
     assertStringIncludes(
       error.message,
-      "app[demo].configs.file[0].target 使用安装目录变量，但 App 缺少 install_directory",
+      "app[demo].configs.file[0].target uses an install directory variable, but the App is missing install_directory",
     );
   });
 });
@@ -364,7 +364,7 @@ management:
       content: "{}\n",
     }]);
     const error = await assertRejects(() => loadCluster(directory), ConfigurationError);
-    assertStringIncludes(error.message, "只能包含一个目录变量");
+    assertStringIncludes(error.message, "must contain exactly one directory variable");
   });
 });
 
@@ -472,31 +472,31 @@ Deno.test("unit/app schema 1: unit_config rejects invalid working_directory vari
   const cases: readonly { readonly workingDirectory: string; readonly message: string }[] = [
     {
       workingDirectory: `${"${LATEST_DIRECTORY}/${INSTALL_DIRECTORY}"}`,
-      message: "只能包含一个目录变量",
+      message: "must contain exactly one directory variable",
     },
     {
       workingDirectory: `x/${"${LATEST_DIRECTORY}"}`,
-      message: "只支持以",
+      message: "supports only values starting with",
     },
     {
       workingDirectory: `${"${LATEST_DIRECTORY}/../x"}`,
-      message: "目录变量后必须是规范相对路径",
+      message: "must be followed by a canonical relative path after the directory variable",
     },
     {
       workingDirectory: `${"${LATEST_DIRECTORY}/"}`,
-      message: "目录变量后必须是规范相对路径",
+      message: "must be followed by a canonical relative path after the directory variable",
     },
     {
       workingDirectory: `${"${LATEST_DIRECTORY}/a/./b"}`,
-      message: "目录变量后必须是规范相对路径",
+      message: "must be followed by a canonical relative path after the directory variable",
     },
     {
       workingDirectory: `${"${UNKNOWN}"}`,
-      message: "只支持",
+      message: "supports only the",
     },
     {
       workingDirectory: `${"${LATEST_DIRECTORY}/x${MORE}"}`,
-      message: "目录变量后必须是规范相对路径",
+      message: "must be followed by a canonical relative path after the directory variable",
     },
   ];
   for (const { workingDirectory, message } of cases) {
@@ -582,7 +582,7 @@ management:
       async () => await loadCluster(directory),
       ConfigurationError,
     );
-    assertStringIncludes(error.message, "缺少 install_directory");
+    assertStringIncludes(error.message, "missing install_directory");
   });
 });
 
@@ -669,7 +669,7 @@ Deno.test("unit/app schema 1: old app schemas are rejected", async () => {
         (await Deno.readTextFile(path)).replace("schema_version: 1", `schema_version: ${version}`),
       );
       const error = await assertRejects(() => loadCluster(directory), ConfigurationError);
-      assertStringIncludes(error.message, "app[demo].schema_version 只支持 1");
+      assertStringIncludes(error.message, "app[demo].schema_version supports only 1");
     }
   });
 });
@@ -691,7 +691,7 @@ management:
 `;
     const directory = await schemaApp(root, body);
     const error = await assertRejects(() => loadCluster(directory), ConfigurationError);
-    assertStringIncludes(error.message, "顶层 scripts 已移除");
+    assertStringIncludes(error.message, "Top-level scripts in");
   });
 });
 
@@ -711,7 +711,7 @@ management:
 `;
     const directory = await schemaApp(root, body);
     const error = await assertRejects(() => loadCluster(directory), ConfigurationError);
-    assertStringIncludes(error.message, "app[demo].management 包含未知字段: service");
+    assertStringIncludes(error.message, "app[demo].management contains unknown fields: service");
   });
 });
 
@@ -771,6 +771,6 @@ management:
       { path: "scripts/check.ts", content: "Deno.exit(0);\n" },
     ]);
     const error = await assertRejects(() => loadCluster(directory), ConfigurationError);
-    assertStringIncludes(error.message, "重复目标路径");
+    assertStringIncludes(error.message, "contains a duplicate target path");
   });
 });
