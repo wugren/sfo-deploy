@@ -1,7 +1,7 @@
 /** sfo-deploy public project-binding API and side-effect orchestration. */
 
 import { join, resolve } from "jsr:@std/path@1.1.6";
-import { loadCluster, NAME_RE } from "./config.ts";
+import { loadCluster, NAME_RE, TOOL_VERSION } from "./config.ts";
 import { assertGzipTar, type DownloadProvider, DownloadProviderRegistry } from "./downloads.ts";
 import {
   CancelledError,
@@ -474,6 +474,7 @@ export async function run(
   }
 
   const cluster = await loadCluster(request.clusterDirectory);
+  assertDeployerVersion(cluster);
   if (request.action === "validate") return validationResult(cluster);
 
   const requestedAction = request.action === "plan" ? "deploy" : request.action;
@@ -767,6 +768,7 @@ async function runDeploy(
   signal?: AbortSignal,
 ): Promise<DeploymentResult> {
   const cluster = await loadCluster(options.clusterDirectory);
+  assertDeployerVersion(cluster);
   const plan = buildRequestedPlan(cluster, options, "deploy");
   if (confirmPlan !== undefined && !(await confirmPlan(plan))) {
     throw new CancelledError("Cancelled: deployment was not confirmed");
@@ -1104,6 +1106,18 @@ function buildRequestedPlan(
     addressKind: options.addressKind,
     withDependencies: options.withDependencies,
   });
+}
+
+/** 集群声明的 deployer_version 与运行时版本不一致时 fail-closed。 */
+function assertDeployerVersion(cluster: ClusterConfig): void {
+  const required = cluster.deployerVersion;
+  if (required === undefined) return;
+  if (required !== TOOL_VERSION) {
+    throw new ConfigurationError(
+      `cluster.yaml requires sfo-deploy ${required}, but this build is ${TOOL_VERSION}; ` +
+        "install the exact version declared by the cluster and retry",
+    );
+  }
 }
 
 function validationResult(cluster: ClusterConfig): ValidationResult {

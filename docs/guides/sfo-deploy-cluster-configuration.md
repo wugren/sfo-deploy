@@ -66,6 +66,7 @@ mkdir -p clusters/production/apps/backend/templates
 schema_version: 2
 name: production
 executor_region: cn-east
+deployer_version: "0.1.0"   # 可选：要求精确匹配的 sfo-deploy 版本
 environments:
   runtime: [app-01]
 apps:
@@ -74,13 +75,14 @@ apps:
 
 字段说明：
 
-| 字段              | 说明                                                                          |
-| ----------------- | ----------------------------------------------------------------------------- |
-| `schema_version`  | 只支持 `2`；旧 v1 每机环境布局已移除。                                        |
-| `name`            | 集群逻辑名称。建议与目录名一致；CLI 仍以目录名选择集群。                      |
-| `executor_region` | 发起部署命令的默认区域，用于自动选择内网或公网地址。                          |
-| `environments`    | Environment 到目标机器列表的完整映射。只在 schema v2 中存在。                 |
-| `apps`            | App 到目标机器列表的完整映射。`apps/` 下每个 App 都必须出现，不能多也不能少。 |
+| 字段                | 说明                                                                          |
+| ------------------- | ----------------------------------------------------------------------------- |
+| `schema_version`    | 只支持 `2`；旧 v1 每机环境布局已移除。                                        |
+| `name`              | 集群逻辑名称。建议与目录名一致；CLI 仍以目录名选择集群。                      |
+| `executor_region`   | 发起部署命令的默认区域，用于自动选择内网或公网地址。                          |
+| `deployer_version`  | 可选。要求运行中的 sfo-deploy 版本与之精确一致（全等字符串，不 trim）；不一致时在 SSH 前 fail-closed 拒绝 validate/plan/deploy/check/install/prepare/configure/start/stop/restart。缺省不启用门禁。运行时版本来自仓库根 `deno.json` 的 `version` 字段。 |
+| `environments`      | Environment 到目标机器列表的完整映射。只在 schema v2 中存在。                 |
+| `apps`              | App 到目标机器列表的完整映射。`apps/` 下每个 App 都必须出现，不能多也不能少。 |
 
 每个 Environment 和 App 都至少要放置到一台机器，目标列表不能重复，引用的机器必须存在于
 `machines.yaml`。`environments/` 和 `apps/`

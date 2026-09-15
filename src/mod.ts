@@ -3,7 +3,13 @@
 export { createCli, main, resolveGenericConfigRoot, serializeResult } from "./cli.ts";
 export type { CliDependencies, Reader, Writer } from "./cli.ts";
 
-export { loadCluster, NAME_RE, SECRET_RE, validateScriptRuntimeExecutable } from "./config.ts";
+export {
+  loadCluster,
+  NAME_RE,
+  SECRET_RE,
+  TOOL_VERSION,
+  validateScriptRuntimeExecutable,
+} from "./config.ts";
 export { loadUserConfig } from "./user_config.ts";
 export type { LoadUserConfigOptions, SfoDeployUserConfig } from "./user_config.ts";
 

@@ -4,6 +4,7 @@ import { parse } from "jsr:@std/yaml@1.2.0";
 import { extname, isAbsolute, join, relative, resolve } from "jsr:@std/path@1.1.6";
 import * as posix from "jsr:@std/path@1.1.6/posix";
 import { ConfigurationError } from "./errors.ts";
+import deployerPkg from "../deno.json" with { type: "json" };
 import {
   collectManagedSecretPlaceholders,
   parseManagedStructured,
@@ -54,6 +55,9 @@ import type {
 import { freezeArray, immutableMap } from "./types.ts";
 
 export const NAME_RE = /^[A-Za-z][A-Za-z0-9_.-]*$/;
+const DEPLOYER_VERSION = String(deployerPkg.version ?? "");
+/** sfo-deploy 运行时版本；与仓库根 deno.json.version 同源。 */
+export const TOOL_VERSION: string = DEPLOYER_VERSION === "" ? "<unknown>" : DEPLOYER_VERSION;
 export const SECRET_RE = /^[A-Z][A-Z0-9_]*$/;
 const SECRET_KINDS = new Set<string>(["value", "file"]);
 export const SCRIPT_ACTIONS = Object.freeze(
@@ -211,6 +215,16 @@ function version(data: StringRecord, label: string): void {
   if (data.schema_version !== 1) {
     throw new ConfigurationError(`${label}.schema_version supports only 1`);
   }
+}
+
+/** deployer_version 要求精确字符串值：不做 trim，带空白的值视为不匹配。 */
+function exactDeployerVersion(value: unknown): string {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new ConfigurationError(
+      "cluster.yaml.deployer_version must be a non-empty string",
+    );
+  }
+  return value;
 }
 
 function clusterSchemaVersion(data: StringRecord): ClusterSchemaVersion {
@@ -2205,7 +2219,15 @@ export async function loadCluster(directory: string | URL): Promise<ClusterConfi
   clusterSchemaVersion(clusterData);
   fields(
     clusterData,
-    ["schema_version", "name", "executor_region", "environments", "apps", "secrets"],
+    [
+      "schema_version",
+      "name",
+      "executor_region",
+      "environments",
+      "apps",
+      "secrets",
+      "deployer_version",
+    ],
     ["schema_version", "name", "executor_region", "environments", "apps"],
     "cluster.yaml",
   );
@@ -2248,10 +2270,14 @@ export async function loadCluster(directory: string | URL): Promise<ClusterConfi
     placements.set(appName, assigned);
   }
   validateDependencies(machines, definitions, apps, placements, secrets);
+  const deployerVersion = clusterData.deployer_version === undefined
+    ? undefined
+    : exactDeployerVersion(clusterData.deployer_version);
   return Object.freeze({
     name: name(clusterData.name, "cluster.yaml.name"),
     directory: realRoot,
     executorRegion: name(clusterData.executor_region, "cluster.yaml.executor_region"),
+    ...(deployerVersion === undefined ? {} : { deployerVersion }),
     machines: immutableMap(machines),
     environments: immutableMap(definitions),
     apps: immutableMap(apps),

@@ -2,6 +2,9 @@
 
 ## Long-lived Boundary
 
+- `cluster.yaml` 支持可选 `deployer_version` 精确版本门禁：声明后要求运行中的 sfo-deploy 版本完全一致，
+  否则装载集群后、任何 SSH 前 fail-closed 拒绝受控动作；缺省不启用。运行时版本取自 `deno.json` 的
+  `version` 字段。
 - App schema 1 使用顶层 `configs` 与 `management.kind`：配置条目没有 `name`，以 `kind: script|file`
   区分；管理器是 `kind: script|service`，service 通过 `tool: auto|systemctl|service` 覆盖
   Ubuntu/CentOS。旧 App v2/v3/v4 不兼容。

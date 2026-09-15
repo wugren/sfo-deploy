@@ -298,6 +298,8 @@ export interface ClusterConfig {
   readonly name: string;
   readonly directory: string;
   readonly executorRegion: string;
+  /** 要求使用的 sfo-deploy 精确版本；未声明时不启用版本门禁。 */
+  readonly deployerVersion?: string;
   readonly machines: ReadonlyMap<string, Machine>;
   readonly environments: ReadonlyMap<string, EnvironmentDefinition>;
   readonly apps: ReadonlyMap<string, AppDefinition>;

@@ -126,11 +126,19 @@ if (import.meta.main) Deno.exitCode = await cli(Deno.args);
 schema_version: 2
 name: production
 executor_region: cn-east
+deployer_version: "0.1.0"   # 可选：要求精确匹配的 sfo-deploy 版本
 environments:
   postgresql: [app-01]
 apps:
   backend: [app-01]
 ```
+
+`deployer_version` 是可选的精确版本门禁：声明后，只有与它完全一致的 sfo-deploy 版本才能装载并继续执行
+该集群的受控动作（validate/plan/deploy/check/install/prepare/configure/start/stop/restart）；不一致时在
+任何 SSH 连接前报错停止。未声明该字段的集群行为不变。sfo-deploy 的运行时版本来自仓库根
+`deno.json` 的 `version` 字段；升级工具版本时需同步更新各受影响集群的 `deployer_version`，否则这些集群
+会 fail-closed 拒绝部署。`history`、`rollback`、`fetch`、`install-deno`、`secrets-deploy`
+不做受控执行，不受该门禁约束。
 
 `clusters/production/environments/postgresql/environment.yaml` 只定义一次 PostgreSQL
 的版本、参数、依赖、 脚本和资源。映射中的每个 Environment/App
