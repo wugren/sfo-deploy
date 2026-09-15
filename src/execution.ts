@@ -82,6 +82,8 @@ interface PreparedDeployment {
   readonly session: RemoteSession;
   readonly workspace: string;
   readonly lease: RemoteOperationLease;
+  /** stage-only 部署：计划不含该应用的后续 activate 步骤，stage 完成即视为已提交。 */
+  readonly terminalStage: boolean;
   publications: readonly ManagedConfigPublication[];
   release?: PreparedVersionedRelease;
   systemdBefore?: SystemdState;
@@ -578,11 +580,18 @@ export class DeploymentExecutor {
                 const workspace = await session.createWorkspace(signal);
                 let stagedDeployment: PreparedDeployment | undefined;
                 if (isVersionedPhase(step, "stage")) {
+                  const terminalStage = !plan.steps.some((candidate) =>
+                    candidate.kind === step.kind &&
+                    candidate.machine.machine.name === machineName &&
+                    candidate.resource === step.resource &&
+                    candidate.action === "activate"
+                  );
                   stagedDeployment = {
                     step: prepared.steps.get(step.id)!.step,
                     session,
                     workspace,
                     lease: operationLease!,
+                    terminalStage,
                     publications: [],
                     systemdAttempted: false,
                     serviceAttempted: false,
@@ -817,6 +826,7 @@ export class DeploymentExecutor {
     const step = prepared.step;
     const machine = step.machine.machine;
     const runtime = machine.scriptRuntime;
+    const terminalStage = options.deployment?.terminalStage ?? false;
     const runtimeKey = `${machine.name}\0${runtime.kind}\0${runtime.executable}`;
     const metadataRemote = `${options.workspace}/metadata-${options.index}.json`;
     if (legacySingleVersionedDeploy(step)) {
@@ -1185,7 +1195,7 @@ export class DeploymentExecutor {
                 keepVersions: this.keepVersions,
               }, options.signal);
             }
-            if (systemService !== undefined) {
+            if (systemService !== undefined && !terminalStage) {
               systemdBefore = await inspectSystemd(options.session, systemService, options.signal);
               if (options.deployment) options.deployment.systemdBefore = systemdBefore;
             }
@@ -1416,6 +1426,11 @@ export class DeploymentExecutor {
             message = publications.some((publication) => publication.changed)
               ? "managed config updated"
               : "managed config unchanged";
+          }
+          if (
+            options.deployment !== undefined && terminalStage && status === StepStatus.SUCCEEDED
+          ) {
+            options.deployment.committed = true;
           }
         }
         if (

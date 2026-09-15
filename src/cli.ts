@@ -77,6 +77,7 @@ interface ParsedArguments {
   readonly json: boolean;
   readonly remove: readonly string[];
   readonly check: boolean;
+  readonly activate: boolean;
 }
 
 class ArgumentError extends Error {}
@@ -143,11 +144,12 @@ export function createCli(
         installTo: parsed.installTo,
         removeNames: parsed.remove,
         check: parsed.check,
+        activate: parsed.activate,
       });
       const defaultConfirmMachines = (machines: readonly string[]) =>
         confirmMachineTargets(machines, stdin, stderr);
       const confirmPlan = parsed.yes ? undefined : dependencies.confirmPlan ??
-        ((plan: ExecutionPlan) => confirmExecutionPlan(plan, stdin, stderr));
+        ((plan: ExecutionPlan) => confirmExecutionPlan(plan, stdin, stderr, parsed.activate));
       const confirmMachines = parsed.yes
         ? undefined
         : dependencies.confirmMachines ?? defaultConfirmMachines;
@@ -249,6 +251,7 @@ function parseArguments(args: readonly string[], fixedRoot: boolean): ParsedArgu
   const remove: string[] = [];
   let check = false;
   let json = false;
+  let activate = true;
 
   for (let index = 0; index < args.length; index++) {
     const argument = args[index];
@@ -332,6 +335,10 @@ function parseArguments(args: readonly string[], fixedRoot: boolean): ParsedArgu
         rejectInline(name, inline);
         check = true;
         break;
+      case "--no-activate":
+        rejectInline(name, inline);
+        activate = false;
+        break;
       case "--json":
         rejectInline(name, inline);
         json = true;
@@ -359,6 +366,7 @@ function parseArguments(args: readonly string[], fixedRoot: boolean): ParsedArgu
     installTo,
     remove: Object.freeze(remove),
     check,
+    activate,
     json,
   });
 }
@@ -391,16 +399,18 @@ async function confirmExecutionPlan(
   plan: ExecutionPlan,
   stdin: Reader,
   stderr: Writer,
+  activate: boolean,
 ): Promise<boolean> {
   if (plan.requestedAction === "deploy") {
     const steps = plan.steps.map((step) =>
       `${step.kind}:${step.machine.machine.name}/${step.resource}:${step.action}`
     );
+    const phaseText = activate
+      ? "built-in versioned Apps complete every stage first, then activate"
+      : "activation is skipped: versions are uploaded and deployed without switching latest or restarting";
     await writeText(
       stderr,
-      `Deployment will process ${steps.length} steps (built-in versioned Apps complete every stage first, then activate): ${
-        steps.join(", ")
-      }\n`,
+      `Deployment will process ${steps.length} steps (${phaseText}): ${steps.join(", ")}\n`,
     );
   } else if (plan.requestedAction === "prepare") {
     const targets = [
@@ -556,6 +566,52 @@ async function writeProgressLine(writer: Writer, event: ProgressEvent): Promise<
   }
 }
 
+function planStepDetail(step: import("./types.ts").PlanStep): string[] {
+  const lines: string[] = [];
+  if (step.dependsOn.length > 0) {
+    lines.push(`depends_on: ${step.dependsOn.join(", ")}`);
+  }
+  if (step.package !== undefined) {
+    lines.push(`package: ${step.package.provider}`);
+  }
+  if (step.deployment !== undefined) {
+    lines.push(`deployment: ${step.deployment.kind}`);
+  }
+  const runtime = step.machine.machine.scriptRuntime;
+  lines.push(
+    `runtime: ${runtime.kind}${
+      runtime.executable && runtime.executable !== runtime.kind ? ` (${runtime.executable})` : ""
+    }`,
+  );
+  if (step.scripts.length > 0) {
+    lines.push(`scripts: ${step.scripts.map((invocation) => invocation.relativePath).join(", ")}`);
+  }
+  const secrets = [...step.secretValues, ...step.secretFiles];
+  if (secrets.length > 0) {
+    lines.push(`secrets: ${secrets.join(", ")}`);
+  }
+  const management = step.management;
+  if (management !== undefined) {
+    if (management.manager !== undefined && management.manager.kind === "service") {
+      const manager = management.manager;
+      const enabled = manager.enabled === undefined
+        ? ""
+        : `${manager.enabled ? "enabled" : "disabled"}, `;
+      lines.push(`service: ${manager.unit} (${enabled}on ${manager.onDeploy})`);
+    } else if (management.manager !== undefined && management.manager.kind === "script") {
+      lines.push("manager: script");
+    }
+    if (management.configs.length > 0) {
+      lines.push(
+        `configs: ${
+          management.configs.map((config) => `${config.target} (${config.format})`).join(", ")
+        }`,
+      );
+    }
+  }
+  return lines;
+}
+
 async function writeHumanResult(writer: Writer, result: RunResult): Promise<void> {
   if (result instanceof ValidationResult) {
     await writeText(
@@ -665,11 +721,16 @@ async function writeHumanResult(writer: Writer, result: RunResult): Promise<void
     writer,
     `Plan: cluster ${result.cluster} | action ${result.requestedAction} | ${result.steps.length} steps\n`,
   );
-  for (const step of result.steps) {
+  for (const [index, step] of result.steps.entries()) {
     await writeText(
       writer,
-      `- [${step.machine.machine.name}] ${step.kind}:${step.resource} ${step.action}\n`,
+      `- [${
+        index + 1
+      }/${result.steps.length}] ${step.machine.machine.name} (${step.machine.address}/${step.machine.addressKind}) ${step.kind}:${step.resource} ${step.action}\n`,
     );
+    for (const detail of planStepDetail(step)) {
+      await writeText(writer, `    ${detail}\n`);
+    }
   }
 }
 
@@ -1140,6 +1201,10 @@ const CHECK_OPTION = helpOption(
   "--check",
   "Check secure directory permissions and manifest hashes read-only; write no files",
 );
+const NO_ACTIVATE_OPTION = helpOption(
+  "--no-activate",
+  "Deploy only: upload and stage the new version, but skip switching latest and restarting the service",
+);
 const JSON_OPTION = helpOption(
   "--json",
   "Output results and errors as stable JSON (default: step-by-step human-readable progress)",
@@ -1167,6 +1232,7 @@ const APP_ONLY_OPTIONS: readonly HelpOption[] = Object.freeze([
   APP_OPTION,
   REGION_OPTION,
   ADDRESS_OPTION,
+  NO_ACTIVATE_OPTION,
 ]);
 const ENVIRONMENT_ONLY_OPTIONS: readonly HelpOption[] = Object.freeze([
   MACHINE_OPTION,
@@ -1221,6 +1287,7 @@ const ACTION_HELP: Readonly<Record<CliAction, ActionHelp>> = {
     notes: Object.freeze([
       "Every deployment writes release history; successful results include release_id",
       "Asks for confirmation before execution; automated calls must pass --yes",
+      "--no-activate stages the new version only: it does not switch latest or restart the service",
       "Handle only Apps; use prepare for environments; --environment/--with-dependencies are not supported",
     ]),
   },

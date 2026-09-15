@@ -12,6 +12,12 @@
   system/script；script manager 必需 start/stop/restart；`manager` 缺省表示不管理应用运行。新契约
   没有独立 `check`，与旧顶层 `scripts` 互斥；旧 scripts 行为保持不变。
 - versioned App 的 `install_directory` 是发布根；`latest` 是当前/候选版本选择器。
+- `deploy`/`plan` 支持 `--no-activate`：只执行 stage（新版本落地并发布配置/unit），不切换 `latest`、
+  不写 `<app>.version` 标记、不启动或重启服务。stage-only 执行视为已提交：命令完成后服务与
+  `latest` 保持原状，版本目录与已发布的配置保留在目标机，供后续普通 `deploy` 复用。
+- `plan` 的人可读预览为每个步骤输出序号、目标机解析地址与地址类型、依赖、包提供方、发布方式、
+  脚本相对路径与运行时、声明密钥的逻辑名称以及受管服务/配置信息；缺省字段不输出空行，永不打印
+  密钥值或脚本绝对路径。机器解析请使用稳定的 `--json` 契约。
 - managed file config 支持 `format: nginx`：按 UTF-8 原文发布 Nginx 配置片段，不解析 Nginx DSL，
   不支持 variables 或秘密占位符；Nginx 语法由目标环境校验。
 - managed config `target` 可使用 `${INSTALL_DIRECTORY}/` 表示安装根内的相对路径，

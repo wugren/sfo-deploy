@@ -522,6 +522,52 @@ for (const variant of [{ first: true }, { same: true }]) {
       );
     }));
 }
+Deno.test("dv/093: stage-only deploy does not switch latest, touch the marker, or restart the service", () =>
+  withTempDir(async (root) => {
+    const f = await fixture(root);
+    const plan = { ...f.plan, steps: f.plan.steps.filter((step) => step.action === "stage") };
+    const result = await new DeploymentExecutor(f.transport).execute(plan);
+    assert(
+      result.steps.every((s) => s.status === StepStatus.SUCCEEDED),
+      JSON.stringify(result.steps),
+    );
+    for (const index of [0, 1]) {
+      assertEquals(await Deno.readLink(`${f.installs[index]}/latest`), "v1");
+      assertEquals(
+        await Deno.readTextFile(`${f.installs[index]}/.demo.version`),
+        "v1\n",
+      );
+      assertEquals(
+        await Deno.readTextFile(`${f.installs[index]}/v1/resources/application.yml`),
+        "old\n",
+      );
+      assertEquals(
+        await Deno.readTextFile(`${f.installs[index]}/v2/resources/application.yml`),
+        "value: new\n",
+      );
+      assertEquals(
+        await Deno.readTextFile(`${f.installs[index]}/v2/VERSION`),
+        "v2\n",
+      );
+      assert(
+        !f.events.some((event) => event.includes(`${index}:switch`)),
+        JSON.stringify(f.events),
+      );
+      assert(
+        !f.events.some((event) => event.includes(`${index}:marker`)),
+        JSON.stringify(f.events),
+      );
+      assert(
+        !f.events.some((event) => event.includes("systemctl restart")),
+        JSON.stringify(f.events),
+      );
+      assert(
+        !f.events.some((event) => event.includes("systemctl start")),
+        JSON.stringify(f.events),
+      );
+    }
+  }));
+
 Deno.test("dv/069: explicit configure updates current link target without activation", () =>
   withTempDir(async (root) => {
     const f = await fixture(root, { configure: true, service: false });

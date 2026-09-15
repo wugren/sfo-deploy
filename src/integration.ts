@@ -142,6 +142,8 @@ export interface RunOptionsInit {
   readonly installTo?: string;
   readonly removeNames?: Iterable<string>;
   readonly check?: boolean;
+  /** deploy 是否执行激活阶段（切换 latest 并启动/重启服务）；缺省 true。 */
+  readonly activate?: boolean;
 }
 
 /** Validated, CWD-independent inputs for one framework invocation. */
@@ -160,6 +162,7 @@ export class RunOptions {
   readonly installTo?: string;
   readonly removeNames: readonly string[];
   readonly check: boolean;
+  readonly activate: boolean;
 
   constructor(options: RunOptionsInit) {
     const rawRoot = options.configRoot instanceof URL
@@ -204,6 +207,15 @@ export class RunOptions {
     }
     const check = options.check ?? false;
     if (typeof check !== "boolean") throw new ConfigurationError("check must be a boolean");
+    const activate = options.activate ?? true;
+    if (typeof activate !== "boolean") throw new ConfigurationError("activate must be a boolean");
+    if (
+      !activate && options.action !== "deploy" && options.action !== "plan"
+    ) {
+      throw new ConfigurationError(
+        "--no-activate applies only to deploy and plan",
+      );
+    }
     if (options.action === "secrets-deploy" && check && removeNames.length > 0) {
       throw new ConfigurationError("secrets-deploy --check cannot be combined with --remove");
     }
@@ -300,6 +312,7 @@ export class RunOptions {
     this.installTo = options.installTo;
     this.removeNames = Object.freeze(removeNames);
     this.check = check;
+    this.activate = activate;
     Object.freeze(this);
   }
 
@@ -1105,6 +1118,7 @@ function buildRequestedPlan(
     executorRegion: options.executorRegion,
     addressKind: options.addressKind,
     withDependencies: options.withDependencies,
+    activate: options.activate,
   });
 }
 

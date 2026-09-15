@@ -4,12 +4,13 @@ import {
   assertEquals,
   assertRejects,
   assertStringIncludes,
+  assertThrows,
   BufferWriter,
   withTempDir,
 } from "../_support/assert.ts";
 import { plan, writeCluster } from "../_support/fixtures.ts";
 import { createCli } from "../../src/cli.ts";
-import { CancelledError } from "../../src/errors.ts";
+import { CancelledError, ConfigurationError } from "../../src/errors.ts";
 import { run, RunOptions, ValidationResult } from "../../src/integration.ts";
 import type { Transport } from "../../src/transport.ts";
 import type { ExecutionPlan } from "../../src/types.ts";
@@ -89,6 +90,40 @@ Deno.test("unit/deploy confirm: --yes skips the deploy confirmation", async () =
   assertEquals(await stub.cli(["deploy", "--cluster", "demo", "--yes"]), 0);
   assert(!stub.confirmCalled());
   assertEquals(stub.confirmed(), undefined);
+});
+
+Deno.test("unit/deploy confirm: --no-activate prompts as stage-only deploy", async () => {
+  const declined = deployCliStub(new QueueReader(["n\n"]));
+  assertEquals(await declined.cli(["deploy", "--cluster", "demo", "--no-activate"]), 0);
+  assert(declined.confirmCalled());
+  assertStringIncludes(
+    declined.stderr.text(),
+    "activation is skipped: versions are uploaded and deployed without switching latest or restarting",
+  );
+});
+
+Deno.test("unit/deploy confirm: --no-activate rejects inline values and non-deploy actions", async () => {
+  const inline = deployCliStub(new QueueReader([]));
+  assertEquals(
+    await inline.cli(["deploy", "--cluster", "demo", "--no-activate=true"]),
+    2,
+  );
+  assertStringIncludes(inline.stderr.text(), "does not accept a value");
+
+  await withTempDir(async (root) => {
+    await writeCluster(root);
+    assertThrows(
+      () =>
+        new RunOptions({
+          configRoot: root,
+          cluster: "demo",
+          action: "history",
+          activate: false,
+        }),
+      ConfigurationError,
+      "--no-activate applies only to deploy and plan",
+    );
+  });
 });
 
 Deno.test("unit/deploy confirm: deploy rejects environment and dependency filters", async () => {

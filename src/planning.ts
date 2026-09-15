@@ -182,6 +182,7 @@ export function buildPlan(
     : actionOrRequest;
   const action = request.action;
   const deployAppsOnly = action === "deploy";
+  const activatePhase = request.activate ?? true;
   const machineValues = materialize(request.machines);
   const selectedMachines = new Set(
     machineValues && machineValues.length > 0 ? machineValues : cluster.machines.keys(),
@@ -354,8 +355,7 @@ export function buildPlan(
         ? resource.packageless ? ["configure"] : [
           ...(configStep ? ["configure"] : []),
           "stage",
-          "activate",
-          ...(scriptRestart ? ["restart"] : []),
+          ...(activatePhase ? ["activate", ...(scriptRestart ? ["restart"] : [])] : []),
         ]
         : [action];
       resourceName = resource.name;

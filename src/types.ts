@@ -375,6 +375,8 @@ export interface PlanRequest {
   readonly executorRegion?: string;
   readonly addressKind?: AddressKind;
   readonly withDependencies?: boolean;
+  /** deploy 是否包含激活阶段（切换 latest 并启动/重启服务）；缺省 true。 */
+  readonly activate?: boolean;
 }
 
 export const EMPTY_SCRIPT_PERMISSIONS: ScriptPermissions = Object.freeze({

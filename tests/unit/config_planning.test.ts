@@ -239,3 +239,20 @@ Deno.test("unit/planning: deploy plans apps only and omits environment dependenc
     assertEquals(plan.steps.at(-1)?.dependsOn, ["app:node-a/demo:stage"]);
   });
 });
+
+Deno.test("unit/planning: deploy --no-activate stages only and skips activation", async () => {
+  await withTempDir(async (root) => {
+    const cluster = await loadCluster(await writeCluster(root));
+    const full = buildPlan(cluster, { action: "deploy", apps: ["demo"] });
+    assertEquals(full.steps.map((step) => step.action), ["stage", "activate"]);
+    const staged = buildPlan(cluster, {
+      action: "deploy",
+      apps: ["demo"],
+      activate: false,
+    });
+    assertEquals(staged.steps.map((step) => step.action), ["stage"]);
+    assertEquals(staged.steps.at(-1)?.dependsOn, []);
+    assertEquals(staged.steps[0].machine.machine.name, "node-a");
+    assertEquals(staged.steps[0].resource, "demo");
+  });
+});

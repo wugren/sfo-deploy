@@ -202,6 +202,51 @@ management:
   });
 });
 
+Deno.test("unit/app schema 1: script and file configs plan configure and stage without activation", async () => {
+  await withTempDir(async (root) => {
+    const body = `schema_version: 1
+name: demo
+install_directory: /srv/demo
+deployment:
+  kind: versioned
+configs:
+  - kind: script
+    path: scripts/configure.ts
+    permissions:
+      run: [/usr/bin/test]
+      net: []
+      read: [/etc/demo/input.json]
+      write: [/srv/demo/state]
+  - kind: file
+    source: templates/application.json
+    target: /etc/demo/application.json
+    format: json
+management:
+  run_as: deploy
+  kind: service
+  name: demo.service
+  tool: systemctl
+  daemon_reload: true
+`;
+    const directory = await schemaApp(root, body, [{
+      path: "templates/application.json",
+      content: '{"listen":"127.0.0.1:8080"}\n',
+    }, {
+      path: "scripts/configure.ts",
+      content: "Deno.exit(0);\n",
+    }]);
+    const cluster = await loadCluster(directory);
+    const plan = buildPlan(cluster, {
+      action: "deploy",
+      apps: ["demo"],
+      activate: false,
+    });
+    assertEquals(plan.steps.map((step) => step.action), ["configure", "stage"]);
+    assertEquals(plan.steps[0].scripts[0]?.relativePath, "scripts/configure.ts");
+    assertEquals(plan.steps.at(-1)?.dependsOn, ["app:node-a/demo:configure"]);
+  });
+});
+
 Deno.test("unit/app schema 1: script file permissions fail closed", async () => {
   const cases: readonly [string, string, string][] = [
     [
@@ -390,6 +435,12 @@ management:
     const deploy = buildPlan(cluster, { action: "deploy", apps: ["demo"] });
     assertEquals(deploy.steps.map((step) => step.action), ["stage", "activate", "restart"]);
     assertEquals(deploy.steps.at(-1)?.scripts[0]?.relativePath, "scripts/restart.ts");
+    const staged = buildPlan(cluster, {
+      action: "deploy",
+      apps: ["demo"],
+      activate: false,
+    });
+    assertEquals(staged.steps.map((step) => step.action), ["stage"]);
     const restart = buildPlan(cluster, { action: "restart", apps: ["demo"] });
     assertEquals(restart.steps[0].scripts[0]?.relativePath, "scripts/restart.ts");
   });
