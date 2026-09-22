@@ -24,7 +24,11 @@
 ## 字段与闭合关系
 
 - cluster schema 为 `2`，必需 `name`、`executor_region`、`environments`、`apps`。可按需添加
-  `secrets`；不要在此加入任意业务字段。
+  `secrets` 和 `deployer_version`；不要在此加入任意业务字段。
+- `deployer_version` 可选，必须是非空字符串并与所用 sfo-deploy 的版本精确一致（如当前仓库
+  `deno.json` 的 `"0.1.0"`）；不是范围约束，也不代表 schema 版本。缺省不启用门禁；声明后
+  validate/plan 也会检查，不匹配时在受控操作的 SSH
+  前拒绝。按目标项目所用版本填写，不盲目固定示例值。
 - `environments` 和 `apps`
   都是名称到机器名列表的映射。每个定义必须且仅有一条同名映射；目标非空、无重复、必须存在于
   machines。没有定义时用 `{}`。

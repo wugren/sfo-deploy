@@ -26,10 +26,12 @@ description: 创建和维护 sfo-deploy 集群配置项目，支持初始化集�
 
 先查看目标目录已有配置，再编辑。增量添加只合并相应键，不覆盖其他机器、放置、版本、脚本及注释；同名定义先比对，兼容时补充目标，冲突时呈现具体差异并取得必要输入。读取所有被依赖环境，确认目标机器上实际存在。
 
-以目标项目使用的 sfo-deploy 实现为准。本技能按 v0.1 的 cluster v2、environment/machines/app_versions
-v1 和 app v4 整理；旧 app v2/v3 可以继续保留，添加 app 不意味着迁移所有既有应用。源码可用时核对
-`src/config.ts`、`src/types.ts`、`src/planning.ts` 和 CLI
-帮助；源码与旧教程冲突时遵循源码及实际校验结果。
+以目标项目使用的 sfo-deploy 实现为准。本技能按当前 cluster schema 2 及
+environment/machines/app_versions/app schema 1 整理；旧 App schema 2/3/4 不兼容。若目标项目仍用旧
+App，先明确部署器版本及迁移范围，不能混入当前模板后声称整套配置可用。源码可用时核对
+`src/config.ts`、`src/types.ts`、`src/planning.ts`、`src/execution.ts` 和 CLI
+帮助；源码与旧教程冲突时 遵循实际解析与执行行为。需要锁定部署器时按项目参考声明
+`cluster.yaml.deployer_version`。
 
 缺少不影响其他文件生成的信息时，先生成可审阅部分并列明缺项。实际部署必需的机器、账号、OS/安装方式、服务启动命令、包版本/来源/哈希不能虚构。示例
 IP
@@ -51,13 +53,18 @@ sfo-deploy plan --config-root ./clusters --cluster production
 `deno run --allow-read --allow-env /实际仓库/src/main.ts`。如果 Deno
 依赖尚未缓存，装载源码依赖可能访问网络；这两项动作不连接部署节点。仅当用户授权后才运行其他部署动作。
 
-空集群或仅含 environment 时，validate 应成功；plan 会以配置错误（退出码
-2）报告“过滤条件没有选择任何部署对象”，这是当前没有 app 的预期边界，不应为通过 plan 而添加虚假
+空集群或仅含 environment 时，validate 应成功；plan 会以配置错误（退出码 2）报告
+`The filter selected no deployment targets`，这是当前没有 app 的预期边界，不应为通过 plan 而添加虚假
 app。添加 app 后再要求 plan 成功。
 
-核对 validate 结果、app_versions.yaml 中的版本，以及 plan 中的机器、app 和服务动作（CLI plan
-不展示版本字段）。`plan` 预览 deploy，当前 deploy 不执行环境安装/检查，因此 plan
+核对 validate 结果、app_versions.yaml 中的版本，以及 plan 中的目标地址、依赖、包提供方、发布方式、
+脚本、配置和服务动作。需要机器可读结果时使用
+`plan --json`；不要从人类可读预览推断未展示的版本字段。`plan` 预览 deploy，当前 deploy
+不执行环境安装/检查，因此 plan
 没有环境步骤不代表漏配：还应检查共享环境定义、每机依赖闭合和脚本权限；可用 `deno check`
 检查自包含脚本。不要用 validate/plan 通过证明实际服务可运行、包可下载或环境已安装。
 
 有条件时在临时副本中先验证再合并。失败时修正本次生成内容，保留用户原有文件；若缺少真实输入，准确说明未完成的校验。最后给出产物路径、修改的放置/依赖、实际验证结果及待补部署输入，不只返回配置建议。
+
+`plan --no-activate` 可本地预览非激活部署：带包 App 不切换 `latest`、不写 App 版本标记； 无包 App
+仍交付配置。实际非激活 deploy 均跳过框架管理的服务激活，但配置脚本仍会执行，详见应用参考。

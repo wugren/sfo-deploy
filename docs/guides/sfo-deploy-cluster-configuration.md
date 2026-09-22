@@ -13,6 +13,7 @@ sfo-deploy 把一个集群保存为自包含目录：
 clusters/production/
 ├── cluster.yaml
 ├── machines.yaml
+├── app_versions.yaml
 ├── environments/
 │   └── runtime/
 │       ├── environment.yaml
@@ -23,8 +24,6 @@ clusters/production/
 └── apps/
     └── backend/
         ├── app.yaml
-        ├── scripts/
-        │   └── deploy.ts
         └── templates/
             └── application.ini.tpl
 ```
@@ -34,12 +33,15 @@ clusters/production/
 - `cluster.yaml` 定义集群名称、执行器所在区域，以及 Environment 和 App 分别放置在哪些机器上。
 - `machines.yaml` 定义 SSH 目标和地址，不在这里声明环境。
 - `environments/<环境>/environment.yaml` 集中定义一个 Environment 的安装、配置和生命周期脚本。
-- `apps/<App>/app.yaml` 定义一个可部署 App、包来源、环境依赖和生命周期脚本。
+- `apps/<App>/app.yaml` 定义安装目录、环境依赖、配置交付与服务管理；带包 App 的版本和包来源
+  单独放在集群根 `app_versions.yaml`。
 
-所有 YAML 都采用严格装载：当前 `cluster.yaml` 使用 schema v2，`machines.yaml` 和 `environment.yaml`
-使用 schema v1；新 App 推荐 schema v3，以显式选择内置配置/systemd 管理，旧 App 继续执行 schema v2
-原脚本。`cluster.yaml` schema v1 与 App/YAML schema v1 内联版本已移除，配置必须先迁移到 v2/v3。
-重复键、未知字段、缺少必填字段或不合法路径都会在建立 SSH 连接前失败。
+所有 YAML 都采用严格装载：`cluster.yaml` 使用 schema 2，`machines.yaml`、`environment.yaml`、
+`app_versions.yaml` 和 `app.yaml` 使用 schema 1。旧 cluster schema 1 每机环境布局及旧 App schema
+2/3/4 均不兼容；当前 App schema 1 也不接受旧的内联 version/package。
+重复键、未知字段、缺少必填字段或不合法路径会被拒绝。具体契约以当前
+[`src/config.ts`](../../src/config.ts)、[`src/planning.ts`](../../src/planning.ts) 和 CLI 帮助为准；
+也可使用配套的[集群配置技能](../../skills/sfo-deploy-cluster/SKILL.md)生成配置。
 
 ## 2. 创建集群目录
 
@@ -47,7 +49,6 @@ clusters/production/
 
 ```bash
 mkdir -p clusters/production/environments/runtime/scripts
-mkdir -p clusters/production/apps/backend/scripts
 mkdir -p clusters/production/apps/backend/templates
 ```
 
@@ -116,23 +117,24 @@ machines:
     region: cn-east
     ssh_user: deploy
     ssh_port: 22
-    ssh_private_key: secrets/id_ed25519
+    # 可选：先放置真实私钥文件再启用，省略时沿用 OpenSSH 默认身份选择。
+    # ssh_private_key: secrets/id_ed25519
     deno: /usr/local/bin/deno
 ```
 
 主要字段：
 
-| 字段              | 必填 | 说明                                                                     |
-| ----------------- | ---: | ------------------------------------------------------------------------ |
-| `name`            |   是 | 机器名称，供 `cluster.yaml` 放置映射和 CLI 筛选器引用。                  |
-| `region`          |   是 | 机器所在区域。                                                           |
-| `ssh_user`        |   是 | SSH 登录用户。                                                           |
-| `private_ip`      |   否 | 单个内网 IP 或按优先级排列的非空 IP 列表；同区连接默认选择这一类。       |
-| `public_ip`       |   否 | 单个公网 IP 或按优先级排列的非空 IP 列表；跨区连接默认选择这一类。       |
-| `domains`         |   否 | 与机器关联的描述性域名列表；当前不参与 SSH 地址选择。                    |
-| `ssh_port`        |   否 | 默认 `22`，有效范围为 `1` 到 `65535`。                                   |
-| `ssh_private_key` |   否 | 相对于集群目录的私钥文件路径。                                           |
-| `deno`            |   否 | 远端 Deno 2 命令，默认 `deno`；可填写单个裸命令名或规范绝对 POSIX 路径。 |
+| 字段              | 必填 | 说明                                                                             |
+| ----------------- | ---: | -------------------------------------------------------------------------------- |
+| `name`            |   是 | 机器名称，供 `cluster.yaml` 放置映射和 CLI 筛选器引用。                          |
+| `region`          |   是 | 机器所在区域。                                                                   |
+| `ssh_user`        |   是 | SSH 登录用户。                                                                   |
+| `private_ip`      |   否 | 单个内网 IP 或按优先级排列的非空 IP 列表；同区连接默认选择这一类。               |
+| `public_ip`       |   否 | 单个公网 IP 或按优先级排列的非空 IP 列表；跨区连接默认选择这一类。               |
+| `domains`         |   否 | 与机器关联的描述性域名列表；当前不参与 SSH 地址选择。                            |
+| `ssh_port`        |   否 | 默认 `22`，有效范围为 `1` 到 `65535`。                                           |
+| `ssh_private_key` |   否 | 相对于集群目录的私钥文件路径。                                                   |
+| `deno`            |   否 | 远端 Deno 2 命令，默认 `deno`；可填写 `deno` 或规范绝对 POSIX 路径，不能带参数。 |
 
 如果机器 `region` 与 `executor_region` 相同，计划默认使用 `private_ip`；否则使用 `public_ip`。可以用
 `--executor-region` 或 `--address-kind private|public` 覆盖选择。字段仍兼容原有单个 IP
@@ -141,11 +143,12 @@ public（反之亦然）；所选类别不存在地址时，规划会失败。�
 会在配置加载阶段被拒绝。
 
 `ssh_private_key`
-必须指向本地可读普通文件。不要把真实私钥提交到版本库；应把对应路径加入项目忽略规则，并通过安全渠道放置文件。省略该字段时使用
-SSH agent，不会自动搜索 `~/.ssh` 中的私钥文件。
+必须指向本地可读普通文件。不要把真实私钥提交到版本库；应把对应路径加入项目忽略规则，并通过安全渠道放置文件。省略该字段时沿用
+OpenSSH 默认身份选择，包括 SSH agent、用户 SSH 配置及默认私钥；框架不自行扫描或上传默认私钥。
 
-SSH 主机密钥采用严格校验：目标必须已存在于系统 known-hosts 或传输层显式配置的 known-hosts
-文件中，未知主机密钥会被拒绝。首次部署前应通过可信渠道核对并登记目标指纹。
+SSH 主机密钥采用严格校验：CLI 优先使用集群根 `known_hosts`，否则传输层要求本地 `~/.ssh/known_hosts`
+是可读普通文件（公共 API 也可显式传入文件）。仅有系统全局主机记录不足以
+满足这个文件检查。未知主机密钥会被拒绝；首次部署前应通过可信渠道核对并登记目标指纹。
 
 目标机必须预装 Deno，且主版本不低于
 2。框架在执行新集群的第一个生命周期脚本前预检版本；命令缺失、输出异常或版本过低都会失败关闭。当前
@@ -176,8 +179,9 @@ Deno 安装。自动补齐需要的提权与 `--install-to` 非默认目录相�
 会刷新远端索引），信任边界是 “发行版仓库 + deno.land
 固定版本”；需要更严格供应链控制的环境应手工预装或在部署前 审批软件源变更。
 该动作不写发布历史，也不修改 `machines.yaml`；未写 `deno` 字段时，后续动作默认使用裸 命令
-`deno`。缺省安装到 `/usr/local/bin/deno` 后即可在默认 PATH 中找到；若显式 `--install-to $HOME/.deno`
-或手工安装到非 PATH 目录，则需要把安装目录加入 PATH，或在 `machines[].deno` 中写实际路径。
+`deno`。缺省安装到 `/usr/local/bin/deno` 后即可在默认 PATH 中找到；若显式指定远端绝对安装目录（如
+`--install-to /home/deploy/.deno`） 或手工安装到非 PATH 目录，则需要把安装目录加入 PATH，或在
+`machines[].deno` 中写实际路径。
 
 ## 5. 配置 Environment
 
@@ -265,11 +269,12 @@ manager:
 `install.manager: auto` 按 `apt-get`、`yum` 顺序探测；显式指定 `apt-get` 或 `yum` 时不会自动
 降级。`update_cache: true` 只在实际需要安装时刷新软件源索引。
 
-不需要框架启动应用时，`manager` 可缺省；此时只执行安装。需要应用运行管理时声明 `manager`。
-`manager.kind: system` 的 `tool: auto` 按 `systemctl`、`service` 顺序探测，Ubuntu/Debian 通常命中
-systemctl，CentOS 7 通常命中 service；显式指定工具时缺失即失败。`enabled` 控制目标状态，缺省为
+不需要框架启动应用时，`manager` 可缺省；此时执行安装及已声明的 init。需要应用运行管理时声明
+`manager`。 `manager.kind: system` 的 `tool: auto` 按 `systemctl`、`service` 顺序探测，Ubuntu/Debian
+通常命中 systemctl；CentOS 7 也可能使用
+systemctl，不能仅按发行版名称推断工具。显式指定工具时缺失即失败。`enabled` 控制目标状态，缺省为
 `true`（开机启动），显式 `false` 关闭。`start_after_install: false` 时 `prepare` 会新增独立 `enable`
-步骤，仍把服务设为开机启动但不启动它。
+步骤，按 `enabled` 收敛开机状态（缺省开启、显式 false 关闭），不执行 start/restart。
 
 特殊安装协议和启动协议可以使用脚本方式：
 
@@ -324,19 +329,19 @@ init:
 ```
 
 `prepare` 对新生命周期按
-`install → before_start（如声明）→ start/restart（按 manager 声明）→
-after_start（如声明）`
-的顺序执行：启动前初始配置位于服务启动之前，启动后初始配置位于服务启动/重启
-成功之后。任一初始配置步骤失败都会让该环境实例的 prepare 失败，且不写入环境版本标记；同版本且
-检查通过（up-to-date）时随既有跳过语义一并跳过。显式 `start`/`stop`/`restart` 不执行 `init` 脚本，
-`init` 只属于 `prepare` 安装/更新流程。
+`install → before_start（如声明）→ start/restart 或 enable（按 manager 声明）→ after_start（如声明）`
+的顺序执行：启动前初始配置位于服务启动之前，启动后初始配置位于服务启动/重启 成功之后；若没有 manager
+或只执行 enable，init 仍按声明执行，after_start 并不保证服务已启动。
+任一初始配置步骤失败都会让该环境实例的 prepare 失败，且不写入环境版本标记。新生命周期没有 check，
+不会因为版本标记相同就跳过 install/init；包安装查询是否缺包，脚本安装与 init 必须自行幂等。显式
+`start`/`stop`/`restart` 不执行 `init` 脚本， `init` 只属于 `prepare` 安装/更新流程。
 
 ### 环境脚本
 
-生命周期脚本必须是环境目录内已存在的 `.ts`
-文件。一个动作可以按列表顺序运行多个脚本。每个脚本都是自包含程序，除框架运行时上传的受限 loader
-外不导入 sfo-deploy 源码；纯动作脚本不需要读取 context，需要步骤输入的脚本按第 7
-节在本文件内解析普通 JSON。
+生命周期脚本必须是环境目录内已存在的 `.ts` 文件。旧 `scripts.<动作>` 和 `init` 使用有序调用列表；新
+`install.kind: script` 与 `manager.kind: script` 的每个动作使用单个 `{path, permissions}`
+对象。每个脚本都是自包含程序，除框架运行时上传的受限 loader 外不导入 sfo-deploy
+源码；纯动作脚本不需要读取 context，需要步骤输入的脚本按第 7 节在本文件内解析普通 JSON。
 
 `permissions.run` 的每一项必须是规范绝对 POSIX 可执行路径；空列表表示脚本不能直接启动子进程。
 `permissions.read` 与 `permissions.write` 分别列出 Deno 直接 API 的扩展路径；每项必须是规范绝对
@@ -359,21 +364,25 @@ Deno.exit(result.success ? 0 : 1);
 `scripts/install.ts`：
 
 ```typescript
-await new Deno.Command("/usr/bin/install", {
+const directory = await new Deno.Command("/usr/bin/install", {
   args: ["-d", "-m", "0755", "/opt/example-runtime"],
 }).output();
+if (!directory.success) throw new Error("runtime directory creation failed");
 await Deno.writeTextFile("installed.marker", "installed\n");
-await new Deno.Command("/usr/bin/install", {
+const marker = await new Deno.Command("/usr/bin/install", {
   args: ["-m", "0644", "installed.marker", "/opt/example-runtime/.installed"],
 }).output();
+if (!marker.success) throw new Error("runtime marker install failed");
 ```
 
 `scripts/configure.ts`：
 
 ```typescript
-const context = await readContext(); // 把第 7 节的函数直接定义在本文件中
-const parameters = mapping(context.metadata.parameters, "metadata.parameters");
-if (typeof parameters.version !== "string" || typeof parameters.install_root !== "string") {
+const metadataPath = Deno.env.get("DEPLOYMENT_METADATA_PATH");
+if (!metadataPath) throw new Error("DEPLOYMENT_METADATA_PATH is not set");
+const metadata = JSON.parse(await Deno.readTextFile(metadataPath));
+const parameters = metadata?.parameters;
+if (typeof parameters?.version !== "string" || typeof parameters?.install_root !== "string") {
   throw new Error("runtime parameters are invalid");
 }
 await Deno.writeTextFile("runtime.conf", `version=${parameters.version}\n`);
@@ -390,7 +399,8 @@ if (!result.success) throw new Error("runtime configuration install failed");
 环境没有 `check`，总是执行幂等 `install`；安装脚本本身仍应设计为幂等。
 
 `requires_privilege: true` 会让该环境的所有动作要求远端身份为 root，或能够执行非交互
-`sudo -n`；需要交互输入 sudo 密码的目标会在预检阶段失败。
+`sudo -n`；需要交互输入 sudo 密码的目标会在预检阶段失败。该字段控制环境脚本；内置 package 安装 和
+system 服务操作自行请求提权，不能用 `requires_privilege: false` 禁用它们的提权。
 
 ### 环境应用部署与更新（prepare）
 
@@ -406,11 +416,12 @@ sfo-deploy prepare --config-root ./clusters --cluster production --env jre --mac
 
 旧 `scripts` 环境的序列是：`check` 检查是否已满足；已满足且版本标记一致时整体跳过（不重启）；
 未满足时按需执行 `install`；声明 `configure` 时执行；首次安装成功后自动执行 `start`，版本更新
-成功后自动执行 `restart`；未声明 `start`/`restart` 脚本的环境应用跳过对应步骤并提示，不报错。
+成功后自动执行 `restart`；未声明的 start/restart 不生成对应步骤。
 
 新 `install`/`manager` 环境没有 `check`：总是执行幂等 `install`；声明 `manager` 且
-`start_after_install: true`（或脚本 manager）时，首次安装成功后自动执行 `start`，版本更新成功后
-自动执行 `restart`。缺省 `manager` 不会产生服务动作。
+`start_after_install: true`（或脚本 manager）时，无旧版本标记选择 `start`，已有标记选择 `restart`，
+即使版本字符串相同也一样。缺省 manager 不产生服务动作，init 仍执行；start_after_install 为 false
+时仅收敛 enabled 状态。环境 version 是配方版本，不是系统包管理器自动锁定的软件版本。
 
 框架把 `environment.yaml` 的 `version` 记录到目标机 `~/.sfo-deploy/environments/<环境名>.version`
 作为更新标记；任何步骤失败、阻断或取消都不会更新 标记，下一轮 `prepare`
@@ -418,13 +429,26 @@ sfo-deploy prepare --config-root ./clusters --cluster production --env jre --mac
 
 ## 6. 配置 App
 
-App 目录名必须与 `app.yaml` 的 `name` 一致。带制品 App 每次发版都会变化的安装版本、下载配置
-（provider/source）与版本 hash 统一放在集群根 `app_versions.yaml`，且包始终需要可信哈希。 纯配置型
-App 用 `packageless: true` 显式声明，不需要版本/包，也不出现在 `app_versions.yaml`。App 只使用
-`app.yaml schema_version: 1`；旧 v2/v3/v4 装载会直接失败，必须使用 `app_versions.yaml`
-提供版本记录。
+App 目录名必须与 `app.yaml.name` 一致，使用 `schema_version: 1`。当前 App 字段如下；
+`version`/`package` 不写在 app.yaml，`parameters`/`defaults`、顶层 `scripts`、`templates`、
+`secret_values`/`secret_files`、`updater` 和 hook 均不是当前 App 契约。
 
-创建 `clusters/production/app_versions.yaml`：
+| 字段                | 必填       | 说明                                                             |
+| ------------------- | ---------- | ---------------------------------------------------------------- |
+| `schema_version`    | 是         | 固定为 `1`，旧 App schema 2/3/4 不兼容。                         |
+| `name`              | 是         | 与 App 目录名和放置键一致。                                      |
+| `install_directory` | 带包时必填 | 规范远端绝对 POSIX 路径；无包 App 可选。                         |
+| `mode`              | 否         | versioned 发布树权限，三或四位八进制字符串。                     |
+| `packageless`       | 否         | 缺省 false，true 表示无安装包配置应用。                          |
+| `deployment`        | 否         | 只支持 `kind: versioned`；带包 App 自动启用，无包 App 不得声明。 |
+| `depends_on`        | 否         | 环境依赖，短名指向每台放置机器上的环境。                         |
+| `configs`           | 否         | `kind: file` 或 `kind: script` 的配置条目列表，可混用。          |
+| `management`        | 否         | 单个 `kind: service` 或 `kind: script` 管理器。                  |
+
+### 带包应用：版本、配置和服务
+
+创建 `clusters/production/app_versions.yaml`。以下 URL 和摘要是**待补草稿**，必须先换成真实可信值，
+才能校验交付；不要用全零或随机摘要伪装可部署制品：
 
 ```yaml
 schema_version: 1
@@ -437,10 +461,14 @@ apps:
         url: https://downloads.example.invalid/backend-1.0.0.tar.gz
       hash:
         algorithm: sha256
-        value: 0000000000000000000000000000000000000000000000000000000000000000
+        value: "REPLACE_WITH_TRUSTED_SHA256"
 ```
 
-创建 `clusters/production/apps/backend/app.yaml`：
+`app_versions.yaml` 只列出带包 App，集合必须与带包定义完全一致；缺失记录、多余记录及无包 App
+的版本记录都被拒绝。即使全部 App 都无包，仍需 `schema_version: 1`、`apps: {}` 的版本文件。
+
+创建 `clusters/production/apps/backend/app.yaml`。本例假设 tar.gz 包包含 `bin/server`，该程序接受
+`--config config/application.ini`；必须按实际制品替换这些约定：
 
 ```yaml
 schema_version: 1
@@ -452,7 +480,7 @@ deployment:
 configs:
   - kind: file
     source: templates/application.ini.tpl
-    target: /home/deploy/apps/backend/application.ini
+    target: "${CURRENT_VERSION_DIRECTORY}/config/application.ini"
     owner: deploy
     group: deploy
     mode: "0600"
@@ -470,122 +498,99 @@ management:
   daemon_reload: true
   on_deploy: restart
   timeout_ms: 30000
-```
-
-部署前必须把 URL 和 64 位 SHA-256 示例值替换为真实、可信的值。App 字段如下：
-
-| 字段                | 必填 | 说明                                                    |
-| ------------------- | ---: | ------------------------------------------------------- |
-| `name`              |   是 | 必须与 App 目录名一致。                                 |
-| `install_directory` |   是 | 远端绝对 POSIX 路径，版本目录与 `latest` 软链位于其下。 |
-| `configs`           |   否 | App 配置段列表；每个条目用 `kind: script                |
-| `depends_on`        |   否 | App 在每台放置机器上的环境依赖。                        |
-| `management`        |   否 | 管理器声明；`kind: script                               |
-
-### App schema 1 配置与服务
-
-配置在顶层 `configs`，管理器由 `management.kind` 直接声明。配置条目不声明 `name`，以 `kind`
-表达类型； 受管文件按远端目标路径唯一，配置脚本按 App 内相对脚本路径唯一。
-
-```yaml
-schema_version: 1
-name: backend
-install_directory: /home/deploy/apps/backend
-mode: "0644"
-deployment:
-  kind: versioned
-management:
-  kind: service
-  name: backend.service
-  tool: auto
-  enabled: true
-  daemon_reload: true
-  on_deploy: restart
   unit_config:
     working_directory: latest
     command: bin/server
     args: ["--config", "config/application.ini"]
+    restart_policy: on-failure
+    restart_sec: 5
+    start_limit_interval_sec: 30
+    start_limit_burst: 5
 ```
 
-`kind: file` 支持 YAML、JSON、TOML、INI 和 Nginx 原生纯文本；`kind: script` 是 App 内 TypeScript
-配置脚本，具备 `path` 和 `permissions`，并会在 `configure` 生命周期执行。`format: nginx` 按 UTF-8
-原文发布，不解析 Nginx DSL，也不支持 variables 或秘密占位符。`kind: file` 的
-`on_change: reload|restart` 需要 `management.kind: service`。脚本配置和服务脚本必须幂等；非零退出会
-失败当前步骤。
+创建 `clusters/production/apps/backend/templates/application.ini.tpl`：
 
-`management.kind: service` 使用 `name` 指定服务，`tool: auto|systemctl|service`
-选择发行版工具。`auto` 探测 `systemctl`，没有 systemd 时探测 `service`，可覆盖 Ubuntu/CentOS 常见
-systemd 和旧 SysV 场景。 显式 `systemctl`/`service` 不自动回退。`unit_config` 可选：缺省时只控制已有
-unit；声明时生成并 发布 root/root/0644 的 systemd unit，必须使用 `daemon_reload: true`，且不能与
-`tool: service` 同时 声明。`working_directory` 相对 `install_directory` 解析，也支持与 config target
-相同的三个目录变量：`${INSTALL_DIRECTORY}` 解析为安装根，`${LATEST_DIRECTORY}` 与
-`${CURRENT_VERSION_DIRECTORY}` 在装载期都解析为 `latest` 软链路径（unit 是静态文件，不随候选版本
-重定位，`latest` 在 activate 切换后经软链指向当前版本目录）；变量必须在开头且只出现一次，可用
-`变量/相对后缀`，使用变量时 App 必须声明 `install_directory`。命令相对 working directory 解析为
-`ExecStart` 绝对路径。unit target 缺省为 `/etc/systemd/system/<name>`，文件名必须一致。
+```ini
+[application]
+version = __SFO_CONFIG_VAR_V1_APP_VERSION__
+listen = 0.0.0.0:8080
+```
 
-`management.kind: script` 必须声明 `start`、`stop` 和 `restart` 三个脚本；versioned 内置 deploy 会在
-activate 后执行一次 `restart`。`tool: service` 不提供 daemon-reload 语义，因此禁止 `unit_config` 与
-`daemon_reload: true`；`enabled` 仍可用，SysV 通过 `chkconfig on|off` 收敛开机状态。
+普通部署将包发布到 `<install_directory>/<version>/`，在候选版本中生成配置，再切换 `latest`。
+因此上例配置目标、unit 工作目录和启动参数指向同一版本。框架会在候选版本内创建缺失的配置父目录；
+无法保证其他绝对目标的父目录存在，应由环境准备或运维流程提前建立。
 
-动作所有权仍然是唯一：App 顶层没有 `scripts` 节点。脚本配置只能放在 `configs.kind: script`；
-服务动作只能放在 `management.kind: script` 或 `management.kind: service`。App schema 1 不提供 hook。
+App schema 1 不提供自定义 `scripts.deploy`。配置逻辑使用 `configs.kind: script`，服务逻辑使用
+`management.kind: script`；不能把旧自定义部署协议直接带入新配置。
 
-`deployment.kind` 首版只支持 `versioned`，是带包 App 的内置发布声明；非 packageless App 会自动启用。
-它禁止 packageless。内置 deploy 拆成 `stage` 与 `activate`：stage 建立
-`<install_directory>/<version>/`、写入 `VERSION`， 并发布配置/unit、完成 systemd 的 daemon-reload 和
-enable 准备；所有目标准备成功后，activate 逐目标原子切换
-`<install_directory>/latest`，紧接着执行一次 start（服务未运行）或 restart（服务运行中）。
-切换与服务命令之间不插入标记、配置、清理或其他应用操作。成功后写入 `.<app>.version` 并按
-`keep_versions` 清理旧版本。无服务应用只提交版本。特殊安装/数据迁移仍应保留自定义 `scripts.deploy`。
+### 无包应用与配置脚本
 
-版本内 managed config 的 target 使用 `<install_directory>/latest/` 前缀时，内置 deploy 会将其
-解析到待发布版本目录，例如 `latest/resources/application.yml` 发布到
-`<version>/resources/application.yml`。
-框架会先校验发布根，再在候选版本内逐级创建缺失的目标父目录，并复核真实路径必须位于该版本目录内；
-中间目录必须是普通目录，符号链接逃逸会在切换前拒绝。 其他绝对 target 保持原有位置，显式 configure
-不进行版本重定位或切换。推荐 target 使用
-`'${CURRENT_VERSION_DIRECTORY}/resources/application.yml'`；可用目录变量分别是
-`${INSTALL_DIRECTORY}`（`install_directory` 安装根）、`${CURRENT_VERSION_DIRECTORY}`（当前动作的
-版本目录，deploy 为候选版本，configure 为当前版本）和 `${LATEST_DIRECTORY}`（latest 软链）。
-变量必须位于开头，后面的路径不含 `..`，且 App 必须声明 `install_directory`。旧 `latest/`
-绝对路径写法继续兼容。旧 `${INSTALL_DIRECTORY}` 版本内写法是 breaking 变更，必须迁移到
-`${CURRENT_VERSION_DIRECTORY}`。
+无包 App 通过 `packageless: true` 声明，不提供独立 check，不允许 deployment 或 mode，也没有
+app_versions 记录。示例 `apps/settings/app.yaml`：
 
-旧三阶段 stage/activate/restart 历史计划在执行准备时归一到新的事务，保留步骤标识并跳过多余的
-restart。 更早的单步 versioned deploy 历史计划在连接节点前拒绝执行，需用当前配置重新生成
-stage/activate 计划； 自定义 deploy
-脚本不受此限制。补偿失败时保留恢复所需的工作目录和备份，并在结果中报告，供后续修复。
+```yaml
+schema_version: 1
+name: settings
+packageless: true
+configs:
+  - kind: file
+    source: templates/settings.json
+    target: /home/deploy/settings.json
+    format: json
+    mode: "0600"
+    on_change: none
+```
 
-`packageless: true` App 是显式的配置型 App：不需要版本/包，也不出现在 `app_versions.yaml`
-条目中；`fetch` 会跳过它，`deploy` 请求展开为受管 `configure`。它不提供独立 `check`，配置只能由 顶层
-`configs` 拥有，不能声明 `deploy` 或 `deployment`。 packageless App 可显式声明
-`install_directory`。当前 Multipass 示例没有独立 nginx App；jx-web 的 versioned stage直接发布 Nginx
-server 片段，并在配置变化后 reload `nginx.service`。
+相应 `apps/settings/templates/settings.json`：
 
-### 配置占位符与安全边界
+```json
+{
+  "log_level": "info"
+}
+```
 
-App schema 1 的 `management` 不再存在 `run_as` 或 `access_group`：部署、解包、内置
-stage/activate、配置渲染与发布、systemd 控制、App 生命周期脚本全部以机器的 SSH 登录用户
-（`machines.yaml.ssh_user`）执行。root SSH 时这些操作本来就是 root；非 root SSH 时框架只在系统
-原语上使用非交互 `sudo -n` 提权，不再切换到第二个账号。发布根 `<install_directory>` 由 SSH 身份
-创建并拥有（`install -d -m 0750 -o <ssh_user>`），脚本不再注入或覆盖 `HOME`。
+按需在 `cluster.yaml.apps` 添加 `settings: [app-01]`，确保 `/home/deploy` 已存在。此例不管理服务；
+省略 management 不会丢弃配置。`deploy` 为无包 App 生成 configure 步骤，fetch 跳过它。
 
-versioned App 可在根节点声明可选 `mode`（三或四位八进制字符串，拒绝 setuid/setgid/sticky）。声明后
-框架在候选版本提交前收敛发布根与版本树：`<install_directory>` 执行一次 `chmod`，
-`<install_directory>/<version>` 递归收敛。声明值按文件模式解释，目录与被标记为可执行的文件按 `X`
-语义获得穿越/执行位：例如 `mode: "0644"` 得到“普通文件 0644、目录 0755、原本可执行文件保留执行位”。
-未声明时发布根保持 `0750`，不执行递归收敛。`mode` 只允许出现在有 `install_directory` 的 versioned
-App 上。
+配置脚本条目使用 App 内现有的 `.ts` 文件及权限声明：
 
-框架生成的 systemd unit 使用 `unit_config.user` 作为 `User=`；未声明时取 SSH 登录用户，SSH 用户为
-`root` 且未声明时准备阶段 fail closed。显式 `user` 与 SSH 用户不同时必须先通过 `id -u` 校验该账号
-存在且非 root。管理既有 unit（如 `nginx.service`）时框架不改写其运行用户。
+```yaml
+configs:
+  - kind: script
+    path: scripts/configure.ts
+    permissions:
+      run: []
+      net: []
+      read: [/home/deploy/input]
+      write: [/home/deploy/output]
+```
 
-每个 `configs` 的 `kind: file` 条目必须声明 App 目录内的 `source`、规范远端绝对 `target`、
-`format`，不声明 `name`；`owner`/`group` 可选，`mode` 默认为 `"0600"`，且必须允许 owner
-读取、不能包含执行位或 group/other 写权限。`on_change` 可取 `none`、`reload`、`restart`。可选
-validator 使用固定 argv，`{candidate}` 必须且只能作为一个独立参数：
+这是需要配套真实脚本的声明片段。file 和 script 条目可以混用；脚本按声明顺序执行，文件由框架统一
+发布。配置脚本必须幂等，非零退出会使当前步骤失败。versioned App 的配置脚本在 stage 前的 configure
+运行，不能假定新包此时已经展开。无包 App 的参数为空，不凭空引用 version 或自定义 parameters。
+
+### Managed 配置、目录变量与占位符
+
+每个 file 条目必填 source、target、format，不声明 name。source 是 App 内可读文件；target 是规范
+远端绝对路径，或以下变量加相对路径。变量只能在开头，不能包含 `..`，使用变量必须声明
+install_directory。
+
+| 变量                           | 含义                                                      |
+| ------------------------------ | --------------------------------------------------------- |
+| `${INSTALL_DIRECTORY}`         | 安装根，不自动重定位到版本目录。                          |
+| `${CURRENT_VERSION_DIRECTORY}` | 当前动作的版本目录，deploy 为候选版本。                   |
+| `${LATEST_DIRECTORY}`          | latest 路径；deploy/rollback 的配置发布会定位到对应版本。 |
+
+旧绝对 `<install_directory>/latest/` 前缀仍会重定位；其他绝对 target 保持原位置。框架校验真实路径，
+拒绝符号链接逃逸或越界，不能靠变量绕过发布根检查。
+
+format 支持 yaml/json/toml/ini/nginx。结构化源配置会生成无秘密骨架，由框架携带的离线渲染器在目标机
+注入当前秘密并重新解析后发布；`format: nginx` 按 UTF-8 原文发布，不解析 Nginx DSL，不支持 variables
+或秘密占位符，语法需通过实际 Nginx validator 检查。
+
+owner/group 可选；文件 mode 缺省 `"0600"`，必须允许 owner 读取，不允许执行位或 group/other 写权限。
+`on_change` 可取 none/reload/restart，后两者必须有 service 管理器。可选 validator 使用固定 argv，
+首项为绝对可执行路径，且必须恰有一个独立 `{candidate}` 参数，例如：
 
 ```yaml
 validator:
@@ -593,15 +598,9 @@ validator:
   timeout_ms: 10000
 ```
 
-控制端会解析 YAML/JSON/TOML/INI 源文件并生成规范化、无秘密配置骨架；`format: nginx` 只验证 UTF-8、
-框架保留标记和 `${...}` 占位符后保留原文。目标端所需 parser 会编译成 单文件载荷随外层 bundle
-固定交付，以 `--no-remote --no-npm` 离线执行；结构化配置秘密注入后必须按
-声明格式完整复解析成功才能发布，不会降级为 marker 检查。普通参数占位符使用
-`__SFO_CONFIG_VAR_V1_<NAME>__`，必须独占一个完整值，并由 `variables[].path` 从步骤参数读取。带包 App
-常用 `[version]`；packageless App 的参数为空，不能凭空引用自定义参数。秘密占位符直接写在源配置值中，
-不能自行写 `__SFO_SECRET_...` 保留 marker。
-
-秘密引用直接写在配置值中：
+普通变量使用 `__SFO_CONFIG_VAR_V1_<NAME>__`，独占完整值，并用 variables 的 path 从步骤参数绑定。
+带包 App 可绑定 `[version]`；不要手写内部 `__SFO_SECRET_...` marker。 秘密直接写
+`${SECRET_NAME}`，必须在 cluster.yaml 声明类型和目标机器：
 
 ```yaml
 database:
@@ -609,92 +608,68 @@ database:
 api:
   retry_limit: ${API_RETRY_LIMIT}
 tls:
-  key: ${TLS_CERTIFICATE}
+  key: ${HTTPS_PRIVATE_KEY}
 ```
 
-`cluster.yaml.secrets` 是类型与放置授权的唯一声明点。`kind: value` 的 `type` 可选并缺省
-`string`；可声明 `integer`、`number` 或 `boolean`。整值占位符按声明类型注入；嵌入字符串里的
-占位符只做字符串替换。`kind: file` 固定注入 `secrets-deploy` 部署后的稳定文件路径，不能声明
-`type`。占位符名称必须匹配 `[A-Z][A-Z0-9_]*`；未声明、未放置、类型不匹配、非法语法、非法 UTF-8、
-危险目标或残留框架 marker 都会失败关闭。
+value 秘密整值按声明的 string/boolean/integer/number 类型注入。只有 string 类型可嵌入字符串；
+boolean/integer/number 必须独占完整值，否则拒绝生成配置。 file 秘密注入 secrets-deploy
+后的稳定文件路径。非法占位符、缺少声明、放置不符或类型不匹配都会失败。 不支持的文本格式可由 configs
+脚本处理，不使用已移除的 updater 或 templates 字段。
 
-已移除的 `updater.type: script/template` 不再是新契约；含 `updater` 的配置装载时定向拒收。 除
-`format: nginx` 外，其他自定义文本格式请迁移到受支持结构化格式，或保持 legacy 脚本模式。
+### 服务管理与部署身份
 
-### systemd 与动作所有权
+service 管理器的 name 必须是合法的 `.service` 名称。tool 为 auto/systemctl/service；auto 依次探测
+systemctl、service，显式工具缺失即失败。省略 unit_config 时控制既有服务，不改写其运行用户。 声明
+unit_config 时生成 root/root/0644 的 unit，必须 daemon_reload: true，tool 不能是 service。 unit
+target 缺省 `/etc/systemd/system/<name>`，文件名必须与 name 一致。
 
-`management.kind: service` 只接受合法服务名和 `tool: auto|systemctl|service`。`enabled` 缺省为
-`true`，即部署后服务开机启动；显式 `enabled: false` 关闭。systemd 走 `systemctl enable|disable`，
-SysV 走 `chkconfig on|off`。`daemon_reload` 只适用于 `systemctl`。`on_deploy` 可取 `none`、`start`、
-`reload`、`restart`。缺省 `enabled: true` 只收敛开机状态，不覆盖 `on_deploy`/`on_change`；只有显式
-`enabled: true` 才保留“部署时按当前 active 状态 start/restart”的覆盖行为。框架经 root/`sudo -n`
-探测并收敛状态。 显式 CLI `start`/`stop`/`restart` 映射到对应服务动作。
+unit 的 working_directory 相对 install_directory 解析，也支持三个目录变量；在 unit 中 current 和
+latest 都解析为静态 latest 软链路径。command 必须包含 `/`，可以是相对该工作目录的路径或绝对路径；
+args 为字面值数组，不是 shell 命令。restart_policy、restart_sec、start_limit_interval_sec 和
+start_limit_burst 只影响框架生成的 unit，分别对应 systemd 的崩溃重启和启动频率限制指令。
 
-同一个 App 不能让两个实现拥有同一动作：App 顶层 `scripts` 已移除。服务动作只由 `management.kind`
-拥有。一次操作有多个配置变化时，框架最多通知 systemd 一次，`restart` 优先于 `reload`；所有配置
-unchanged 时不因 `on_change` 触发服务动作。
+enabled 缺省 true，systemd 用 enable/disable，SysV 用 chkconfig on/off 收敛开机状态。 on_deploy 可选
+none/start/reload/restart，缺省 none；缺省 enabled 不覆盖 on_deploy/on_change。 versioned App 显式
+enabled: true 时按原服务状态覆盖为 start/restart。无包 App deploy 走 configure， 按实际配置变化的
+on_change 决定服务动作，不能依赖 on_deploy。多个配置变化最多合并一次服务通知， restart 优先于
+reload；配置不变不触发 on_change。`--no-activate` 则跳过这些受管服务动作。
 
-`app_versions.yaml` 与 app 目录必须完整闭合：缺失/多余 App 条目、未知字段、非法 version 或 hash
-都会在 SSH 前失败。`app_versions.yaml` 的 `version` 经装载合并到 App 定义后作为唯一版本来源传给
-部署脚本或内置 versioned release。
+脚本管理器必须声明三个单调用对象，不是脚本列表：
 
-创建模板 `clusters/production/apps/backend/templates/application.ini.tpl`：
-
-```ini
-[application]
-version = __SFO_CONFIG_VAR_V1_APP_VERSION__
-listen = 0.0.0.0:8080
-data_dir = /home/deploy/apps/backend/data
-[database]
-password = replace-on-target
+```yaml
+management:
+  kind: script
+  start:
+    path: scripts/start.ts
+    permissions: { run: [/usr/bin/systemctl], net: [] }
+  stop:
+    path: scripts/stop.ts
+    permissions: { run: [/usr/bin/systemctl], net: [] }
+  restart:
+    path: scripts/restart.ts
+    permissions: { run: [/usr/bin/systemctl], net: [] }
 ```
 
-只有特殊安装协议才需要创建 `scripts/deploy.ts`。普通带包 App 使用内置发布；自定义脚本仍然消费：
+相应脚本须真实存在并实现需要的动作；versioned 普通 deploy 在 activate 后执行脚本 restart。 同一个
+App 最多一个管理器，不能同时声明 service 和 script。
+
+部署、解包、发布树与 App 脚本统一使用机器 SSH 身份，不支持 run_as/access_group，也没有 App
+requires_privilege 开关。root SSH 会以 root 运行脚本；非 root SSH 只在框架系统原语上使用非交互
+sudo， 配置脚本不自动获得 root。生成的 unit 可用非 root `unit_config.user` 指定服务账号，缺省取 SSH
+用户； root SSH 时必须显式给出存在的非 root
+服务账号，否则准备阶段失败。服务账号还需能读取配置、穿越发布根。
+
+versioned 根级 mode 为三或四位八进制字符串，拒绝特殊权限位。声明后收敛发布根和版本树：普通文件按
+声明值，目录与已有可执行文件按 `X` 语义补执行位；如 `"0644"` 得到普通文件 0644、目录 0755。
+未声明时发布根保持 0750，不递归改权限。给其他服务账号开放权限前，应确认包中不含应保持私有的内容。
+
+## 7. 脚本元数据与秘密 loader
+
+每个脚本自包含，不导入本机 sfo-deploy 源码或任意兄弟模块。框架通过 `DEPLOYMENT_METADATA_PATH` 提供
+mode 0600 的普通 JSON，顶层就是步骤信息，没有额外 context.metadata 包装，也不含秘密值。
+需要输入的脚本可内置以下读取函数：
 
 ```typescript
-const context = await readContext(); // 把第 7 节的函数直接定义在本文件中
-const packageRoot = context.metadata.package_path;
-if (typeof packageRoot !== "string") throw new Error("package was not supplied");
-if (context.metadata.package_kind !== "validated-directory") {
-  throw new Error("managed deploy requires a framework-validated package directory");
-}
-// packageRoot 是框架在完整验证内层 tar 后生成的隔离解压目录；从中构建版本布局，与集群脚本、渲染配置、
-// 版本元数据重新打包为真实安装包，发布到 ~/.sfo-deploy/apps/<version>/ 版本目录并切换 latest。
-```
-
-App 可执行包必须是 tar.gz：fetch 与部署准备阶段框架都会校验 gzip 魔数，非 gzip 包在 SSH 前失败。
-managed App 在目标机执行脚本前，由框架列举内层 tar，拒绝绝对/非规范路径、链接、设备等非
-regular/directory 类型、重复成员、成员数或总展开大小超限，再解压到 attempt 隔离目录。legacy
-非-managed App 仍收到原始 tar.gz，并继续自行做哈希和归档安全检查。版本目录
-`<install_directory>/<version>/` 自包含解压后内容、该版本渲染配置、集群脚本与版本元数据，
-`<install_directory>/latest` 软链指向最新版本，systemd 从 `latest` 启动，健康检查失败时重建 `latest`
-到上一版本。
-
-legacy App 脚本默认以 SSH 用户权限执行；managed App 脚本同样以 SSH 用户身份执行（不再切换到
-`run_as`）。App 没有环境的 `requires_privilege`
-开关。需要写系统目录时，应在机器初始化阶段建立明确的用户、目录和权限边界， 不要在 App 脚本中假定拥有
-root 权限。若 Deno 直接 API 需要访问 workspace 之外的持久数据，必须在
-`permissions.read`/`permissions.write` 中精确授权；涉及系统目录或特权操作时，仍应通过经过审查且在
-`permissions.run` 中声明的子进程完成。
-
-## 7. 秘密装载与步骤元数据
-
-旧生命周期脚本不会获得完整 sfo-deploy 源码。框架在开启秘密交付的脚本步骤（哪些步骤开启见第 9
-节）把本机 `cluster.yaml.secrets` 已声明放置秘密的受限副本放进 0700 workspace 的 `secrets/`
-子目录，并只注入 `DEPLOYMENT_SECRETS_DIR`；秘密副本目录的内容是机器范围集合（本机全部已声明
-秘密，值与文件分集），不是某个 App 或脚本单独声明的子集。同一目录里还有上传好的
-`sfo-secret-loader.ts`。loader 文件只存在于上传后的远端
-workspace，集群目录不得定义或复制它。脚本用与自身同目录的相对导入取得 loader，再按名读取密钥；
-`loadSecrets` 的 `values`/`files` 参数只是读取过滤器，名称必须真实存在于副本目录中，不构成新的
-声明面。秘密副本目录不存在的步骤不得读取 `DEPLOYMENT_SECRETS_DIR`。
-非秘密步骤元数据（模板远端路径、包路径、安装目录、参数、动作等）由 `DEPLOYMENT_METADATA_PATH` 指向的
-mode `0600` JSON 提供。App schema 1 的受管配置不走这套模板渲染逻辑，而是把版本固定的
-`sfo-config-updater.ts` 放入单部署包，由框架以更窄权限直接调用。例如旧脚本模式：
-
-```typescript
-// sfo-secret-loader.ts 由 sfo-deploy 在脚本步骤上传到同一 workspace。
-import { loadSecrets } from "./sfo-secret-loader.ts";
-
 type JsonObject = Record<string, unknown>;
 
 function mapping(value: unknown, label: string): JsonObject {
@@ -710,55 +685,45 @@ async function readMetadata(): Promise<JsonObject> {
   return mapping(JSON.parse(await Deno.readTextFile(path)), "step metadata");
 }
 
-const secretsDir = Deno.env.get("DEPLOYMENT_SECRETS_DIR");
-if (!secretsDir) throw new Error("DEPLOYMENT_SECRETS_DIR is not set");
-const secrets = await loadSecrets({
-  dir: secretsDir,
-  values: ["DB_PASSWORD"],
-  files: ["TLS_SERVER_KEY"],
-});
-
-function render(template: string, values: Readonly<Record<string, string>>): string {
-  return template.replace(
-    /\$\$|\$\{([A-Z][A-Z0-9_]*)\}|\$([A-Z][A-Z0-9_]*)/g,
-    (token, braced, plain) => {
-      if (token === "$$") return "$";
-      const value = values[braced ?? plain];
-      if (typeof value !== "string") throw new Error("template secret was not supplied");
-      return value;
-    },
-  );
-}
-
 const metadata = await readMetadata();
-const templates = mapping(metadata.templates, "step metadata templates");
+const parameters = mapping(metadata.parameters, "parameters");
 ```
 
-这是协议示例，不是新的共享 SDK；每个生命周期脚本应内置适合自身输入的解析逻辑，并继续严格校验实际
-消费的 metadata 字段类型。值密钥由 `loadSecrets().values` 返回非空字符串；文件密钥由
-`loadSecrets().files` 返回副本内的受限绝对路径，脚本按需以只读方式打开。纯动作脚本无需复制这段代码。
+常用字段：
 
-`DEPLOYMENT_METADATA_PATH` 指向的 JSON 只含普通数据，不含任何秘密。常用字段包括：
+| 字段                                    | 出现条件             | 内容                                                              |
+| --------------------------------------- | -------------------- | ----------------------------------------------------------------- |
+| `machine`、`kind`、`resource`、`action` | 所有脚本步骤         | 机器、资源种类、资源名及当前动作。                                |
+| `parameters`                            | 所有脚本步骤         | 环境合并参数，带包 App 的 version，或无包 App 的空对象。          |
+| `install_directory`                     | App 步骤有安装目录时 | 远端安装根；不要假定配置脚本已处于候选版本。                      |
+| `package_path`、`package_hash`          | 当前步骤实际交付包时 | 临时包路径及摘要；环境 install 可按需使用，不是配置脚本必有字段。 |
 
-| 字段           | 出现条件                          | 内容                                                                      |
-| -------------- | --------------------------------- | ------------------------------------------------------------------------- |
-| `machine`      | 所有步骤                          | 当前机器名。                                                              |
-| `kind`         | 所有步骤                          | `environment` 或 `app`。                                                  |
-| `resource`     | 所有步骤                          | 当前环境或 App 名称。                                                     |
-| `action`       | 所有步骤                          | 当前生命周期动作。                                                        |
-| `parameters`   | 所有步骤                          | 环境合并参数，或 App 的 `version`。                                       |
-| `package_path` | 环境 `install`、带包 App `deploy` | managed App 为框架安全验证后的隔离解压目录；legacy App/环境为临时包路径。 |
-| `package_kind` | 带包 managed App `deploy`         | 固定为 `validated-directory`；用于与 legacy tar.gz 元数据区分。           |
-| `templates`    | 仅 legacy/回滚步骤                | 顶层 `templates` 字段已移除；该映射恒为空，仅为兼容旧发布快照执行保留。   |
+当前 App 没有自定义 deploy；内置 stage/activate 的私有元数据不是扩展 API。顶层 templates 已移除，
+不要依赖 metadata.templates 自动上传业务模板；受管文件用 configs.file，脚本需要的普通输入须按
+实际交付机制准备。
 
-每个脚本步骤都有独立的远端资源工作区；声明的脚本、步骤元数据、秘密副本、模板和包只在该步骤中可见，步骤成功或失败后都会清理。
-工作区中没有 `sfo_deploy.ts`；除受限 loader 外，也没有其它框架源码。Deno 始终获准直接读写
-workspace，并可通过 `permissions.read`/`permissions.write` 追加精确路径；默认拒绝网络和 FFI。
-未授权路径不能写入或删除。需要把包、配置或数据复制到未授权持久目录时，使用已声明的子进程。
+脚本需要秘密时，使用框架上传的 `./sfo-secret-loader.ts`；不要把它复制到集群或导入本机源码。
+仅有秘密可用的步骤才有 loader 和 `DEPLOYMENT_SECRETS_DIR`。下例需要本机声明并已投递的两个秘密：
 
-该权限边界只限制 Deno 直接 API。`permissions.run` 允许的原生子进程以目标机运行身份执行，不继承 Deno
-的文件或网络限制；因此它不是针对恶意脚本的 OS 级沙箱，不能替代容器、namespace、seccomp
-或独立低权限账号。
+```typescript
+import { loadSecrets } from "./sfo-secret-loader.ts";
+
+const dir = Deno.env.get("DEPLOYMENT_SECRETS_DIR");
+if (!dir) throw new Error("DEPLOYMENT_SECRETS_DIR is not set");
+const secrets = await loadSecrets({
+  dir,
+  values: ["DB_PASSWORD"],
+  files: ["HTTPS_PRIVATE_KEY"],
+});
+```
+
+values 返回非空字符串，files 返回当前秘密副本内的受限绝对路径。values/files 是读取过滤器，不是
+秘密授权声明；声明与放置只在 cluster.yaml。副本会被清理，不能把其临时路径交给后续常驻服务；
+持久配置应使用受管文件中的 file 秘密稳定路径，或由授权脚本明确交付文件。
+
+workspace 始终允许 Deno 读写，额外路径通过 permissions.read/write 授权；默认拒绝网络和 FFI。
+permissions.run 只限制允许启动的程序，原生子进程不继承 Deno 文件/网络限制。这不是 OS 级沙箱。
+脚本只应请求必要权限，不打印秘密；工作区成功或失败后会清理，恢复失败时可能保留供排障。
 
 ## 8. 配置包来源
 
@@ -811,8 +776,9 @@ packages_dir: /data/sfo-deploy/packages
 ```
 
 `deploy` 只从该缓存取包，缺少目标包时在预检期失败（退出码 3）并提示先运行 `fetch`，不会连接远端或
-创建发布记录。`install`/`rollback` 等动作缓存优先，缓存缺失时仍按原 source 下载并回填缓存；回退旧
-版本仍要求原制品源可访问。
+创建发布记录。环境 `prepare` 需要的下载包和 `rollback` 使用缓存优先策略，缓存缺失时按原 source
+下载并回填。 缓存命中不要求制品源在线；为未来缓存缺失时可恢复，仍应保留原制品源。CLI 没有独立
+install 命令。
 
 App 可执行包必须是 tar.gz：fetch 与部署准备阶段都会校验 gzip 魔数。首次 SSH 前，框架固定本地缓存的
 原始包并生成所有 managed 配置骨架，再把原始包、声明脚本、骨架/绑定和普通文件连同 `manifest.json`
@@ -824,65 +790,76 @@ App 可执行包必须是 tar.gz：fetch 与部署准备阶段都会校验 gzip 
 完整通过并写入 ready 标记后才允许 deploy/渲染器消费。相同 workspace 与 bundle digest 可直接复用已
 验证内容。执行阶段不会再次调用 package provider。秘密永远不进入部署包、manifest 或控制端骨架；每个
 值秘密按配置引用复制到独立 0700 目录（文件 0600）并在调用后清理；文件秘密只暴露 `secrets-deploy`
-后的稳定路径。lifecycle/hook 仍只复制第 9 节描述的机器范围步骤集合，不会在消费者之间复用目录。
+后的稳定路径。用户配置/服务脚本按第 9 节的机器范围规则获得秘密副本，不能复用已清理的目录。
 
-内置 versioned release 在 stage 建立版本目录并发布配置，在 activate 切换最新版本并启动服务； 自定义
-deploy 脚本按 App 安装协议消费该目录；legacy deploy 脚本继续取得原始 tar.gz。managed
-配置则由框架固定渲染器 在节点注入当前秘密、生成候选并单独原子发布，两者职责不要混淆。
+内置 versioned release 在 stage 建立版本目录并发布配置，在普通 activate 切换版本并按服务策略收敛。
+受管配置由框架渲染器注入当前秘密、生成候选并发布，不需要项目提供自定义 deploy 或渲染库。
+包必须包含真实启动入口，归档路径、链接和成员类型由框架检查；脚本不负责替代内置安全解包。
 
 旧版本自动清理由用户配置 `~/.sfo-deploy/config.yaml` 的 `keep_versions` 控制（默认 5，范围
 1-100）。内置版本部署仅在服务与版本标记提交成功后清理：始终保留当前版本，再按目录修改时间保留
 其他较新版本，合计最多 N 个。只识别包含匹配 `VERSION` 普通文件的版本目录，保留 logs 等普通目录。
 同版本成功提交也会执行此保留策略；准备失败或补偿路径不清理旧版本。清理失败单独报告，已删除版本不可回滚。
 
-## 9. 配置秘密、放置与秘密装载
+## 9. 配置秘密与显式投递
 
-部署 YAML 只声明秘密的逻辑名称、类型和放置目标，不保存秘密值。密钥名称必须匹配大写字母开头的
-`A-Z0-9_` 标识。真实来源保存在集群目录内的未提交 `secrets.yaml`，顶层键直接使用密钥名，不添加
-`secrets:` 包装层：
-
-```yaml
-DB_PASSWORD: "local-only-value"
-HTTPS_PRIVATE_KEY: "files/server.key"
-```
-
-`cluster.yaml` 中的 `kind` 决定解释方式：`value` 是秘密字符串；`file` 是本地源文件路径。文件路径
-相对于 `secrets.yaml` 所在目录解析，必须是集群目录内的相对 POSIX 路径，禁止 `..` 和符号链接逃逸。
-该文件权限必须是 `0600`，并且不应提交到版本控制。
-
-每个密钥必须在集群根 `cluster.yaml` 的 `secrets:` 显式声明放置机器（具体名称列表或通配符 `*`），
-否则默认不部署到任何节点；未声明的密钥不会被 `secrets-deploy` 部署：
+秘密的唯一声明点是 cluster.yaml.secrets。名称须匹配 `[A-Z][A-Z0-9_]*`，machines 是已声明机器列表
+或字符串 `"*"`；引用秘密的配置必须放置在有对应授权的机器上。以下为可选功能片段，主示例不依赖秘密：
 
 ```yaml
 secrets:
   DB_PASSWORD:
     kind: value
     machines: [app-01]
+  API_RETRY_LIMIT:
+    kind: value
+    type: integer
+    machines: [app-01]
   HTTPS_PRIVATE_KEY:
     kind: file
     machines: "*"
 ```
 
-通用 CLI 会在部署时自动读取 `<cluster-directory>/secrets.yaml`。随后运行
-`sfo-deploy secrets-deploy --config-root ./clusters --cluster production`
-把密钥部署到目标机器。重复执行 幂等；`--machine` 与放置声明相交，`--check`
-只读校验目录权限与清单哈希并报告缺失/漂移/extra， `--remove NAME` 显式移除；后两者不要求
-`secrets.yaml`。若集群目录存在 `known_hosts`，CLI 自动使用它。 安全目录默认
-`~/.sfo-deploy/secrets/`（0700，文件 0600），可在 `machines.yaml` 按机器用 `secrets_dir` 覆盖。
+value 可声明 type:string/boolean/integer/number，缺省 string；file 不接受 type。真实来源放在集群根
+未提交的 secrets.yaml，顶层直接映射名称，不加 secrets 包装。下面仍是待替换示例：
 
-脚本在开启秘密交付的步骤（环境 `configure`、App `configure`/`deploy` 及含 hook 的动作） 通过 loader
-读取本机 `cluster.yaml.secrets` 已声明放置的全部秘密；值密钥返回非空字符串，
-文件密钥返回副本内受限绝对路径（脚本以只读方式自行打开）。框架不解释模板内容，也不再提供远端
-`renderTemplate()`；如果项目约定 `$DB_PASSWORD`、`${DB_PASSWORD}` 和 `$$`，替换、未知占位符拒绝、
-临时文件原子写入和 mode `0600`
-都由自包含脚本实现。持久目标目录、最终所有者和后续权限仍由项目脚本通过 显式白名单子进程负责。仓库
-Multipass 示例展示了保留这些行为的文件内实现。
+```yaml
+DB_PASSWORD: "REPLACE_WITH_REAL_SECRET"
+API_RETRY_LIMIT: "3"
+HTTPS_PRIVATE_KEY: "secret-files/server.key"
+```
 
-`secrets-deploy` 在部署前要求 `secrets.yaml` 覆盖 `cluster.yaml.secrets`
-中的每个密钥；缺失来源、未知 密钥、重复键、路径逃逸或不可读文件都会在 SSH
-前失败关闭（执行脚本步骤时提示先运行
-`secrets-deploy`）。需要动态生成值或从自定义存储读取来源的项目，仍可通过公共 TypeScript API 的
-`createCli()` 与 `ProjectBindings` 构造显式绑定入口。
+来源必须恰好覆盖声明：缺失、多余名称、重复键或非字符串都会被拒绝。即使 type 为 integer/boolean，
+来源也须为带引号的非空字符串，之后按类型校验。file 来源须是集群内可读文件的相对 POSIX 路径， 禁止
+`..`、绝对路径和符号链接逃逸。secrets.yaml 权限必须为 0600，真实私钥和秘密不要提交版本库。 可在项目
+`.gitignore` 合并：
+
+```gitignore
+**/secrets.yaml
+**/secrets/
+**/secret-files/
+**/.sfo-deploy/
+```
+
+先创建真实来源文件并收紧权限，再**显式**投递：
+
+```bash
+chmod 600 clusters/production/secrets.yaml
+sfo-deploy secrets-deploy --config-root ./clusters --cluster production
+```
+
+普通 deploy/prepare 不会自动读取 secrets.yaml 并部署密钥，它们消费远端已投递的秘密。 secrets-deploy
+重复执行幂等；--machine 与放置声明相交。`--check` 只读检查目录权限、清单和漂移， `--remove NAME`
+显式移除，二者不能并用，且不要求本地 secrets.yaml。安全目录缺省 `~/.sfo-deploy/secrets/`（0700、文件
+0600），machines.secrets_dir 可用远端绝对路径或 `~/` 覆盖。 若集群根存在 known_hosts，CLI
+使用它；否则要求本地 `~/.ssh/known_hosts` 存在且可读，并包含可信记录。
+
+实际执行的环境 check/install/configure/init/manager 脚本、App 配置脚本和脚本管理器动作可通过 loader
+获得本机声明放置的全部秘密。loader 的过滤参数不收窄授权。框架内置部署脚本不是业务秘密消费者；
+受管配置渲染器按该配置引用的值秘密取副本，file 引用返回稳定投递路径。秘密不写入部署包和历史骨架。
+
+本地来源错误在 secrets-deploy 连接前拒绝；远端缺失、权限错误和漂移需要连接后检查，不能用 validate 或
+plan 通过证明密钥已投递。公共 API 的 ProjectBindings 是显式输入绑定方式，不代表通用 CLI 自动投递。
 
 ## 10. 校验和预览计划
 
@@ -892,8 +869,8 @@ Multipass 示例展示了保留这些行为的文件内实现。
 sfo-deploy validate --config-root ./clusters --cluster production
 ```
 
-`validate` 会装载全部 YAML，检查目录、字段、依赖、App 放置和本地资源路径，成功时输出不含秘密的 JSON
-摘要。
+`validate` 会装载全部 YAML，检查目录、字段、依赖、App
+放置和本地资源路径，成功时输出不含秘密的摘要；加 `--json` 获取结构化结果。
 
 再预览一次 App 部署计划：
 
@@ -907,7 +884,12 @@ sfo-deploy plan \
 
 `plan` 预览的是 `deploy` 动作，不建立 SSH 连接、不下载包、不解析秘密值。`plan` 只处理
 App，不支持环境筛选或依赖展开。输出中的步骤顺序、目标地址、动作、包 provider
-和秘密逻辑名称都应在执行前人工核对。
+和秘密逻辑名称都应在执行前人工核对。详细预览还显示依赖、发布方式、脚本、配置及服务信息；
+机器解析请使用 `--json`，不要依赖人类可读输出排版。版本以 app_versions.yaml 为准。
+
+空集群或仅有环境时，validate 可成功，plan 会以退出码 2 报
+`The filter selected no deployment targets`，不要为消除该错误伪造 App。validate/plan 不下载制品、
+不验证实际服务，也不装载或投递真实秘密。
 
 重点检查：
 
@@ -916,198 +898,158 @@ App，不支持环境筛选或依赖展开。输出中的步骤顺序、目标�
 - 是否只选择了预期 App 和机器；
 - 计划中不应出现秘密值或私钥内容。
 
-## 11. 执行首次部署
+## 11. 首次部署、非激活部署与服务操作
 
-先用 prepare 准备环境，再部署选中的 App：
+以下命令会下载制品或操作远端机器，应在示例已替换、主机指纹及权限已就绪后执行；配置生成和本地
+验证本身不包含这些操作。主示例先 fetch，准备 runtime，再部署 backend；需要秘密时先完成第 9 节投递。
 
 ```bash
-sfo-deploy fetch \
-  --config-root ./clusters \
-  --cluster production \
-  --app backend
-
-sfo-deploy prepare \
-  --config-root ./clusters \
-  --cluster production \
-  --machine app-01 \
-  --env runtime
-
-sfo-deploy deploy \
-  --config-root ./clusters \
-  --cluster production \
-  --machine app-01 \
-  --app backend
+sfo-deploy fetch --config-root ./clusters --cluster production --app backend
+sfo-deploy prepare --config-root ./clusters --cluster production --machine app-01 --env runtime
+sfo-deploy deploy --config-root ./clusters --cluster production --machine app-01 --app backend
 ```
 
-managed App 的 deploy 流程会：
+prepare 只管理环境；deploy/plan 只处理 App，不执行环境检查或安装，也不接受 --environment 或
+--with-dependencies。依赖在装载时校验闭合，真实环境是否就绪需由 prepare 及目标状态确认。
 
-1. 在控制端生成无秘密骨架和单一部署包，随后在节点验证、安全解包；
-2. 内置 versioned App 在 stage 完成版本目录、配置事务及 systemd
-   准备，保留工作目录和锁直到提交或恢复；
-3. 全部 stage 成功后，每个 activate 执行相邻的 latest 切换与启动/重启，不再追加独立 restart 步骤；
-4. 准备失败不切换版本；切换失败不启动新服务；服务失败恢复配置、原软链接与标记并补偿原服务，恢复失败明确报告；
-5. 服务成功后提交版本标记并清理旧版本、配置备份及工作区。清理失败单独报告，不回滚已成功运行的版本。
+普通带包部署的阶段：
 
-自定义 deploy 和无包配置应用保留原有配置、通知合并及服务管理行为；跨机器不保证原子回滚。
+1. 在控制端准备并归档无秘密输入，连接目标后验证部署包；配置脚本（若有）先执行 configure。
+2. 各目标 stage 建立版本目录、落地配置/unit，并准备受管服务状态。
+3. 所有 stage 成功后依次 activate，切换 latest，并按 service 策略执行动作；script 管理器另有 restart
+   步骤。
+4. 按执行结果提交版本标记、清理旧版本和备份。失败时尝试恢复受管配置、软链接、标记及服务状态；
+   恢复失败会明确报告并可能保留工作区。跨机器不保证事务原子性，也不能撤销脚本的外部副作用。
 
-App 部署包来自上一步 `fetch` 写入的本地缓存；未先 fetch 时，命令会在任何 SSH 连接前预检失败并提示
-运行 `fetch`。
+同版本部署可复用制品目录，但仍处理配置与服务策略；同版本更新直接作用于现有版本目录，不具备
+新版本目录隔离。发布版本必须反映真实制品版本。清理失败单独报告，不能把已清理的旧版本视为可恢复。
 
-也可以先用专门命令准备好环境应用，再定向部署 App：
+CLI deploy 会先打印计划并等待 `yes`；拒绝、EOF 或非交互未传 --yes 时按取消处理（130）。自动化部署
+应显式传 --yes。缓存缺失在创建 release attempt 和连接远端前失败，需要先 fetch。
+
+### 仅交付、不激活
 
 ```bash
-sfo-deploy prepare \
-  --config-root ./clusters \
-  --cluster production \
-  --env runtime
-
-sfo-deploy deploy \
-  --config-root ./clusters \
-  --cluster production \
-  --app backend
+sfo-deploy plan --config-root ./clusters --cluster production --app backend --no-activate
+sfo-deploy deploy --config-root ./clusters --cluster production --app backend --no-activate
 ```
 
-deploy 不执行依赖环境检查；环境应用必须先通过 `prepare` 准备。
+plan 只本地预览；实际非激活 deploy 的行为如下：
 
-执行 `deploy` 前，CLI 会先打印计划步骤并等待输入 `yes` 二次确认；确认后才创建发布 attempt 与快照并
-连接远端，拒绝、EOF 或非交互终端未显式传 `--yes` 时按取消处理（退出码 130）且不执行任何远端步骤。
-自动化部署必须显式传 `--yes`。
+| App 类型    | 仍执行                                            | 跳过                                            |
+| ----------- | ------------------------------------------------- | ----------------------------------------------- |
+| versioned   | 配置脚本（若有）、stage、版本目录及配置/unit 落地 | latest 切换、App 版本标记、所有框架受管服务收敛 |
+| packageless | 配置脚本和受管文件发布                            | 框架受管服务收敛，配置尚未由服务加载            |
 
-`start`、`stop`、`restart`、`deploy`、`rollback` 都在控制端 release attempt 中运行。 每个目标上的
-managed 状态转换还会先获取同一 App/目标键的 `flock` 租约，持锁覆盖 bundle、配置、 脚本和 systemd
-动作；获取失败时不产生副作用，成功、失败、超时和取消都在清理后释放租约。持有期间
-控制端周期心跳续租，控制端崩溃、断连或变成孤儿时远端 holder 会在有界租约 TTL 内自动退出并释放锁。
-holder 在持有期间提前退出或租约过期时，控制端进入失败关闭：后续受保护命令与锁释放直接报错而不写入
-目标机，仅内部清理使用无守卫命令释放工作区与锁。
-框架不会对有副作用动作自动重试。
+跳过的服务动作包括 daemon-reload、enable、start、reload、restart。配置脚本仍会执行，不能将服务
+重启藏在配置脚本里，再假定此选项可阻止它。成功后产物保留在目标机；versioned 后续用普通 deploy
+激活。无包 App 若文件已无变化，on_change 不会再次触发服务，应用显式 restart 加载配置。
+非激活部署也会留下发布记录；不要把 rollback 当作后续激活命令，或假定回退保留 no-activate 限制。
 
-`--with-dependencies` 适用于 `start`、`stop` 和 `restart` 等定向 App 动作； 它会保留当前 `--machine`
-和 `--environment`
-选择范围内的环境，再校验依赖闭包。生产操作应显式给出这两个筛选器；如果过滤掉必需依赖，规划会失败。
-`deploy` 和 `plan` 不支持该开关。
+### 环境与 App 服务筛选
 
-内置部署以 `app_versions.yaml` 的 `version` 作为待部署版本。版本一致时跳过制品暂存，仍执行配置
-事务与必要的服务启动/重启；同版本更新直接作用于当前版本文件，不具有新版本的目录隔离。
-版本不同则先向真实版本目录发布制品与配置，全部目标准备成功后才逐目标切换并立即启动/重启。 生产 App
-的 version 必须反映真实发布版本，服务验证成功前保留恢复所需的旧版本。
-
-在不传 `--with-dependencies` 时，定向 App 生命周期动作（`start`/`stop`/`restart`）只检查其
-传递环境依赖，不会自动安装或配置它们；检查不满足时 App 步骤会被阻断。这适合环境由其他流程
-预先管理的场景。
-
-集中定义不改变实例和过滤器名称：放置到 `app-01` 的 `runtime` 仍用 `--environment app-01/runtime`
-精确选择，也可用短名 `--environment runtime` 匹配当前机器范围内的同名实例。 Environment/App 的短
-`depends_on` 始终绑定各自所在机器；只有显式 `机器名/环境名` 才是跨机器依赖。 `--machine` 和
-`--environment` 不会为了满足依赖而自动扩大范围。
-
-也可以单独管理环境：
+`start`/`stop`/`restart` 默认只处理 App，不检查其环境依赖，单独增加 --with-dependencies 也不会
+自动选择环境。只需要应用服务动作时明确指定 App：
 
 ```bash
-# 检查全部机器上的全部环境
-sfo-deploy check --config-root ./clusters --cluster production
+sfo-deploy restart --config-root ./clusters --cluster production --machine app-01 --app backend
+```
 
-# 只检查一个环境实例
-sfo-deploy check --config-root ./clusters --cluster production \
-  --environment app-01/runtime
+显式 --environment/--env 才把环境纳入范围。start/restart 还可能选择 App，需结合 --app、--machine 和
+--with-dependencies 核对依赖闭包；stop 带环境过滤时只选择环境。筛选器不会自动扩展到缺失的依赖。
+如果显式环境参与定向 App 操作且未带 --with-dependencies，依赖可能变成 check-only；新 install/manager
+环境不支持 check，应使用 prepare 和明确的环境管理动作。
 
-# 准备/更新全部环境；省略环境过滤器时需要确认
-sfo-deploy prepare --config-root ./clusters --cluster production
+环境操作示例：
 
-# 非交互环境必须明确同意全量准备
+```bash
+# 主示例的旧 scripts 环境支持 check；新 install/manager 环境没有独立 check。
+sfo-deploy check --config-root ./clusters --cluster production --environment app-01/runtime
+
+# 准备所选范围内全部环境，省略环境筛选时需要确认；非交互需 --yes。
 sfo-deploy prepare --config-root ./clusters --cluster production --yes
+
+# 停止显式选择的环境服务（该环境必须声明停止动作/管理器）。
+sfo-deploy stop --config-root ./clusters --cluster production --env nginx
 ```
 
-`check` 是纯环境动作，不能与 `--app` 同时使用；环境安装、配置与更新统一通过 `prepare`。省略
-`--environment` 时会选择当前机器范围内的全部环境；可用重复的 `--machine` 或
-`--environment [MACHINE/]NAME` 收窄范围。显式选择环境时，如果其依赖未同时入选，规划会失败，
-不会偷偷扩大范围。
+`--machine`、`--app`、`--environment` 可重复；环境短名匹配所选机器上的同名实例，`机器/环境`
+精确选择一个实例。短 depends_on 绑定当前机器，显式 `机器/环境` 才是跨机依赖。check/prepare 不接受
+--app；环境依赖未同时选中时计划会失败。
 
-`--machine`、`--app` 和 `--environment` 都可以重复。`deploy` 不加筛选器会覆盖配置中的全部 App，
-不会覆盖任何环境；生产执行前应优先使用定向筛选器并检查 `plan`。
+### 并发与失败边界
+
+start/stop/restart/deploy/rollback 进入控制端 release attempt。每个 App/目标键上的受管状态转换
+还使用远端 flock 租约，覆盖包、配置、脚本和服务动作；控制端以心跳续租，断连或孤儿进程会在有界 TTL
+内释放。租约丢失后后续受保护操作失败关闭，仅内部清理使用无守卫命令。框架不会自动重试有副作用动作。
 
 ## 12. 发布历史与回退边界
 
-`start`、`stop`、`restart`、`deploy`、`rollback` 都会在集群目录的 `.sfo-deploy/releases/`
-下创建记录。成功结果中的 `release_id` 可用于查询；只有成功的 deploy/rollback 记录包含 rollback plan
-并可作为回退来源，其他三类记录只保存 actual plan 供审计：
+start/stop/restart/deploy/rollback 在集群 `.sfo-deploy/releases/` 下记录执行。成功的 deploy/rollback
+记录可作为回退来源；其他生命周期记录供审计，不提供回退计划。选择已确认的 release_id：
 
 ```bash
 sfo-deploy history --config-root ./clusters --cluster production
-sfo-deploy history --config-root ./clusters --cluster production \
-  --release-id <release_id>
-sfo-deploy rollback --config-root ./clusters --cluster production \
-  --release-id <release_id>
+sfo-deploy history --config-root ./clusters --cluster production --release-id <release_id>
+sfo-deploy rollback --config-root ./clusters --cluster production --release-id <release_id>
 ```
 
-回退重放快照中的 App `deploy` 和已声明的 `configure`；旧 deploy 快照还会重放其传递依赖的环境
-`check`，新 deploy 快照没有环境步骤。回退不会执行环境
-`install`/`configure`，也不会撤销数据库迁移、消息发送或外部服务写入。旧包来源必须仍可访问并保持相同
-哈希。plan-v4 快照只保存无秘密 management 声明和骨架输入；回退时重新读取目标节点当前已放置的秘密，
-不会从历史恢复旧密码。
+回退重放归档步骤，当前版本化计划可包含 configure、stage、activate 和脚本管理器 restart；无包 App
+回放配置步骤。旧快照可能包含传递环境依赖 check，但不回放环境 install/configure。回退不撤销数据库
+迁移、消息发送或外部服务写入，也不是切回任意远端目录的快捷命令。
 
-单次 managed 执行中，候选生成或 validator 失败时最终配置不变；配置发布后 service/hook 失败时，框架会
-尝试恢复旧配置以及操作前读取到的 systemd enabled/active 状态。补偿本身失败会产生明确的
-partial/recovery 结果，需要人工按实际状态处理。框架不会重试有副作用的脚本，也无法自动撤销 App deploy
-脚本已完成的数据库或外部系统写入。
+使用缓存中匹配哈希的包；缓存缺失时需要原源仍可访问。历史只归档无秘密配置输入，回放时读取目标机
+当前投递的秘密，不恢复旧密码。回退也不是对 no-activate 的继承承诺，执行前应检查归档计划与当前状态。
 
-当前执行器不会为脚本上传兼容运行库。任何仍导入 `./sfo_deploy.ts` 的现有集群脚本
-都必须先迁移为自包含程序。包含此类导入的历史发布快照也不保证能由当前版本直接回放：应迁移快照，或保留并使用
-与快照协议匹配的旧版执行器；框架不会自动检测导入并注入 shim。
+旧 Python 运行时、含 run_as/access_group 的历史和早期单步 versioned deploy 计划有兼容限制，当前
+执行器会拒绝不安全回放；不要把新配置装载成功当成旧历史一定可回放。旧三阶段 versioned 计划可能被
+归一化，但不是通用迁移机制。仍导入 ./sfo_deploy.ts 的脚本应改为自包含程序，框架不上传兼容 shim。
 
-`.sfo-deploy/releases/` 不会自动清理。应监控容量，并把它纳入备份和恢复方案。
+受管文件候选/validator 失败时不替换最终配置；发布后服务失败会尝试恢复配置与 enabled/active 状态。
+补偿失败须人工处理实际状态，脚本写入外部系统的内容无法自动恢复。`.sfo-deploy/releases/` 不自动清理，
+需纳入容量监控、备份和恢复方案。
 
 ## 13. 常见错误
 
 ### YAML 校验失败
 
-- 确认 `cluster.yaml` 新布局使用 `schema_version: 2`，`machines.yaml`/`environment.yaml` 使用 v1；
-  `cluster.yaml` 不支持 schema v1，旧每机 Environment 布局会被拒绝。新 managed App 使用 app schema
-  v3， App 不支持 schema v1；旧 v2 App 不允许 `management`。
-- 删除重复键和未支持字段。
-- 确认 App/环境的 `name` 与目录名完全一致。
-- 确认 `cluster.yaml.environments` 与 `environments/`
-  共享定义集合一致，且每个目标列表非空、无重复并只引用已声明机器。
-- 确认 `cluster.yaml.apps` 与 `apps/` 目录集合一致。
-- 确认所有脚本、模板和 SSH 私钥路径均存在且没有 `..` 路径逃逸。
+- cluster 使用 schema 2，其余配置使用 schema 1；旧 App schema 2/3/4 不兼容。
+- App/环境的 name 与目录名及放置键一致，目标机器存在、非空且无重复。
+- app_versions 只覆盖带包 App；无包 App 不能有版本记录，但仍需要版本文件。
+- 删除未知字段；App 不使用顶层 scripts/templates/secret_values/secret_files。
+- 所有声明的脚本、source 和 SSH 私钥必须真实存在且不逃逸所属目录。
+- 摘要占位符必须替换，不能以随机哈希绕过校验；deployer_version 必须与工具精确匹配。
 
-### 规划提示缺少 private/public IP
+### 缺少 private/public IP 或依赖被过滤
 
-检查 `executor_region` 与机器 `region`。同区默认要求 `private_ip`，跨区默认要求
-`public_ip`；也可以在明确了解网络路由的前提下使用 `--address-kind`
-覆盖。字段为列表时还应检查声明顺序以及每个候选 IP 的 known-hosts
-记录；所有同类候选都失败后才会返回聚合连接错误。
+同 region 默认 private，跨 region 默认 public，不自动跨类别回退。可用 --executor-region 或
+--address-kind 显式选择。地址列表还需逐一具备可信主机密钥记录。
 
-### 规划提示依赖被过滤
+环境筛选不会自动扩大依赖闭包，把必要环境一并选中。App 默认服务动作不含环境，deploy/plan 更不会
+准备依赖；先运行 prepare。新 install/manager 环境没有 check，不能把它当旧脚本环境发起检查。
 
-环境筛选不会自动扩大依赖范围。把依赖环境一起加入 `--environment`，或调整本次选择范围。定向 App
-configure/start/stop/restart 如果希望管理其环境依赖，应使用 `--with-dependencies`。
+### 秘密缺失或未绑定
 
-### 配置步骤提示未绑定秘密
-
-通用 CLI 会先读取集群本地 `secrets.yaml`，把 YAML 声明的全部 `secret_values`/`secret_files`
-放置到目标 机器，再执行脚本步骤；`secrets.yaml` 缺失或来源无效，以及远端密钥未放置，都会在 SSH
-前失败关闭。
+核对 cluster.yaml 的声明、kind/type、放置和实际引用。需要投递时先准备完整的本地 secrets.yaml，
+再显式 secrets-deploy；deploy 不会替你执行这一步。远端缺失或权限错误在连接后发现，可先用
+secrets-deploy --check 检查。不要在 App/环境内恢复已删除的秘密声明字段。
 
 ### 下载失败或哈希不匹配
 
-- 检查 URL/filehub target 和客户端认证；
-- 从可信发布渠道重新获取哈希；
-- 不要为了通过校验而把 YAML 改成失败输出里的未知哈希；
-- 确认旧版本包在未来回退时仍可取得。
-- 本地缓存缺失或校验失败时，先运行 `sfo-deploy fetch` 对应的 `--app`，或按错误提示移除损坏的缓存
-  文件后重新 fetch。
+检查 URL/filehub target、认证和可信发布摘要；不要把失败输出中的未知摘要直接写入配置。 缓存缺失时先
+fetch；损坏缓存按错误提示处理后重新获取。为回退保留稳定制品源。
 
-### 脚本在远端失败
+### 脚本失败、服务未启动或未加载配置
 
-CLI 输出固定退出码为：成功 `0`、用法/配置错误 `2`、预检失败 `3`、下载或远端执行失败 `4`、用户取消
-`130`。检查失败步骤的 `machine`、`resource`、`action`、固定错误类别和清理错误。框架用本次操作解析的
-秘密全集在 stdout/stderr、错误和 cleanup 信息进入结果或历史前脱敏；redactor 无法安全构造或应用时会
-丢弃 stdout/stderr，而不是返回原文。脚本仍不应主动打印秘密。
+检查失败步骤、固定错误类别及清理/恢复结果。配置脚本必须检查每个子进程退出状态，不能只 await output
+后忽略失败。unit 的非 root 用户必须存在，启动文件、配置、目录权限与服务工具需在目标机确认。
 
-### App 部署缺少依赖环境
+无包 App 的 on_deploy 不负责触发 configure 服务动作；用文件 on_change，或显式服务命令。
+--no-activate 成功只代表产物落地，不代表服务已加载；文件未变时再次普通 deploy 未必触发
+reload/restart。
 
-deploy 不再检查或安装依赖环境。先运行
-`sfo-deploy prepare --env <依赖环境>`（缺省全量会请求确认），确认依赖环境就绪后重新执行 App 部署。
+退出码：成功 0、用法/配置错误 2、预检失败 3、下载或远端执行失败 4、取消 130。CLI 会脱敏已知秘密，
+无法安全脱敏时丢弃输出；脚本仍不应主动打印秘密。补偿失败后应按实际远端状态处理，不盲目重试。
 
 ## 14. 上线前检查清单
 
@@ -1119,13 +1061,16 @@ deploy 不再检查或安装依赖环境。先运行
 - [ ] 每个 TypeScript 脚本只声明实际需要的绝对 `run` 路径和精确 `net` 目标；无直接网络需求时 `net`
       为空。
 - [ ] 需要提权的环境或文件秘密目标可使用 root 或非交互 `sudo -n`。
-- [ ] 环境脚本可重复执行，`check` 能准确区分“满足”和“未满足”。
+- [ ] 环境安装/init 可重复执行；旧 scripts 的 check（若声明）能准确判断状态，新生命周期不声明
+      check。
 - [ ] App 脚本不依赖未声明的 root 权限。
-- [ ] App schema 1 的 configure 与服务动作只有一个所有者，没有同时声明冲突的 legacy 脚本。
+- [ ] App schema 1 使用 configs 和单个 management，无旧 scripts/hook；无管理器配置的 on_change 为
+      none。
 - [ ] 确认部署使用的 SSH 用户就是期望的发布树属主；root SSH 时确认接受 App 脚本以 root 运行。
 - [ ] versioned App 的根级 `mode`（若声明）只开放实际需要的读/穿越范围，且目录可达；未声明时确认为
       0750 默认行为。
-- [ ] 生成的 unit 若需要非 SSH 用户运行，已声明存在的非 root `unit_config.user`。
+- [ ] 生成的 unit 服务用户为非 root；root SSH 时显式声明存在的非 root
+      unit_config.user，并确认可读配置。
 - [ ] managed 配置中的 `${SECRET_NAME}` 均已声明并放置到目标机器；普通变量 marker
       各出现且只出现一次。
 - [ ] file 秘密稳定路径对 SSH 部署身份可读，证书/密钥轮换的服务动作策略已确认。
@@ -1133,6 +1078,7 @@ deploy 不再检查或安装依赖环境。先运行
 - [ ] 包来源稳定，哈希来自可信渠道；filehub 客户端已完成认证。
 - [ ] 目标 App 的安装包已通过 `sfo-deploy fetch` 进入本地 `packages_dir` 缓存。
 - [ ] `validate` 成功，`plan` 中的机器、地址、步骤顺序和选择范围已人工复核。
-- [ ] 首次生产执行使用明确的 `--machine`/`--app`/`--environment` 范围。
+- [ ] 首次生产执行使用动作支持的明确筛选器；deploy 不传环境筛选，环境先通过 prepare 准备。
+- [ ] 使用 --no-activate 时已确认配置脚本副作用，并安排实际激活及服务加载。
 - [ ] 数据库、消息、外部 API 等不可自动回退的脚本副作用有独立恢复方案。
 - [ ] `.sfo-deploy/releases/` 已纳入容量监控和备份。

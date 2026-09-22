@@ -55,10 +55,12 @@ manager:
 
 `install.kind: package` 只支持 `apt-get`/`yum`，`auto` 按此顺序探测；`manager.kind: system` 的
 `tool: auto` 按 `systemctl`/`service` 顺序探测。系统服务 `enabled` 缺省为 `true`（开机启动），显式
-`false` 关闭；`start_after_install: false` 时 `prepare` 新增独立 `enable` 步骤，仍设为开机启动但不
-启动服务。`manager` 可缺省，缺省时不管理应用运行。脚本方式用 `install.kind: script` 和
-`manager.kind: script`，后者必须声明 `start`/`stop`/`restart`。新契约不声明 `check`；顶层 `scripts`
-与 `install`/`manager` 互斥。
+`false` 关闭；`start_after_install: false` 时 `prepare` 新增独立 `enable` 步骤，按 `enabled`
+收敛开机启动状态（缺省开启、显式 false 关闭），不执行 start/restart。`manager`
+可缺省，缺省时不管理应用运行。脚本方式用 `install.kind: script`（同层声明 `path`、`permissions`）和
+`manager.kind: script`，后者必须声明 `start`/`stop`/`restart`，每项为单个 `{path, permissions}`
+调用对象，不是旧 scripts 中的调用列表。新契约不声明 `check`；顶层 `scripts` 与 `install`/`manager`
+互斥。
 
 新生命周期还可选声明 `init` 初始配置段，用于环境应用安装/更新流程的启动前/启动后配置：
 
@@ -77,8 +79,13 @@ init:
 ```
 
 `init` 整体可选；`before_start`/`after_start` 各是可选脚本列表，未声明或为空时不生成对应步骤。
-`prepare` 对声明顺序按 install → before_start → start/restart → after_start 执行；启动前/启动后
-失败都会阻断该环境实例的 prepare 且不写版本标记。显式 start/stop/restart 不执行 init 脚本。
+`prepare` 按 install → before_start → start/restart（或仅 enable）→ after_start 执行；没有 manager
+则省略服务步骤，但仍执行 init。启动前/启动后 失败都会阻断该环境实例的 prepare 且不写版本标记。显式
+start/stop/restart 不执行 init 脚本。
+
+新生命周期没有 check，即使版本标记相同，prepare 仍进入 install/init；包安装先查询是否已安装，
+不是按声明的 version 自动升级发行版包。首次无版本标记时选择 start，已有标记时选择 restart；
+仅完整流程成功才写入环境版本标记。因此安装与初始化脚本必须可重复执行，不能依赖同版本自动跳过。
 
 复制到 `environments/nginx/` 后，在 `cluster.yaml` 合并 `environments.nginx: [app-01]`。需要它的 app
 再添加 `depends_on: [nginx]`。给现有环境增加机器时复用定义，不复制每机目录。
@@ -95,7 +102,10 @@ init:
 - 通过 `Deno.Command` 的固定 argv 传参；参数需要从框架上下文读取时，使用 `DEPLOYMENT_METADATA_PATH`
   指向的 JSON 文件并核对目标实现的上下文结构，不能猜测业务参数环境变量。
 - `requires_privilege: true` 只在环境脚本确需提权时设置。App 脚本以 SSH
-  身份执行，与环境提权是不同机制。
+  身份执行，与环境提权是不同机制。内置 package 安装与 system 服务动作自行请求提权，
+  `requires_privilege: false` 不会关闭这些内置动作的提权。
 
-当前 `prepare` 负责环境 check/install/可选 configure、新生命周期的 install/manager/init； `deploy`
-和 `plan` 不执行环境步骤。创建配置时不自动运行 prepare。
+旧 scripts 的 `prepare` 包含 check、按需 install、可选 configure，以及已声明的 start/restart； check
+满足且版本标记相同时整体跳过后续动作，首次无标记选择 start，已有标记选择 restart（仅执行
+已声明的动作）。新生命周期用上面的 install/manager/init。`deploy` 和 `plan` 不执行环境步骤； 当前
+CLI 没有独立 install/configure 命令，创建配置时不自动运行 prepare。
