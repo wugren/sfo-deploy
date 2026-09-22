@@ -65,21 +65,15 @@ export interface BuiltinConfigCandidateRequest {
   readonly secretDir: string;
   readonly secretRoot: string;
   readonly fileSecrets: readonly string[];
-  readonly runAs?: string;
   readonly timeoutMs?: number;
-}
-
-export interface ManagedAppIdentity {
-  readonly runAs: string;
-  readonly uid: number;
-  readonly sshUid: number;
-  readonly requiresSudo: boolean;
 }
 
 export interface RemoteOperationLockRequest {
   readonly app: string;
   readonly target: string;
   readonly timeoutMs: number;
+  /** 远端操作锁租约 TTL；未提供时由 transport 使用保守默认值。 */
+  readonly leaseTtlMs?: number;
 }
 
 export interface RemoteOperationLease {
@@ -92,13 +86,11 @@ export interface ScopedSecretCopyRequest {
   readonly workspace: string;
   readonly sourceDirectory: string;
   readonly names: readonly string[];
-  readonly runAs: string;
 }
 
 export interface ScopedSecretCopy {
   readonly workspace: string;
   readonly path: string;
-  readonly runAs: string;
 }
 
 export interface RemoteConfigCandidate {
@@ -116,8 +108,6 @@ export interface ManagedConfigPublishRequest {
   readonly owner?: string;
   readonly group?: string;
   readonly validator?: ManagedConfigValidator;
-  /** validator 为 App 声明命令时必须提供；分阶段迁移期间保持可选。 */
-  readonly runAs?: string;
   readonly secretRoot: string;
   readonly secretFiles: readonly string[];
 }

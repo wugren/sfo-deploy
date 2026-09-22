@@ -309,7 +309,7 @@ Deno.test("unit/environment placement v1: legacy per-machine layout and inline a
       join(v1App, "apps", "demo", "app.yaml"),
       'schema_version: 1\nname: demo\nversion: "1.0.0"\npackage:\n  provider: http\n  source: {url: "https://example.invalid/app.bin"}\n  hash: {algorithm: sha256, value: "' +
         "00".repeat(32) +
-        '"}\ndepends_on: []\nmanagement:\n  run_as: deploy\n  kind: service\n  name: demo.service\n  tool: systemctl\n',
+        '"}\ndepends_on: []\nmanagement:\n  kind: service\n  name: demo.service\n  tool: systemctl\n',
     );
     const error = await assertRejects(() => loadCluster(v1App), ConfigurationError);
     assertStringIncludes(error.message, "app[demo] contains unknown fields: package, version");

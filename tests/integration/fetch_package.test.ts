@@ -137,7 +137,7 @@ Deno.test("integration/fetch: packageless apps are skipped without requiring pac
     );
     await Deno.writeTextFile(
       join(cluster, "apps", "config", "app.yaml"),
-      "schema_version: 1\nname: config\npackageless: true\nconfigs:\n  - kind: file\n    source: templates/settings.json\n    target: /etc/config/settings.json\n    format: json\nmanagement:\n  run_as: deploy\n  kind: service\n  name: config.service\n  tool: systemctl\n",
+      "schema_version: 1\nname: config\npackageless: true\nconfigs:\n  - kind: file\n    source: templates/settings.json\n    target: /etc/config/settings.json\n    format: json\nmanagement:\n  kind: service\n  name: config.service\n  tool: systemctl\n",
     );
     await Deno.writeTextFile(
       join(cluster, "cluster.yaml"),

@@ -98,6 +98,45 @@ Deno.test("integration/config-updater: 四格式特殊字符按完整标量注�
   }
 });
 
+Deno.test("integration/config-updater: 数组标量占位符被替换且无残留", async () => {
+  const arraySources = {
+    yaml: "passwords:\n  - ${PASSWORD}\n",
+    json: '{"passwords":["${PASSWORD}"]}\n',
+    toml: 'passwords = ["${PASSWORD}"]\n',
+  } as const;
+  for (const format of ["yaml", "json", "toml"] as const) {
+    await withTempDir(async (root) => {
+      const source = join(root, `source.${format}`);
+      const input = join(root, `input.${format}`);
+      const bindings = join(root, "bindings.json");
+      const secrets = join(root, "secrets");
+      const output = join(root, `output.${format}`);
+      await Deno.mkdir(secrets);
+      await Deno.writeTextFile(source, arraySources[format]);
+      const skeleton = await generateConfigSkeleton(definition(source, format), {});
+      await Deno.writeFile(input, skeleton.content);
+      await Deno.writeTextFile(bindings, JSON.stringify(bindingDocument(skeleton)));
+      await Deno.writeTextFile(join(secrets, "PASSWORD"), "s3cret");
+      await updateConfig({
+        format,
+        input,
+        bindings,
+        secrets,
+        secretRoot: join(root, "unused"),
+        output,
+      });
+      const rendered = await Deno.readTextFile(output);
+      assertEquals(rendered.includes("__SFO_SECRET_"), false);
+      const parsed = format === "json"
+        ? JSON.parse(rendered)
+        : format === "yaml"
+        ? parseYaml(rendered)
+        : parseToml(rendered);
+      assertEquals((parsed as { passwords: string[] }).passwords, ["s3cret"]);
+    });
+  }
+});
+
 Deno.test("integration/config-updater: 类型、缺失秘密、无效候选和残留 marker 失败关闭", async () => {
   await withTempDir(async (root) => {
     const secrets = join(root, "secrets");

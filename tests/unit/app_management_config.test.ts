@@ -3,11 +3,13 @@ import {
   assertEquals,
   assertRejects,
   assertStringIncludes,
+  assertThrows,
   withTempDir,
 } from "../_support/assert.ts";
 import { writeCluster } from "../_support/fixtures.ts";
 import { loadCluster } from "../../src/config.ts";
 import { ConfigurationError } from "../../src/errors.ts";
+import { PlanningError } from "../../src/errors.ts";
 import { PreflightError } from "../../src/errors.ts";
 import { buildPlan } from "../../src/planning.ts";
 import { generateSystemdUnitSkeleton, serviceUnitManagedConfig } from "../../src/systemd_unit.ts";
@@ -64,7 +66,6 @@ configs:
     format: json
     on_change: restart
 management:
-  run_as: deploy
   kind: service
   name: demo.service
   tool: auto
@@ -91,6 +92,92 @@ Deno.test("unit/app schema 1: file config and system service normalize without e
   });
 });
 
+Deno.test("unit/app schema 1: root mode loads into plan and fails closed for invalid values", async () => {
+  const body = (extra: string, install = "install_directory: /srv/demo\n") =>
+    `schema_version: 1
+name: demo
+${install}${extra}deployment:
+  kind: versioned
+configs:
+  - kind: file
+    source: templates/application.json
+    target: /etc/demo/application.json
+    format: json
+management:
+  kind: service
+  name: demo.service
+  tool: systemctl
+`;
+
+  await withTempDir(async (root) => {
+    const directory = await schemaApp(root, body('mode: "0644"\n'), [{
+      path: "templates/application.json",
+      content: "{}\n",
+    }]);
+    const cluster = await loadCluster(directory);
+    assertEquals(cluster.apps.get("demo")!.mode, "0644");
+    const deploy = buildPlan(cluster, { action: "deploy", apps: ["demo"] });
+    assertEquals(deploy.steps[0].mode, "0644");
+    const restart = buildPlan(cluster, { action: "restart", apps: ["demo"] });
+    assertEquals(restart.steps[0].mode, "0644");
+  });
+
+  for (const invalid of ["8888", "4755", "07000", "rwxr", ""]) {
+    await withTempDir(async (root) => {
+      const directory = await schemaApp(root, body(`mode: "${invalid}"\n`));
+      const error = await assertRejects(() => loadCluster(directory), ConfigurationError);
+      assertStringIncludes(error.message, "app[demo].mode");
+    });
+  }
+
+  await withTempDir(async (root) => {
+    const packageless = `schema_version: 1
+name: demo
+mode: "0644"
+packageless: true
+management:
+  kind: service
+  name: demo.service
+  tool: systemctl
+`;
+    const directory = await schemaApp(root, packageless);
+    await Deno.writeTextFile(
+      join(directory, "app_versions.yaml"),
+      "schema_version: 1\napps: {}\n",
+    );
+    const error = await assertRejects(() => loadCluster(directory), ConfigurationError);
+    assertStringIncludes(error.message, "app[demo].mode requires a versioned deployment");
+  });
+});
+
+Deno.test("unit/app schema 1: removed run_as/access_group fields fail closed", async () => {
+  const body = (managementExtra: string) =>
+    `schema_version: 1
+name: demo
+install_directory: /srv/demo
+deployment:
+  kind: versioned
+management:
+  kind: service
+  name: demo.service
+  tool: systemctl
+${managementExtra}`;
+
+  for (
+    const [extra, field] of [["  run_as: deploy\n", "run_as"], [
+      "  access_group: www-data\n",
+      "access_group",
+    ]] as const
+  ) {
+    await withTempDir(async (root) => {
+      const directory = await schemaApp(root, body(extra));
+      const error = await assertRejects(() => loadCluster(directory), ConfigurationError);
+      assertStringIncludes(error.message, field);
+      assertStringIncludes(error.message, "unknown field");
+    });
+  }
+});
+
 Deno.test("unit/app schema 1: nginx file config loads as raw text and rejects bindings", async () => {
   const nginxBody = `schema_version: 1
 name: demo
@@ -107,7 +194,6 @@ configs:
     format: nginx
     on_change: reload
 management:
-  run_as: deploy
   kind: service
   name: nginx.service
   tool: systemctl
@@ -174,7 +260,6 @@ configs:
     target: /etc/demo/application.json
     format: json
 management:
-  run_as: deploy
   kind: service
   name: demo.service
   tool: systemctl
@@ -222,7 +307,6 @@ configs:
     target: /etc/demo/application.json
     format: json
 management:
-  run_as: deploy
   kind: service
   name: demo.service
   tool: systemctl
@@ -287,7 +371,6 @@ configs:
       run: [/usr/bin/test]
       net: []
 ${permissionExtra}management:
-  run_as: deploy
   kind: service
   name: demo.service
   tool: systemctl
@@ -330,7 +413,6 @@ configs:
     target: ${"${LATEST_DIRECTORY}/resources/application-latest.json"}
     format: json
 management:
-  run_as: deploy
   kind: service
   name: demo.service
   tool: systemctl
@@ -367,7 +449,6 @@ configs:
     target: ${"${INSTALL_DIRECTORY}/resources/application.json"}
     format: json
 management:
-  run_as: deploy
   kind: service
   name: demo.service
   tool: systemctl
@@ -398,7 +479,6 @@ configs:
     target: ${"${INSTALL_DIRECTORY}/x/${LATEST_DIRECTORY}/app.json"}
     format: json
 management:
-  run_as: deploy
   kind: service
   name: demo.service
   tool: systemctl
@@ -421,7 +501,6 @@ install_directory: /srv/demo
 deployment:
   kind: versioned
 management:
-  run_as: deploy
   kind: script
   start: {path: scripts/start.ts, permissions: {run: [], net: []}}
   stop: {path: scripts/stop.ts, permissions: {run: [], net: []}}
@@ -459,7 +538,6 @@ configs:
     target: /etc/demo/application.json
     format: json
 management:
-  run_as: deploy
   kind: service
   name: demo.service
   tool: systemctl
@@ -498,7 +576,6 @@ install_directory: /srv/demo
 deployment:
   kind: versioned
 management:
-  run_as: deploy
   kind: service
   name: demo.service
   tool: systemctl
@@ -558,7 +635,6 @@ install_directory: /srv/demo
 deployment:
   kind: versioned
 management:
-  run_as: deploy
   kind: service
   name: demo.service
   tool: systemctl
@@ -585,7 +661,6 @@ install_directory: /srv/demo
 deployment:
   kind: versioned
 management:
-  run_as: deploy
   kind: service
   name: demo.service
   tool: systemctl
@@ -617,7 +692,6 @@ Deno.test("unit/app schema 1: unit_config directory variable requires install_di
 name: demo
 packageless: true
 management:
-  run_as: deploy
   kind: service
   name: demo.service
   tool: systemctl
@@ -645,7 +719,6 @@ install_directory: /srv/demo
 deployment:
   kind: versioned
 management:
-  run_as: deploy
   kind: service
   name: demo.service
   tool: systemctl
@@ -676,7 +749,6 @@ install_directory: /srv/demo
 deployment:
   kind: versioned
 management:
-  run_as: deploy
   kind: service
   name: demo.service
   tool: systemctl
@@ -735,7 +807,6 @@ deployment:
 scripts:
   check: [{path: scripts/check.ts, permissions: {run: [], net: []}}]
 management:
-  run_as: deploy
   kind: service
   name: demo.service
   tool: systemctl
@@ -754,7 +825,6 @@ install_directory: /srv/demo
 deployment:
   kind: versioned
 management:
-  run_as: deploy
   service:
     kind: system
     name: demo.service
@@ -779,11 +849,11 @@ Deno.test("unit/app schema 1: ownership, duplicate and invalid service rules fai
     ["unknown-kind", `configs:\n  - kind: directory\n`],
     [
       "service-tool",
-      `management:\n  run_as: deploy\n  kind: service\n  name: demo.service\n  tool: rc-service\n`,
+      `management:\n  kind: service\n  name: demo.service\n  tool: rc-service\n`,
     ],
     [
       "service-unit-tool",
-      `management:\n  run_as: deploy\n  kind: service\n  name: demo.service\n  tool: service\n  unit_config:\n    working_directory: latest\n    command: bin/server\n`,
+      `management:\n  kind: service\n  name: demo.service\n  tool: service\n  unit_config:\n    working_directory: latest\n    command: bin/server\n`,
     ],
   ];
   for (const [_label, extra] of cases) {
@@ -811,7 +881,6 @@ configs:
     target: /etc/a.json
     format: json
 management:
-  run_as: deploy
   kind: service
   name: demo.service
   tool: systemctl
@@ -823,5 +892,216 @@ management:
     ]);
     const error = await assertRejects(() => loadCluster(directory), ConfigurationError);
     assertStringIncludes(error.message, "contains a duplicate target path");
+  });
+});
+
+Deno.test("unit/app schema 1: service defaults to enabled on boot unless explicitly disabled", async () => {
+  const body = (management: string) =>
+    `schema_version: 1
+name: demo
+install_directory: /srv/demo
+deployment:
+  kind: versioned
+${management}`;
+  await withTempDir(async (root) => {
+    const directory = await schemaApp(
+      root,
+      body(`management:\n  kind: service\n  name: demo.service\n  tool: systemctl\n`),
+    );
+    const manager = (await loadCluster(directory)).apps.get("demo")!.management!.manager!;
+    assertEquals(manager.kind, "service");
+    if (manager.kind !== "service") throw new Error("expected service manager");
+    assertEquals(manager.enabled, true);
+    assertEquals(manager.enabledExplicit, false);
+  });
+  await withTempDir(async (root) => {
+    const directory = await schemaApp(
+      root,
+      body(
+        `management:\n  kind: service\n  name: demo.service\n  tool: systemctl\n  enabled: false\n`,
+      ),
+    );
+    const manager = (await loadCluster(directory)).apps.get("demo")!.management!.manager!;
+    assertEquals(manager.kind, "service");
+    if (manager.kind !== "service") throw new Error("expected service manager");
+    assertEquals(manager.enabled, false);
+    assertEquals(manager.enabledExplicit, true);
+  });
+});
+
+Deno.test("unit/app schema 1: tool service accepts the enabled declaration", async () => {
+  await withTempDir(async (root) => {
+    const body = `schema_version: 1
+name: demo
+install_directory: /srv/demo
+deployment:
+  kind: versioned
+management:
+  kind: service
+  name: demo.service
+  tool: service
+  enabled: true
+`;
+    const directory = await schemaApp(root, body);
+    const manager = (await loadCluster(directory)).apps.get("demo")!.management!.manager!;
+    assertEquals(manager.kind, "service");
+    if (manager.kind !== "service") throw new Error("expected service manager");
+    assertEquals(manager.tool, "service");
+    assertEquals(manager.enabled, true);
+    assertEquals(manager.enabledExplicit, true);
+  });
+});
+
+const configOnlyVersioned = `schema_version: 1
+name: demo
+install_directory: /srv/demo
+deployment:
+  kind: versioned
+configs:
+  - kind: file
+    source: templates/application.json
+    target: /etc/demo/application.json
+    format: json
+  - kind: script
+    path: scripts/configure.ts
+    permissions: {run: [], net: []}
+`;
+
+const configOnlyFiles = [
+  { path: "templates/application.json", content: '{"listen":"127.0.0.1:8080"}\n' },
+  { path: "scripts/configure.ts", content: "Deno.exit(0);\n" },
+];
+
+Deno.test("unit/app schema 1: configs without management are retained and planned (117)", async () => {
+  await withTempDir(async (root) => {
+    const directory = await schemaApp(root, configOnlyVersioned, configOnlyFiles);
+    const cluster = await loadCluster(directory);
+    const app = cluster.apps.get("demo")!;
+    assertEquals(app.management?.configs.length, 1);
+    assertEquals(app.management?.configScripts.length, 1);
+    assertEquals(app.management?.manager, undefined);
+    const plan = buildPlan(cluster, { action: "deploy", apps: ["demo"] });
+    assertEquals(plan.steps.map((step) => step.action), ["configure", "stage", "activate"]);
+    for (const step of plan.steps) {
+      assertEquals(step.management?.configs.length, 1);
+      assertEquals(step.management?.configScripts.length, 1);
+      assertEquals(step.management?.manager, undefined);
+    }
+    assertEquals(plan.steps[0].scripts.length, 1);
+    assertEquals(plan.steps[0].scripts[0].relativePath, "scripts/configure.ts");
+  });
+});
+
+Deno.test("unit/app schema 1: file-only configs without management publish during stage phases (117)", async () => {
+  await withTempDir(async (root) => {
+    const body = `schema_version: 1
+name: demo
+install_directory: /srv/demo
+deployment:
+  kind: versioned
+configs:
+  - kind: file
+    source: templates/application.json
+    target: /etc/demo/application.json
+    format: json
+`;
+    const directory = await schemaApp(root, body, [{
+      path: "templates/application.json",
+      content: '{"listen":"127.0.0.1:8080"}\n',
+    }]);
+    const cluster = await loadCluster(directory);
+    const app = cluster.apps.get("demo")!;
+    assertEquals(app.management?.manager, undefined);
+    const plan = buildPlan(cluster, { action: "deploy", apps: ["demo"] });
+    assertEquals(plan.steps.map((step) => step.action), ["stage", "activate"]);
+    for (const step of plan.steps) {
+      assertEquals(step.management?.configs.length, 1);
+      assertEquals(step.management?.manager, undefined);
+    }
+  });
+});
+
+Deno.test("unit/app schema 1: packageless configs without management plan configure delivery (117)", async () => {
+  await withTempDir(async (root) => {
+    const body = `schema_version: 1
+name: demo
+packageless: true
+configs:
+  - kind: file
+    source: templates/application.json
+    target: /etc/demo/application.json
+    format: json
+`;
+    const directory = await schemaApp(root, body, [{
+      path: "templates/application.json",
+      content: '{"listen":"127.0.0.1:8080"}\n',
+    }]);
+    await Deno.writeTextFile(
+      join(directory, "app_versions.yaml"),
+      "schema_version: 1\napps: {}\n",
+    );
+    const cluster = await loadCluster(directory);
+    const app = cluster.apps.get("demo")!;
+    assertEquals(app.packageless, true);
+    assertEquals(app.management?.configs.length, 1);
+    assertEquals(app.management?.manager, undefined);
+    const plan = buildPlan(cluster, { action: "deploy", apps: ["demo"] });
+    assertEquals(plan.steps.map((step) => step.action), ["configure"]);
+    assertEquals(plan.steps[0].management?.configs.length, 1);
+    assertEquals(plan.steps[0].management?.manager, undefined);
+  });
+});
+
+Deno.test("unit/app schema 1: no configs and no management keep management undefined (117)", async () => {
+  await withTempDir(async (root) => {
+    const body = `schema_version: 1
+name: demo
+install_directory: /srv/demo
+deployment:
+  kind: versioned
+`;
+    const directory = await schemaApp(root, body);
+    const cluster = await loadCluster(directory);
+    assertEquals(cluster.apps.get("demo")!.management, undefined);
+    const plan = buildPlan(cluster, { action: "deploy", apps: ["demo"] });
+    assertEquals(plan.steps.map((step) => step.action), ["stage", "activate"]);
+    for (const step of plan.steps) assertEquals(step.management, undefined);
+  });
+});
+
+Deno.test("unit/app schema 1: on_change without management still fails closed (117)", async () => {
+  await withTempDir(async (root) => {
+    const body = `schema_version: 1
+name: demo
+install_directory: /srv/demo
+deployment:
+  kind: versioned
+configs:
+  - kind: file
+    source: templates/application.json
+    target: /etc/demo/application.json
+    format: json
+    on_change: restart
+`;
+    const directory = await schemaApp(root, body, [{
+      path: "templates/application.json",
+      content: "{}\n",
+    }]);
+    const error = await assertRejects(() => loadCluster(directory), ConfigurationError);
+    assertStringIncludes(error.message, "on_change requires management.kind: service");
+  });
+});
+
+Deno.test("unit/app schema 1: configs-only apps reject lifecycle actions without a manager (117)", async () => {
+  await withTempDir(async (root) => {
+    const directory = await schemaApp(root, configOnlyVersioned, configOnlyFiles);
+    const cluster = await loadCluster(directory);
+    for (const action of ["start", "stop", "restart"]) {
+      const error = assertThrows(
+        () => buildPlan(cluster, { action, apps: ["demo"] }),
+        PlanningError,
+      );
+      assertStringIncludes(error.message, `has no action script: ${action}`);
+    }
   });
 });

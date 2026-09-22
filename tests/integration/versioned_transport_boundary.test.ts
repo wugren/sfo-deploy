@@ -255,7 +255,6 @@ Deno.test("integration/versioned-transport: missing release parent is created wi
         target,
         releaseRoot,
         mode: 0o600,
-        runAs: "ubuntu",
         secretRoot: "/opt/secrets",
         secretFiles: [],
       }]);
@@ -264,10 +263,10 @@ Deno.test("integration/versioned-transport: missing release parent is created wi
       assertEquals(publications[0].existed, false);
       const rootCheck = calls.indexOf(`exec 'realpath' '-e' '--' '${releaseRoot}'`);
       const createResources = calls.indexOf(
-        `exec '/usr/bin/install' '-d' '-m' '0750' '-o' 'ubuntu' '--' '${releaseRoot}/resources'`,
+        `exec '/usr/bin/install' '-d' '-m' '0750' '-o' 'deploy' '--' '${releaseRoot}/resources'`,
       );
       const createConfig = calls.indexOf(
-        `exec '/usr/bin/install' '-d' '-m' '0750' '-o' 'ubuntu' '--' '${parent}'`,
+        `exec '/usr/bin/install' '-d' '-m' '0750' '-o' 'deploy' '--' '${parent}'`,
       );
       const parentCheck = calls.indexOf(`exec 'realpath' '-e' '--' '${parent}'`);
       const install = calls.findIndex((call) => call.includes("'install' '-m' '0600'"));
@@ -282,7 +281,7 @@ Deno.test("integration/versioned-transport: missing release parent is created wi
   });
 });
 
-Deno.test("integration/versioned-transport: missing release parent without run_as uses privileged identity", async () => {
+Deno.test("integration/versioned-transport: missing release parent creates directories for the SSH identity", async () => {
   await withTempDir(async (root) => {
     const knownHosts = `${root}/known_hosts`;
     await Deno.writeTextFile(knownHosts, "fixture\n");
@@ -328,7 +327,7 @@ Deno.test("integration/versioned-transport: missing release parent without run_a
       }]);
       assertEquals(publications.length, 1);
       assert(calls.includes(
-        `exec '/usr/bin/install' '-d' '-m' '0750' '--' '${parent}'`,
+        `exec '/usr/bin/install' '-d' '-m' '0750' '-o' 'deploy' '--' '${parent}'`,
       ));
     } finally {
       await session.close();
@@ -375,7 +374,6 @@ Deno.test("integration/versioned-transport: missing release parent rejects inter
             target,
             releaseRoot,
             mode: 0o600,
-            runAs: "ubuntu",
             secretRoot: "/opt/secrets",
             secretFiles: [],
           }]),
@@ -430,7 +428,6 @@ Deno.test("integration/versioned-transport: GNU test probes avoid unsupported en
         target,
         releaseRoot,
         mode: 0o600,
-        runAs: "ubuntu",
         secretRoot: "/opt/secrets",
         secretFiles: [],
       }]);

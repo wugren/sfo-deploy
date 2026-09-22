@@ -2,7 +2,7 @@ import { join, resolve, toFileUrl } from "jsr:@std/path@1.1.6";
 
 const TEMPLATE_CLUSTER = "examples/eleph-server-multipass/cluster-template";
 const MATERIALIZED_CLUSTER = "examples/eleph-server-multipass/clusters/multipass";
-const EXPECTED_SCRIPT_COUNT = 13;
+const EXPECTED_SCRIPT_COUNT = 10;
 
 function fail(message: string): never {
   console.error(`verify-independent-remote-scripts: ${message}`);

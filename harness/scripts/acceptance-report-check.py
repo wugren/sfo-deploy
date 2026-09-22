@@ -13,7 +13,7 @@ import re
 import sys
 from pathlib import Path
 
-from task_manifest import TaskManifestError, parse_task_manifest, stage_is_automatic
+from task_manifest import TaskManifestError, parse_task_manifest
 
 
 TABLE_SEPARATOR_RE = re.compile(
@@ -221,25 +221,8 @@ def expected_document_sources(packet: Path) -> dict[str, list[str]]:
             fail(str(error))
     else:
         task = {}
-    policy = {
-        "stage": str(task["stage"]) if task.get("stage") is not None else None,
-        "mode": str(task["mode"]) if task.get("mode") is not None else None,
-        "start": (
-            str(task["auto_pipeline_start_stage"])
-            if task.get("auto_pipeline_start_stage") is not None
-            else None
-        ),
-    }
-    automatic_design = stage_is_automatic(policy, "design")
-    automatic_testing = stage_is_automatic(policy, "testing")
-    design_candidates = (
-        ("pipeline/plan.md",) if automatic_design else ("design.md",)
-    )
-    testing_candidates = (
-        ("testplan.yaml",)
-        if automatic_testing
-        else ("testing.md", "testplan.yaml")
-    )
+    design_candidates = ("design.md",)
+    testing_candidates = ("testing.md", "testplan.yaml")
     design_sources = [
         relative for relative in design_candidates if (packet / relative).is_file()
     ]
@@ -274,8 +257,8 @@ def check_report(path: Path, text: str, root: Path) -> None:
     scope = object_scope(text, path, root)
     expected = (
         root
-        / "docs"
-        / "versions"
+        / ".harness"
+        / "tasks"
         / str(scope["version"])
         / "modules"
         / str(scope["module"])

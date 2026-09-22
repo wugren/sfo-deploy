@@ -98,7 +98,7 @@ Deno.test("unit/deploy confirm: --no-activate prompts as stage-only deploy", asy
   assert(declined.confirmCalled());
   assertStringIncludes(
     declined.stderr.text(),
-    "activation is skipped: versions are uploaded and deployed without switching latest or restarting",
+    "activation is skipped: managed config and versions are published without switching latest or reloading/restarting",
   );
 });
 

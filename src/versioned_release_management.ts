@@ -6,8 +6,8 @@ export interface VersionedReleaseRequest {
   readonly installDirectory: string;
   readonly resource: string;
   readonly version: string;
-  /** 已由执行器验证的应用运行账户；版本标记须供后续 stage 读取。 */
-  readonly runAs: string;
+  /** App 根级发布权限位；声明时收敛发布根与版本树，未声明时不做权限变更。 */
+  readonly mode?: string;
   readonly keepVersions?: number;
 }
 
@@ -26,13 +26,33 @@ export interface PreparedVersionedRelease {
 }
 
 const VERSION = /^[A-Za-z0-9][A-Za-z0-9._+-]*$/;
+const RELEASE_MODE = /^0?[0-7]{3}$/;
+
+/** 把八进制发布模式渲染为 chmod 符号表达式：目录与已有执行位文件自动获得 x。 */
+export function modeChmodExpression(mode: string): string {
+  if (!RELEASE_MODE.test(mode)) throw new PreflightError("Invalid release mode");
+  const bits = Number.parseInt(mode, 8);
+  const classExpression = (shift: number, label: "u" | "g" | "o"): string => {
+    const value = (bits >> shift) & 0o7;
+    if (value === 0) return `${label}=`;
+    const read = value & 0o4 ? "r" : "";
+    const write = value & 0o2 ? "w" : "";
+    const execute = value & 0o1 ? "x" : value & 0o4 ? "X" : "";
+    return `${label}=${read}${write}${execute}`;
+  };
+  return [
+    classExpression(6, "u"),
+    classExpression(3, "g"),
+    classExpression(0, "o"),
+  ].join(",");
+}
 
 async function run(
   session: RemoteSession,
   argv: readonly string[],
   signal?: AbortSignal,
 ): Promise<string> {
-  const result = await session.run(argv, { privileged: true, signal });
+  const result = await session.run(argv, { signal });
   if (result.exitCode !== 0) {
     throw new TransportError(`Version operation ${argv[0]} failed: ${result.stderr.trim()}`);
   }
@@ -45,7 +65,7 @@ async function test(
   path: string,
   signal?: AbortSignal,
 ): Promise<boolean> {
-  const result = await session.run(["/usr/bin/test", flag, path], { privileged: true, signal });
+  const result = await session.run(["/usr/bin/test", flag, path], { signal });
   if (result.exitCode !== 0 && result.exitCode !== 1) {
     throw new TransportError(`Failed to inspect version path ${path}`);
   }
@@ -64,13 +84,13 @@ export async function prepareVersionedRelease(
       index > 0 && (part === ".." || part === "." || part === "")
     ) ||
     !VERSION.test(request.version) || !/^[A-Za-z][A-Za-z0-9_.-]*$/.test(request.resource) ||
-    typeof request.runAs !== "string" || !/^[a-z_][a-z0-9_-]{0,31}\$?$/.test(request.runAs) ||
+    (request.mode !== undefined &&
+      (typeof request.mode !== "string" || !RELEASE_MODE.test(request.mode))) ||
     (request.keepVersions !== undefined && (!Number.isInteger(request.keepVersions) ||
       request.keepVersions < 1 || request.keepVersions > 100))
   ) {
     throw new PreflightError("Invalid version commit arguments");
   }
-  await session.preflightPrivilege(signal);
   const releasePath = `${root}/${request.version}`;
   for (const path of [root, releasePath]) {
     if (!(await test(session, "-d", path, signal)) || await test(session, "-L", path, signal)) {
@@ -83,6 +103,11 @@ export async function prepareVersionedRelease(
     await run(session, ["/usr/bin/cat", "--", `${releasePath}/VERSION`], signal) !== request.version
   ) {
     throw new TransportError(`Version directory VERSION mismatch ${releasePath}`);
+  }
+  if (request.mode !== undefined) {
+    const expression = modeChmodExpression(request.mode);
+    await run(session, ["/usr/bin/chmod", expression, "--", root], signal);
+    await run(session, ["/usr/bin/chmod", "-R", expression, "--", releasePath], signal);
   }
   const latestPath = `${root}/latest`;
   const markerPath = `${root}/.${request.resource}.version`;
@@ -137,8 +162,6 @@ export async function prepareVersionedRelease(
       "/usr/bin/install",
       "-m",
       "0640",
-      "-o",
-      request.runAs,
       "--",
       `${releasePath}/VERSION`,
       state.temporaryMarker,

@@ -22,9 +22,11 @@ async function fixture(
     same?: boolean;
     service?: boolean | "static";
     reload?: boolean;
+    implicitEnabled?: boolean;
     fault?: Fault;
     cancel?: AbortController;
     targetRoot?: "current" | "latest" | "install";
+    mode?: string;
   } = {},
 ) {
   const identity = await new Deno.Command("id", { args: ["-un"] }).output();
@@ -71,10 +73,6 @@ async function fixture(
         events.push(`${index}:unlock`);
       },
       // deno-lint-ignore require-await -- recording RemoteSession promise boundary
-      async validateManagedIdentity() {
-        return { runAs: "deploy", uid: 0, sshUid: 0, requiresSudo: false };
-      },
-      // deno-lint-ignore require-await -- recording RemoteSession promise boundary
       async preflightPrivilege() {
         events.push(`${index}:privilege`);
       },
@@ -111,15 +109,24 @@ async function fixture(
           reused: false,
         };
       },
-      // deno-lint-ignore require-await -- recording RemoteSession promise boundary
-      async createScopedSecretCopy() {
-        return { workspace, path: workspace, runAs: "deploy" };
-      },
-      async cleanupScopedSecretCopy() {},
       async createManagedConfigCandidate(request: { name: string }) {
         const path = `${workspace}/candidate`;
         await Deno.copyFile(source, path);
         return { name: request.name, workspace, path };
+      },
+      async createScopedSecretCopy() {
+        const path = `${workspace}/consumer-secrets-${events.length}`;
+        await Deno.mkdir(path, { recursive: true });
+        events.push(`${index}:scoped-secrets`);
+        return { workspace, path };
+      },
+      cleanupScopedSecretCopy(): Promise<void> {
+        events.push(`${index}:cleanup-secrets`);
+        return Promise.resolve();
+      },
+      async exposeStepSecrets() {
+        await Deno.mkdir(`${workspace}/secrets`, { recursive: true });
+        return `${workspace}/secrets`;
       },
       async publishManagedConfigs(requests: readonly ManagedConfigPublishRequest[]) {
         events.push(`${index}:publish`);
@@ -213,8 +220,8 @@ async function fixture(
           return commandResult(0);
         }
         if (argv[0] === "/usr/bin/install" && argv.at(-1)?.includes(".sfo-deploy-marker-")) {
-          // Verify the executor passes the app identity before adapting the local OS account.
-          assertEquals(argv[argv.indexOf("-o") + 1], "deploy");
+          // 版本标记由部署身份直接创建，不再降权到独立 run_as 账号。
+          assert(!argv.includes("-o"), JSON.stringify(argv));
           assertEquals(argv[argv.indexOf("-m") + 1], "0640");
         }
         const realArgs = argv[0] === "/usr/bin/install" && argv.includes("-o")
@@ -249,13 +256,12 @@ async function fixture(
         parameters: { version: "v2" },
         deployment: { kind: "versioned" },
         installDirectory: install,
-        runAs: "deploy",
+        mode: options.mode,
         secretValues: [],
         secretFiles: [],
         templates: [],
         dependsOn: action === "activate" ? installs.map((_, i) => `app:node-${i}/demo:stage`) : [],
         management: {
-          runAs: "deploy",
           configs: [{
             name: "application",
             relativePath: "templates/application.yml",
@@ -268,16 +274,29 @@ async function fixture(
             variables: [],
             format: "yaml",
             secretReferences: new Map(),
-            onChange: options.reload ? "reload" : options.service === "static" ? "none" : "restart",
+            onChange: options.implicitEnabled
+              ? "none"
+              : options.reload
+              ? "reload"
+              : options.service === "static"
+              ? "none"
+              : "restart",
           }],
           configScripts: [],
           manager: options.service === false ? undefined : {
             kind: "service",
             tool: "systemctl",
             unit: options.reload ? "nginx.service" : "demo.service",
-            enabled: options.service === "static" || options.reload ? undefined : true,
+            enabled: options.implicitEnabled
+              ? true
+              : options.service === "static" || options.reload
+              ? undefined
+              : true,
+            enabledExplicit: options.implicitEnabled
+              ? false
+              : options.service !== "static" && !options.reload,
             daemonReload: !options.reload,
-            onDeploy: options.service === "static" ? "none" : "restart",
+            onDeploy: options.implicitEnabled || options.service === "static" ? "none" : "restart",
             timeoutMs: 1000,
           },
         },
@@ -330,6 +349,44 @@ for (const variant of [{}, { first: true }, { same: true }, { service: false }])
       }
     }));
 }
+
+Deno.test("dv/104: root mode converges the release root and version tree under the SSH identity", () =>
+  withTempDir(async (root) => {
+    const f = await fixture(root, { mode: "0644" });
+    const result = await new DeploymentExecutor(f.transport).execute(f.plan);
+    assert(
+      result.steps.every((s) => s.status === StepStatus.SUCCEEDED),
+      JSON.stringify(result.steps),
+    );
+    for (const index of [0, 1]) {
+      const installEvents = f.events.filter((event) =>
+        event.startsWith(`${index}:/usr/bin/install -d -m 0750 -o deploy`)
+      );
+      assert(installEvents.length > 0, JSON.stringify(f.events));
+      for (const event of installEvents) {
+        assert(!event.includes(" -g "), event);
+      }
+      assert(
+        f.events.includes(
+          `${index}:/usr/bin/chmod u=rwX,g=rX,o=rX -- ${f.installs[index]}`,
+        ),
+        JSON.stringify(f.events),
+      );
+      assert(
+        f.events.includes(
+          `${index}:/usr/bin/chmod -R u=rwX,g=rX,o=rX -- ${f.installs[index]}/v2`,
+        ),
+        JSON.stringify(f.events),
+      );
+      assert(!f.events.some((event) => event.includes("/usr/bin/chgrp")), JSON.stringify(f.events));
+      // 收敛后当前版本树对 other 可读、目录可穿越。
+      assertEquals((await Deno.stat(`${f.installs[index]}/v2`)).mode! & 0o777, 0o755);
+      assertEquals(
+        (await Deno.stat(`${f.installs[index]}/v2/resources/application.yml`)).mode! & 0o777,
+        0o644,
+      );
+    }
+  }));
 
 Deno.test("dv/082: latest target stays on the latest symlink path during deploy", () =>
   withTempDir(async (root) => {
@@ -384,6 +441,24 @@ for (const fault of ["publish", "switch", "service", "marker", "restore"] as con
 Deno.test("dv/069: static versioned service defers to existing unit state", () =>
   withTempDir(async (root) => {
     const f = await fixture(root, { service: "static" });
+    const result = await new DeploymentExecutor(f.transport).execute(f.plan);
+    assert(
+      result.steps.every((s) => s.status === StepStatus.SUCCEEDED),
+      JSON.stringify(result.steps),
+    );
+    assert(
+      f.events.every((event) => !event.includes("systemctl start -- demo.service")),
+      JSON.stringify(f.events),
+    );
+    assert(
+      f.events.every((event) => !event.includes("systemctl restart -- demo.service")),
+      JSON.stringify(f.events),
+    );
+  }));
+
+Deno.test("dv/106: implicit enabled keeps the unit enabled without forcing a restart", () =>
+  withTempDir(async (root) => {
+    const f = await fixture(root, { implicitEnabled: true });
     const result = await new DeploymentExecutor(f.transport).execute(f.plan);
     assert(
       result.steps.every((s) => s.status === StepStatus.SUCCEEDED),
@@ -585,4 +660,42 @@ Deno.test("dv/069: explicit configure updates current link target without activa
       "value: new\n",
     );
     assertEquals(await Deno.readTextFile(`${f.installs[0]}/v2/resources/application.yml`), "old\n");
+  }));
+
+Deno.test("dv/112: pre-stage configure defers managed config publication to the stage transaction", () =>
+  withTempDir(async (root) => {
+    const f = await fixture(root, { targetRoot: "latest", service: false });
+    const [stage0, stage1, activate0, activate1] = f.plan.steps;
+    const configureSteps = [stage0, stage1].map((stage, index) => ({
+      ...stage,
+      id: `app:node-${index}/demo:configure`,
+      action: "configure" as const,
+      deployment: undefined,
+      dependsOn: [],
+    }));
+    const stages = [stage0, stage1].map((stage, index) => ({
+      ...stage,
+      dependsOn: [configureSteps[index].id],
+    }));
+    const plan: ExecutionPlan = {
+      ...f.plan,
+      requestedAction: "deploy",
+      steps: [configureSteps[0], configureSteps[1], ...stages, activate0, activate1],
+    };
+    const result = await new DeploymentExecutor(f.transport).execute(plan);
+    assert(
+      result.steps.every((step) => step.status === StepStatus.SUCCEEDED),
+      JSON.stringify(result.steps),
+    );
+    for (const step of result.steps.slice(0, 2)) {
+      assertEquals(step.action, "configure");
+      // F3：前置 configure 不发布受管配置，也不提交配置备份。
+      assertEquals(step.changed, false, JSON.stringify(step));
+    }
+    // 只有 stage 事务发布受管配置；旧行为下 configure 与 stage 会各发布一次。
+    assertEquals(f.events.filter((event) => event.endsWith(":publish")).length, 2);
+    for (const step of result.steps.slice(2, 4)) {
+      assertEquals(step.action, "stage");
+      assertEquals(step.changed, true, JSON.stringify(step));
+    }
   }));

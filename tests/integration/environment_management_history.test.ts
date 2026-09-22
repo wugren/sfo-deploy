@@ -133,7 +133,7 @@ machines:
 `,
     );
     const cluster = await loadCluster(clusterDirectory);
-    const plan = buildPlan(cluster, { action: "stop" });
+    const plan = buildPlan(cluster, { action: "stop", environments: ["runtime"] });
     const snapshot = join(root, "snapshot");
     await Deno.mkdir(snapshot, { recursive: true });
     const archive = {

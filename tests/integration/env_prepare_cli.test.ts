@@ -45,32 +45,16 @@ class IntegrationSession implements RemoteSession {
     return Promise.resolve();
   }
 
-  validateManagedIdentity(runAs: string): Promise<{
-    readonly runAs: string;
-    readonly uid: number;
-    readonly sshUid: number;
-    readonly requiresSudo: boolean;
-  }> {
-    return Promise.resolve(Object.freeze({
-      runAs,
-      uid: 1000,
-      sshUid: 1000,
-      requiresSudo: false,
-    }));
-  }
-
   createScopedSecretCopy(
     request: {
       readonly workspace: string;
       readonly sourceDirectory: string;
       readonly names: readonly string[];
-      readonly runAs: string;
     },
-  ): Promise<{ readonly workspace: string; readonly path: string; readonly runAs: string }> {
+  ): Promise<{ readonly workspace: string; readonly path: string }> {
     return Promise.resolve(Object.freeze({
       workspace: request.workspace,
       path: `${request.workspace}/consumer-secrets-integration`,
-      runAs: request.runAs,
     }));
   }
 
@@ -82,7 +66,6 @@ class IntegrationSession implements RemoteSession {
     request: {
       readonly workspace: string;
       readonly packagePath: string;
-      readonly runAs: string;
     },
   ): Promise<{
     readonly workspace: string;
@@ -231,6 +214,24 @@ class IntegrationTransport implements Transport {
   }
 }
 
+class InstallFailingSession extends IntegrationSession {
+  #executions = 0;
+
+  override executeDeno(): Promise<CommandResult> {
+    this.#executions += 1;
+    return Promise.resolve(commandResult(this.#executions === 1 ? 1 : 7));
+  }
+}
+
+class InstallFailingTransport implements Transport {
+  readonly sessions = new Map<string, InstallFailingSession>();
+  connect(_target: ResolvedMachine): Promise<RemoteSession> {
+    const session = new InstallFailingSession();
+    this.sessions.set("node-a", session);
+    return Promise.resolve(session);
+  }
+}
+
 Deno.test("integration/prepare: public CLI exposes prepare action", () => {
   assert((CLI_ACTIONS as readonly string[]).includes("prepare"));
 });
@@ -267,6 +268,28 @@ Deno.test("integration/prepare: run() prepares the selected environment app end 
     const session = transport.sessions.get("node-a")!;
     assertEquals(session.environmentVersions.get("base"), "2");
     assert(session.closed);
+  });
+});
+
+Deno.test("integration/prepare: failed install does not record the environment version marker", async () => {
+  await withTempDir(async (root) => {
+    await writeCluster(root, {
+      envActions: ["check", "install", "configure", "start", "restart"],
+      envVersion: "2",
+    });
+    const transport = new InstallFailingTransport();
+    const result = await run(
+      {
+        configRoot: root,
+        cluster: "demo",
+        action: "prepare",
+        environments: ["base"],
+      },
+      { transport },
+    ) as DeploymentResult;
+    assert(result.exitCode !== 0);
+    const session = transport.sessions.get("node-a")!;
+    assertEquals(session.environmentVersions.has("base"), false);
   });
 });
 
@@ -329,7 +352,6 @@ configs:
     target: /etc/demo/application.json
     format: json
 management:
-  run_as: deploy
   kind: script
   start: {path: scripts/start.ts, permissions: {run: [], net: []}}
   stop: {path: scripts/stop.ts, permissions: {run: [], net: []}}
@@ -342,6 +364,14 @@ management:
         "Deno.exit(0);\n",
       );
     }
+    await Deno.writeTextFile(
+      join(directory, "cluster.yaml"),
+      `schema_version: 2\nname: demo\nexecutor_region: local\nenvironments:\n  base: [node-a]\napps:\n  demo: [node-a]\nsecrets:\n  DB_PASSWORD:\n    kind: value\n    machines: [node-a]\n`,
+    );
+    await Deno.writeTextFile(
+      join(directory, "apps", "demo", "templates", "application.json"),
+      '{ "password": "${DB_PASSWORD}" }\n',
+    );
     const result = await run(
       {
         configRoot: root,
@@ -365,7 +395,7 @@ management:
   });
 });
 
-Deno.test("integration/lifecycle: configure/start/stop/restart/deploy/rollback 都创建完整 control attempt", async () => {
+Deno.test("integration/lifecycle: start/stop/restart/deploy/rollback 都创建完整 control attempt", async () => {
   await withTempDir(async (root) => {
     const directory = await writeCluster(root);
     const packageBytes = gzipSync(new TextEncoder().encode("fixture-package"));
@@ -393,7 +423,6 @@ configs:
     path: scripts/configure.ts
     permissions: {run: [], net: []}
 management:
-  run_as: deploy
   kind: script
   start: {path: scripts/start.ts, permissions: {run: [], net: []}}
   stop: {path: scripts/stop.ts, permissions: {run: [], net: []}}
@@ -425,7 +454,7 @@ management:
     };
     const downloadProviders = new DownloadProviderRegistry({ fixture: fixtureProvider });
     let deployReleaseId = "";
-    for (const action of ["configure", "start", "stop", "restart", "deploy"] as const) {
+    for (const action of ["start", "stop", "restart", "deploy"] as const) {
       const result = await run(
         { configRoot: root, cluster: "demo", action, apps: ["demo"] },
         { transport, downloadProviders },

@@ -4,7 +4,11 @@ import { join } from "jsr:@std/path@1.1.6";
 import { buildDeploymentBundle, type BuiltDeploymentBundle } from "./deployment_bundle.ts";
 import { assertGzipTar, DownloadProviderRegistry, type VerifiedArtifact } from "./downloads.ts";
 import { EnvironmentCheckResult } from "./environment.ts";
-import { convergeEnvironmentService, installEnvironmentPackages } from "./environment_runtime.ts";
+import {
+  convergeEnvironmentService,
+  enableEnvironmentService,
+  installEnvironmentPackages,
+} from "./environment_runtime.ts";
 import { CancelledError, PreflightError, TransportError } from "./errors.ts";
 import { generateConfigSkeleton } from "./config_generation.ts";
 import type { CachePolicy, PackageCache, PackageMetadata } from "./package_cache.ts";
@@ -30,7 +34,6 @@ import {
 } from "./results.ts";
 import { DEFAULT_SECRETS_DIR, ProjectBindings, Redactor } from "./secrets.ts";
 import {
-  convergeSystemd,
   executePreparedSystemd,
   inspectSystemd,
   type PreparedSystemdConvergence,
@@ -46,7 +49,11 @@ import {
   restoreVersionedRelease,
   switchVersionedRelease,
 } from "./versioned_release_management.ts";
-import { generateSystemdUnitSkeleton, serviceUnitManagedConfig } from "./systemd_unit.ts";
+import {
+  generateSystemdUnitSkeleton,
+  resolveUnitUser,
+  serviceUnitManagedConfig,
+} from "./systemd_unit.ts";
 import { OpenSshTransport, type RemoteSession, type Transport } from "./transport.ts";
 import type {
   ExecutionPlan,
@@ -84,6 +91,8 @@ interface PreparedDeployment {
   readonly lease: RemoteOperationLease;
   /** stage-only 部署：计划不含该应用的后续 activate 步骤，stage 完成即视为已提交。 */
   readonly terminalStage: boolean;
+  /** script manager 部署：计划含后续 restart 步骤，提交边界推迟到 restart 成功之后。 */
+  readonly managerRestartPending: boolean;
   publications: readonly ManagedConfigPublication[];
   release?: PreparedVersionedRelease;
   systemdBefore?: SystemdState;
@@ -169,6 +178,11 @@ export async function prepareExecution(
   if (plan.steps.some(legacySingleVersionedDeploy)) {
     throw new PreflightError(
       "Legacy single-step versioned deploy plans cannot be replayed safely; regenerate a stage/activate plan",
+    );
+  }
+  if (plan.steps.some(legacyIdentityStep)) {
+    throw new PreflightError(
+      "Legacy release snapshots using run_as/access_group cannot be replayed safely; regenerate the plan and redeploy",
     );
   }
   const downloads = options.downloadProviders ?? new DownloadProviderRegistry();
@@ -298,7 +312,7 @@ export async function prepareExecution(
             skeleton: generateSystemdUnitSkeleton(
               unitConfig,
               service!,
-              requiredManagedRunAs(step),
+              resolveUnitUser(service!, step.machine.machine.sshUser),
             ),
             relativePath: configSkeletonKey(unitConfig),
             mode: 0o600,
@@ -524,7 +538,9 @@ export class DeploymentExecutor {
             result = skipped(step, prepareState?.upToDate ? "up-to-date" : "check-satisfied");
           } else if (
             step.kind === "environment" && plan.requestedAction === "prepare" &&
-            step.action === "configure" && prepareState?.upToDate
+            (step.action === "configure" || step.action === "before-start" ||
+              step.action === "after-start") &&
+            prepareState?.upToDate
           ) {
             result = skipped(step, "up-to-date");
           } else if (
@@ -563,7 +579,7 @@ export class DeploymentExecutor {
               const releaseLock = session.releaseOperationLock;
               let operationLease: Awaited<ReturnType<NonNullable<typeof acquireLock>>> | undefined;
               try {
-                if (managedLifecycleStep(step)) {
+                if (managedLifecycleStep(step) && deployment === undefined) {
                   if (acquireLock === undefined || releaseLock === undefined) {
                     throw new PreflightError(
                       "Remote session does not support managed App target operation locks",
@@ -586,12 +602,20 @@ export class DeploymentExecutor {
                     candidate.resource === step.resource &&
                     candidate.action === "activate"
                   );
+                  const managerRestartPending = step.management?.manager?.kind === "script" &&
+                    plan.steps.some((candidate) =>
+                      candidate.kind === step.kind &&
+                      candidate.machine.machine.name === machineName &&
+                      candidate.resource === step.resource &&
+                      candidate.action === "restart"
+                    );
                   stagedDeployment = {
                     step: prepared.steps.get(step.id)!.step,
                     session,
                     workspace,
                     lease: operationLease!,
                     terminalStage,
+                    managerRestartPending,
                     publications: [],
                     systemdAttempted: false,
                     serviceAttempted: false,
@@ -623,6 +647,15 @@ export class DeploymentExecutor {
                   prepareState.versionRead = true;
                 }
                 let executionError: unknown;
+                // versioned 部署的前置 configure：受管配置发布与内置服务动作延迟到 stage 事务。
+                const deferToStage = plan.requestedAction === "deploy" &&
+                  step.kind === "app" && step.action === "configure" &&
+                  plan.steps.some((candidate) =>
+                    candidate.kind === "app" &&
+                    candidate.machine.machine.name === machineName &&
+                    candidate.resource === step.resource &&
+                    candidate.action === "stage"
+                  );
                 try {
                   result = await this.#executeStep(prepared.steps.get(step.id)!, {
                     index,
@@ -633,10 +666,27 @@ export class DeploymentExecutor {
                     checks,
                     checkCanInstall: installCheckIds.has(step.id),
                     deployment: stagedDeployment,
+                    deferToStage,
+                    suppressServiceConvergence: plan.requestedAction === "deploy" &&
+                      plan.activate === false,
                     signal,
                   });
                 } catch (cause) {
                   executionError = cause;
+                }
+                if (
+                  executionError === undefined && result?.status === StepStatus.SUCCEEDED &&
+                  step.action === "restart" && deployment !== undefined &&
+                  deployment.managerRestartPending && !deployment.committed &&
+                  deployment.release !== undefined
+                ) {
+                  // script manager 的事务末步：restart 成功后才提交版本。
+                  try {
+                    await finalizeVersionedRelease(deployment.session, deployment.release, signal);
+                    deployment.committed = true;
+                  } catch (cause) {
+                    executionError = cause;
+                  }
                 }
                 try {
                   if (stagedDeployment === undefined) {
@@ -704,8 +754,7 @@ export class DeploymentExecutor {
           }
           if (
             prepareLastStepIndex.get(prepareKey) === index && !prepareState.upToDate &&
-            (result.status === StepStatus.SUCCEEDED ||
-              (result.status === StepStatus.SKIPPED && result.skipReason !== "up-to-date"))
+            result.satisfiesDependency
           ) {
             const currentVersion = parameterVersion(step.parameters);
             const session = sessions.get(machineName);
@@ -820,6 +869,10 @@ export class DeploymentExecutor {
       readonly checks: Map<string, EnvironmentCheckResult>;
       readonly checkCanInstall: boolean;
       readonly deployment?: PreparedDeployment;
+      /** versioned 部署的前置 configure：受管配置发布与内置服务动作延迟到 stage 事务。 */
+      readonly deferToStage?: boolean;
+      /** 非激活 deploy 计划（--no-activate）：只交付受管配置，跳过全部服务收敛。 */
+      readonly suppressServiceConvergence?: boolean;
       readonly signal?: AbortSignal;
     },
   ): Promise<StepResult> {
@@ -827,6 +880,7 @@ export class DeploymentExecutor {
     const machine = step.machine.machine;
     const runtime = machine.scriptRuntime;
     const terminalStage = options.deployment?.terminalStage ?? false;
+    const suppressServiceConvergence = options.suppressServiceConvergence === true;
     const runtimeKey = `${machine.name}\0${runtime.kind}\0${runtime.executable}`;
     const metadataRemote = `${options.workspace}/metadata-${options.index}.json`;
     if (legacySingleVersionedDeploy(step)) {
@@ -853,18 +907,17 @@ export class DeploymentExecutor {
           step.action === "activate")
       ? [...step.management?.configs ?? [], ...(serviceUnit ? [serviceUnit] : [])]
       : [];
-    const runAs = step.kind === "app" &&
-        (step.management !== undefined || step.deployment?.kind === "versioned")
-      ? requiredManagedRunAs(step)
-      : undefined;
     const secretNames = [...new Set([...step.secretValues, ...step.secretFiles])];
-    const lifecycleSecretNames = runAs === undefined ? secretNames : [
-      ...new Set([
-        ...(step.lifecycleSecretValues ?? secretNames),
-        ...(step.lifecycleSecretFiles ?? []),
-      ]),
-    ];
-    const needsLegacySecrets = runAs === undefined && secretNames.length > 0;
+    const usesScopedSecrets = step.kind === "app" &&
+      (step.management !== undefined || step.deployment?.kind === "versioned");
+    const lifecycleSecretNames = step.kind === "app"
+      ? [
+        ...new Set([
+          ...(step.lifecycleSecretValues ?? secretNames),
+          ...(step.lifecycleSecretFiles ?? []),
+        ]),
+      ]
+      : secretNames;
     let secretCopyDir: string | undefined;
     let staged: StagedDeploymentBundle | undefined;
     let status = StepStatus.SUCCEEDED;
@@ -882,27 +935,25 @@ export class DeploymentExecutor {
       const publishConfigs = options.session.publishManagedConfigs;
       const restoreConfigs = options.session.restoreManagedConfigs;
       const commitConfigs = options.session.commitManagedConfigs;
-      const validateIdentity = options.session.validateManagedIdentity;
       const createScopedSecrets = options.session.createScopedSecretCopy;
       const cleanupScopedSecrets = options.session.cleanupScopedSecretCopy;
       const extractAppPackage = options.session.extractAppPackage;
-      if (runAs !== undefined) {
-        if (
-          validateIdentity === undefined || createScopedSecrets === undefined ||
-          cleanupScopedSecrets === undefined
-        ) {
-          throw new PreflightError(
-            "Remote session does not support managed App identity or per-consumer secret primitives",
-          );
-        }
-        await validateIdentity.call(options.session, runAs, options.signal);
+      if (
+        usesScopedSecrets &&
+        (lifecycleSecretNames.length > 0 ||
+          (managedConfigs.length > 0 && !options.deferToStage)) &&
+        (createScopedSecrets === undefined || cleanupScopedSecrets === undefined)
+      ) {
+        throw new PreflightError(
+          "Remote session does not support per-consumer secret primitives",
+        );
       }
       if (prepared.deliveryBundle !== undefined && stageBundle === undefined) {
         throw new PreflightError(
           "Remote session does not support single deployment bundle staging",
         );
       }
-      if (managedConfigs.length > 0) {
+      if (managedConfigs.length > 0 && !options.deferToStage) {
         if (
           createBuiltinCandidate === undefined || publishConfigs === undefined ||
           restoreConfigs === undefined || commitConfigs === undefined
@@ -925,7 +976,7 @@ export class DeploymentExecutor {
       }
       let extractedPackageRoot: string | undefined;
       if (
-        runAs !== undefined &&
+        step.kind === "app" &&
         (step.action === "deploy" || step.action === "stage") &&
         staged?.packagePath !== undefined
       ) {
@@ -937,7 +988,6 @@ export class DeploymentExecutor {
         extractedPackageRoot = (await extractAppPackage.call(options.session, {
           workspace: options.workspace,
           packagePath: staged.packagePath,
-          runAs,
           signal: options.signal,
         })).root;
       }
@@ -946,16 +996,19 @@ export class DeploymentExecutor {
         (step.action === "deploy" || step.action === "stage" || step.action === "activate") &&
         step.deployment?.kind === "versioned"
       ) {
-        if (runAs === undefined) {
-          throw new PreflightError("versioned App release is missing run_as");
-        }
         if (step.installDirectory === undefined) {
           throw new PreflightError("versioned App release is missing install_directory");
         }
-        await options.session.run(
-          ["/usr/bin/install", "-d", "-m", "0750", "-o", runAs, "--", step.installDirectory],
-          { signal: options.signal, privileged: true },
-        );
+        const installArgv = [
+          "/usr/bin/install",
+          "-d",
+          "-m",
+          "0750",
+          "-o",
+          machine.sshUser,
+        ];
+        installArgv.push("--", step.installDirectory);
+        await options.session.run(installArgv, { signal: options.signal, privileged: true });
       }
       if (!options.runtimeChecked.has(runtimeKey)) {
         await options.session.preflightDeno(runtime.executable, options.signal, 2);
@@ -981,23 +1034,31 @@ export class DeploymentExecutor {
       }
       if (
         status === StepStatus.SUCCEEDED && step.kind === "environment" &&
-        (step.action === "start" || step.action === "restart") &&
-        step.environmentManager?.kind === "system"
+        step.environmentManager?.kind === "system" &&
+        (step.action === "start" || step.action === "restart" || step.action === "enable")
       ) {
         try {
-          await convergeEnvironmentService(
-            options.session,
-            step.environmentManager,
-            step.action,
-            options.signal,
-          );
+          if (step.action === "enable") {
+            await enableEnvironmentService(
+              options.session,
+              step.environmentManager,
+              options.signal,
+            );
+          } else {
+            await convergeEnvironmentService(
+              options.session,
+              step.environmentManager,
+              step.action,
+              options.signal,
+            );
+          }
         } catch (cause) {
           status = StepStatus.FAILED;
           message = cause instanceof Error ? cause.message : String(cause);
           errorCategory = cause instanceof PreflightError ? "preflight" : "runtime";
         }
       }
-      if (needsLegacySecrets) {
+      if (!usesScopedSecrets && secretNames.length > 0) {
         const secretsDir = machine.secretsDir ?? DEFAULT_SECRETS_DIR;
         secretCopyDir = await options.session.exposeStepSecrets(
           secretNames,
@@ -1122,22 +1183,19 @@ export class DeploymentExecutor {
           let command: CommandResult | undefined;
           let invocationError: unknown;
           try {
-            if (runAs !== undefined && lifecycleSecretNames.length > 0) {
+            if (usesScopedSecrets && lifecycleSecretNames.length > 0) {
               invocationSecrets = await createScopedSecrets!.call(options.session, {
                 workspace: options.workspace,
                 sourceDirectory: machine.secretsDir ?? DEFAULT_SECRETS_DIR,
                 names: lifecycleSecretNames,
-                runAs,
               }, options.signal);
             }
-            const invocationSecretDir = invocationSecrets?.path ?? secretCopyDir;
             command = await options.session.executeDeno(runtime.executable, remoteScript, {
               workspace: options.workspace,
               metadataPath: metadataRemote,
-              secretDir: invocationSecretDir,
+              secretDir: invocationSecrets?.path ?? secretCopyDir,
               permissions: invocation.permissions,
-              privileged: runAs === undefined ? privileged : undefined,
-              runAs,
+              privileged,
               signal: options.signal,
             });
           } catch (cause) {
@@ -1185,25 +1243,35 @@ export class DeploymentExecutor {
           let publications: readonly ManagedConfigPublication[] = Object.freeze([]);
           let systemdBefore: SystemdState | undefined;
           let systemdAttempted = false;
+          let systemdActionAttempted = false;
           try {
             if (options.deployment !== undefined) {
               options.deployment.release = await prepareVersionedRelease(options.session, {
                 installDirectory: step.installDirectory!,
-                runAs: requiredManagedRunAs(step),
+                mode: step.mode,
                 resource: step.resource,
                 version: parameterVersion(step.parameters)!,
                 keepVersions: this.keepVersions,
               }, options.signal);
             }
-            if (systemService !== undefined && !terminalStage) {
+            if (systemService?.unitConfig !== undefined) {
+              await assertUnitUser(
+                options.session,
+                resolveUnitUser(systemService, machine.sshUser),
+                machine.sshUser,
+                options.signal,
+              );
+            }
+            if (
+              systemService !== undefined && !terminalStage && !options.deferToStage &&
+              !suppressServiceConvergence
+            ) {
               systemdBefore = await inspectSystemd(options.session, systemService, options.signal);
               if (options.deployment) options.deployment.systemdBefore = systemdBefore;
             }
-            if (managedConfigs.length > 0) {
-              if (staged === undefined || runAs === undefined) {
-                throw new PreflightError(
-                  "managed config is missing the deployment bundle or run_as",
-                );
+            if (managedConfigs.length > 0 && !options.deferToStage) {
+              if (staged === undefined) {
+                throw new PreflightError("managed config is missing the deployment bundle");
               }
               const needsUpdater = managedConfigs.some((config) => config.format !== "systemd");
               const updaterScript = needsUpdater
@@ -1245,12 +1313,10 @@ export class DeploymentExecutor {
                     path: candidatePath,
                   });
                 } else {
-                  const configSecrets = managedConfigValueSecretNames(config);
                   const scopedSecrets = await createScopedSecrets!.call(options.session, {
                     workspace: options.workspace,
                     sourceDirectory: machine.secretsDir ?? DEFAULT_SECRETS_DIR,
-                    names: configSecrets,
-                    runAs,
+                    names: managedConfigValueSecretNames(config),
                   }, options.signal);
                   let candidateError: unknown;
                   try {
@@ -1265,7 +1331,6 @@ export class DeploymentExecutor {
                       secretDir: scopedSecrets.path,
                       secretRoot: machine.secretsDir ?? DEFAULT_SECRETS_DIR,
                       fileSecrets: managedConfigFileSecretNames(config),
-                      runAs,
                       timeoutMs: systemService?.timeoutMs,
                     }, options.signal);
                   } catch (cause) {
@@ -1296,7 +1361,6 @@ export class DeploymentExecutor {
                   owner: config.owner,
                   group: config.group,
                   validator: config.validator,
-                  runAs,
                   secretRoot: machine.secretsDir ?? DEFAULT_SECRETS_DIR,
                   secretFiles: managedConfigFileSecretNames(config),
                 }));
@@ -1332,7 +1396,7 @@ export class DeploymentExecutor {
                     operation: "deploy",
                     changed: changed ?? false,
                     configAction: mergedConfigAction(managedConfigs, publications),
-                    actionOverride: systemService.enabled
+                    actionOverride: systemService.enabledExplicit === true && systemService.enabled
                       ? systemdBefore.active ? "restart" : "start"
                       : undefined,
                   },
@@ -1340,7 +1404,7 @@ export class DeploymentExecutor {
                   options.signal,
                 );
               } else {
-                const convergence = await convergeSystemd(
+                const prepared = await prepareSystemd(
                   options.session,
                   systemService,
                   {
@@ -1354,6 +1418,13 @@ export class DeploymentExecutor {
                     configAction: mergedConfigAction(managedConfigs, publications),
                   },
                   systemdBefore,
+                  options.signal,
+                );
+                if (prepared.action !== "none") systemdActionAttempted = true;
+                const convergence = await executePreparedSystemd(
+                  options.session,
+                  systemService,
+                  prepared,
                   options.signal,
                 );
                 serviceResult = Object.freeze({
@@ -1397,6 +1468,8 @@ export class DeploymentExecutor {
                   systemService,
                   systemdBefore,
                   systemService.daemonReload,
+                  undefined,
+                  systemdActionAttempted && systemdBefore.active,
                 );
               } catch (recovery) {
                 recoveryErrors.push(recovery);
@@ -1426,6 +1499,9 @@ export class DeploymentExecutor {
             message = publications.some((publication) => publication.changed)
               ? "managed config updated"
               : "managed config unchanged";
+            if (suppressServiceConvergence) {
+              message += "; service activation skipped";
+            }
           }
           if (
             options.deployment !== undefined && terminalStage && status === StepStatus.SUCCEEDED
@@ -1536,6 +1612,13 @@ function normalizeVersionedSteps(steps: readonly PlanStep[]): readonly PlanStep[
 function legacySingleVersionedDeploy(step: PlanStep): boolean {
   return step.kind === "app" && step.action === "deploy" && step.deployment?.kind === "versioned" &&
     step.scripts.some((script) => script.relativePath === REMOTE_VERSIONED_RELEASE_BUNDLE_PATH);
+}
+
+/** 旧 plan v4 快照的 run_as/access_group 只用于只读展示；重放前 fail closed。 */
+function legacyIdentityStep(step: PlanStep): boolean {
+  return step.runAs !== undefined ||
+    step.management?.runAs !== undefined ||
+    step.management?.accessGroup !== undefined;
 }
 
 function isVersionedPhase(step: PlanStep, action: "stage" | "activate"): boolean {
@@ -1664,8 +1747,11 @@ async function activateDeployment(
         after: { enabled: convergence.after.enabled, active: convergence.after.active },
       });
     }
-    await finalizeVersionedRelease(deployment.session, deployment.release, signal);
-    deployment.committed = true;
+    // script manager 的提交边界推迟到后续 restart 步骤成功之后；此处只切换 release。
+    if (!deployment.managerRestartPending) {
+      await finalizeVersionedRelease(deployment.session, deployment.release, signal);
+      deployment.committed = true;
+    }
     return new StepResult({
       stepId: step.id,
       machine: step.machine.machine.name,
@@ -1788,34 +1874,36 @@ function managedLifecycleStep(step: PlanStep): boolean {
     );
 }
 
-function requiredManagedRunAs(step: PlanStep): string {
-  const declared = step.management?.runAs;
-  const value = step.runAs ?? declared;
-  if (
-    typeof value !== "string" || value === "root" ||
-    !/^[a-z_][a-z0-9_-]{0,31}\$?$/u.test(value) ||
-    (declared !== undefined && declared !== value)
-  ) {
-    throw new PreflightError(
-      `managed App ${step.resource} is missing run_as or contains an inconsistent value`,
-    );
+/** 显式 unit 用户与 SSH 用户不同时，确认目标账号存在且 UID 大于 0。 */
+async function assertUnitUser(
+  session: RemoteSession,
+  user: string,
+  sshUser: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  if (user === sshUser) return;
+  const uid = await session.run(["id", "-u", user], { signal });
+  if (uid.exitCode !== 0) {
+    throw new PreflightError(`systemd unit user does not exist: ${user}`);
   }
-  return value;
-}
-
-function managedConfigValueSecretNames(config: ManagedConfigFile): readonly string[] {
-  return Object.freeze(
-    [...config.secretReferences.entries()]
-      .filter(([, reference]) => reference.kind === "value")
-      .map(([name]) => name)
-      .sort(),
-  );
+  if (!/^[1-9][0-9]*$/u.test(uid.stdout.trim())) {
+    throw new PreflightError(`systemd unit user is not a non-root account: ${user}`);
+  }
 }
 
 function managedConfigFileSecretNames(config: ManagedConfigFile): readonly string[] {
   return Object.freeze(
     [...config.secretReferences.entries()]
       .filter(([, reference]) => reference.kind === "file")
+      .map(([name]) => name)
+      .sort(),
+  );
+}
+
+function managedConfigValueSecretNames(config: ManagedConfigFile): readonly string[] {
+  return Object.freeze(
+    [...config.secretReferences.entries()]
+      .filter(([, reference]) => reference.kind === "value")
       .map(([name]) => name)
       .sort(),
   );

@@ -16,7 +16,7 @@ import subprocess
 import sys
 from pathlib import Path, PurePosixPath
 
-from task_manifest import TaskManifestError, parse_task_manifest, stage_is_automatic
+from task_manifest import TaskManifestError, parse_task_manifest
 
 
 STAGES = {"proposal", "design", "testing", "implementation", "acceptance"}
@@ -326,7 +326,7 @@ def packet_parts(path: str) -> tuple[str, str, str] | None:
     parts = path.split("/")
     if len(parts) < 6:
         return None
-    if parts[0] != "docs" or parts[1] != "versions" or parts[3] != "modules":
+    if parts[0] != ".harness" or parts[1] != "tasks" or parts[3] != "modules":
         return None
     version = parts[2]
     module = parts[4]
@@ -374,6 +374,8 @@ def is_review_report(path: str) -> bool:
 
 
 def is_legacy_review_area(path: str) -> bool:
+    # Retired pre-`.harness` review locations are still rejected, so an old
+    # scaffold cannot smuggle review artifacts into the implementation stage.
     if path.startswith("docs/reviews/") and path.endswith(".md"):
         return True
     parts = path.split("/")
@@ -386,57 +388,8 @@ def is_legacy_review_area(path: str) -> bool:
     )
 
 
-def pipeline_artifact_path(
-    path: str, leaf: str, version: str | None, module: str | None, submodule: str | None
-) -> bool:
-    if not version or not module or not submodule:
-        return False
-    return path == f"docs/versions/{version}/modules/{module}/{submodule}/pipeline/{leaf}"
-
-
-def is_any_pipeline_artifact(path: str) -> bool:
-    return bool(
-        re.fullmatch(
-            r"docs/versions/[^/]+/modules/[^/]+/.+/pipeline/(?:plan\.md|state\.json)",
-            path,
-        )
-    )
-
-
 def has_value(value: str) -> bool:
     return value.strip().strip('"').strip("'").lower() not in {"", "-", "n/a", "na", "none", "tbd", "todo", "pending"}
-
-
-def pipeline_trigger_value(text: str, label: str) -> str | None:
-    match = re.search(rf"(?mi)^\s*-\s*{re.escape(label)}:\s*(.+)$", text)
-    return match.group(1).strip() if match else None
-
-
-def pipeline_uses_plan_design(
-    root: Path, version: str, module: str, task_name: str | None
-) -> bool:
-    if not task_name:
-        return False
-    plan = root / "docs" / "versions" / version / "modules" / module / task_name / "pipeline" / "plan.md"
-    if not plan.exists():
-        return False
-    manifest = plan.parent.parent / "task.yaml"
-    if not manifest.is_file():
-        return False
-    try:
-        task = parse_task_manifest(manifest)
-    except TaskManifestError as error:
-        fail(str(error))
-    policy = {
-        "stage": str(task["stage"]) if task.get("stage") is not None else None,
-        "mode": str(task["mode"]) if task.get("mode") is not None else None,
-        "start": (
-            str(task["auto_pipeline_start_stage"])
-            if task.get("auto_pipeline_start_stage") is not None
-            else None
-        ),
-    }
-    return stage_is_automatic(policy, "design")
 
 
 def is_unified_test_entrypoint(path: str) -> bool:
@@ -663,21 +616,14 @@ def design_scope_paths(
     target_module: str,
     change_ids: list[str],
 ) -> list[str]:
-    if pipeline_uses_plan_design(root, version, module, submodule):
-        design = root / "docs" / "versions" / version / "modules" / module / str(submodule) / "pipeline" / "plan.md"
-        if not design.exists():
-            fail(f"missing task-local pipeline plan for auto-pipeline scope binding: {design}")
-        text = design.read_text(encoding="utf-8")
-        section = "Implementation Scope Bindings"
-    else:
-        design = root / "docs" / "versions" / version / "modules" / module
-        if submodule:
-            design = design / submodule
-        design = design / "design.md"
-        if not design.exists():
-            fail(f"missing design document for scope binding: {design}")
-        text = design.read_text(encoding="utf-8")
-        section = "Directly Mapped Change Items"
+    design = root / ".harness" / "tasks" / version / "modules" / module
+    if submodule:
+        design = design / submodule
+    design = design / "design.md"
+    if not design.exists():
+        fail(f"missing design document for scope binding: {design}")
+    text = design.read_text(encoding="utf-8")
+    section = "Directly Mapped Change Items"
 
     heading = re.search(rf"(?m)^##\s+{re.escape(section)}\s*$", text)
     if not heading:
@@ -744,10 +690,24 @@ def in_scope_paths(path: str, scope_paths: list[str]) -> bool:
     return False
 
 
+def is_harness_runtime_state(path: str) -> bool:
+    """True for `.harness` runtime state, false for its task documents."""
+    if not path.startswith(".harness/"):
+        return path == ".harness"
+    if path.startswith(".harness/changes/"):
+        return False
+    if path.startswith(".harness/tasks/"):
+        # Only version-scoped packet documents are task documents; the
+        # machine-owned unfinished-task index stays runtime state.
+        return packet_parts(path) is None
+    return True
+
+
 def allowed_for_stage(path: str, stage: str, version: str | None, module: str | None, submodule: str | None = None) -> bool:
-    # `.harness/` contains generated runtime state. It is git-ignored and never
-    # belongs in the task changed-path manifest being validated.
-    if path == ".harness" or path.startswith(".harness/"):
+    # `.harness/` is a git-ignored local tree and never belongs in the task
+    # changed-path manifest being validated. Its task documents under
+    # `.harness/tasks/` and `.harness/changes/` are classified below.
+    if is_harness_runtime_state(path):
         return False
 
     packet = active_packet(path, version, module, submodule)
@@ -768,7 +728,6 @@ def allowed_for_stage(path: str, stage: str, version: str | None, module: str | 
         return (
             is_module_boundary_sync(path, module)
             or is_architecture_doc(path)
-            or pipeline_artifact_path(path, "plan.md", version, module, submodule)
         )
 
     if stage == "testing":
@@ -789,8 +748,6 @@ def allowed_for_stage(path: str, stage: str, version: str | None, module: str | 
         return is_review_report(path)
 
     if stage == "implementation":
-        if is_any_pipeline_artifact(path):
-            return False
         if packet_parts(path) is not None and path.rsplit("/", 1)[-1] == "task.yaml":
             return False
         if is_stage_doc_path(path) or is_review_report(path) or is_legacy_review_area(path) or is_module_boundary_sync(path, module) or is_architecture_doc(path):
@@ -799,7 +756,7 @@ def allowed_for_stage(path: str, stage: str, version: str | None, module: str | 
             return False
         if path == "AGENTS.md":
             return False
-        # Rules, scripts, checkers, and pipeline plans are
+        # Rules, scripts, and checkers are
         # governance surfaces that implementation tasks must not modify.
         if path.startswith("harness/"):
             return False

@@ -185,3 +185,196 @@ Deno.test("dv/environment management: stop runs script manager invocation", asyn
     ]);
   });
 });
+
+Deno.test("dv/environment management: prepare runs init before/after start scripts in order", async () => {
+  await withTempDir(async (root) => {
+    const beforePath = join(root, "before.ts");
+    const afterPath = join(root, "after.ts");
+    await Deno.writeTextFile(beforePath, "Deno.exit(0);\n");
+    await Deno.writeTextFile(afterPath, "Deno.exit(0);\n");
+    const beforeInvocation: ScriptInvocation = Object.freeze({
+      source: beforePath,
+      relativePath: "scripts/before.ts",
+      permissions: Object.freeze({ run: Object.freeze([]), net: Object.freeze([]) }),
+    });
+    const afterInvocation: ScriptInvocation = Object.freeze({
+      source: afterPath,
+      relativePath: "scripts/after.ts",
+      permissions: Object.freeze({ run: Object.freeze([]), net: Object.freeze([]) }),
+    });
+    const session = new FakeSession(
+      127,
+      "",
+      0,
+      0,
+      "",
+      "/home/deploy",
+      [],
+      "/usr/bin/apt-get",
+      0,
+      0,
+      true,
+      undefined,
+      1,
+    );
+    const machine = session as unknown as never;
+    const resolved = {
+      machine: {
+        name: "node-a",
+        domains: [],
+        privateIp: ["10.0.0.1"],
+        publicIp: ["203.0.113.10"],
+        region: "local",
+        sshUser: "deploy",
+        sshPort: 22,
+        scriptRuntime: { kind: "deno", executable: "/usr/bin/deno" },
+        environments: [],
+      },
+      address: "10.0.0.1",
+      addressKind: "private",
+      addresses: ["10.0.0.1"],
+    } as never;
+    const install: PlanStep = Object.freeze({
+      id: "env:node-a/runtime:install",
+      machine: resolved,
+      kind: "environment",
+      resource: "runtime",
+      action: "install",
+      scripts: [],
+      parameters: { version: "1", requires_privilege: true },
+      secretValues: [],
+      secretFiles: [],
+      templates: [],
+      dependsOn: [],
+      environmentInstall: packageInstall,
+    });
+    const beforeStart: PlanStep = Object.freeze({
+      ...install,
+      id: "env:node-a/runtime:before-start",
+      action: "before-start",
+      scripts: [beforeInvocation],
+      dependsOn: ["env:node-a/runtime:install"],
+    });
+    const start: PlanStep = Object.freeze({
+      ...install,
+      id: "env:node-a/runtime:start",
+      action: "start",
+      dependsOn: ["env:node-a/runtime:before-start"],
+      environmentInstall: undefined,
+      environmentManager: serviceManager,
+    });
+    const restart: PlanStep = Object.freeze({
+      ...start,
+      id: "env:node-a/runtime:restart",
+      action: "restart",
+      dependsOn: ["env:node-a/runtime:start"],
+    });
+    const afterStart: PlanStep = Object.freeze({
+      ...install,
+      id: "env:node-a/runtime:after-start",
+      action: "after-start",
+      scripts: [afterInvocation],
+      dependsOn: ["env:node-a/runtime:restart"],
+    });
+    const plan: ExecutionPlan = Object.freeze({
+      schemaVersion: 4,
+      cluster: "demo",
+      requestedAction: "prepare",
+      steps: [install, beforeStart, start, restart, afterStart],
+    });
+    const result = await new DeploymentExecutor({
+      connect: () => Promise.resolve(machine),
+    } as never).execute(plan);
+    assertEquals(result.steps.map((step) => [step.action, step.status]), [
+      ["install", "succeeded"],
+      ["before-start", "succeeded"],
+      ["start", "succeeded"],
+      ["restart", "skipped"],
+      ["after-start", "succeeded"],
+    ]);
+  });
+});
+
+Deno.test("dv/environment management: enable step enables the unit without starting it", async () => {
+  await withTempDir(async (_root) => {
+    const session = new FakeSession(
+      127,
+      "",
+      0,
+      0,
+      "",
+      "/home/deploy",
+      [],
+      "/usr/bin/apt-get",
+      0,
+      0,
+      true,
+      undefined,
+      1,
+    );
+    const machine = session as unknown as never;
+    const resolved = {
+      machine: {
+        name: "node-a",
+        domains: [],
+        privateIp: ["10.0.0.1"],
+        publicIp: ["203.0.113.10"],
+        region: "local",
+        sshUser: "deploy",
+        sshPort: 22,
+        scriptRuntime: { kind: "deno", executable: "/usr/bin/deno" },
+        environments: [],
+      },
+      address: "10.0.0.1",
+      addressKind: "private",
+      addresses: ["10.0.0.1"],
+    } as never;
+    const install: PlanStep = Object.freeze({
+      id: "env:node-a/runtime:install",
+      machine: resolved,
+      kind: "environment",
+      resource: "runtime",
+      action: "install",
+      scripts: [],
+      parameters: { version: "1", requires_privilege: true },
+      secretValues: [],
+      secretFiles: [],
+      templates: [],
+      dependsOn: [],
+      environmentInstall: packageInstall,
+    });
+    const enable: PlanStep = Object.freeze({
+      ...install,
+      id: "env:node-a/runtime:enable",
+      action: "enable",
+      dependsOn: ["env:node-a/runtime:install"],
+      environmentInstall: undefined,
+      environmentManager: Object.freeze({ ...serviceManager, startAfterInstall: false }),
+    });
+    const plan: ExecutionPlan = Object.freeze({
+      schemaVersion: 4,
+      cluster: "demo",
+      requestedAction: "prepare",
+      steps: [install, enable],
+    });
+    const result = await new DeploymentExecutor({
+      connect: () => Promise.resolve(machine),
+    } as never).execute(plan);
+    assertEquals(result.steps.map((step) => [step.action, step.status]), [
+      ["install", "succeeded"],
+      ["enable", "succeeded"],
+    ]);
+    assertEquals(
+      session.calls.some((call) =>
+        call.argv.join(" ") === "/usr/bin/systemctl enable -- nginx.service"
+      ),
+      true,
+    );
+    assertEquals(
+      session.calls.some((call) =>
+        call.argv.join(" ") === "/usr/bin/systemctl start -- nginx.service"
+      ),
+      false,
+    );
+  });
+});

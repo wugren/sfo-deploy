@@ -59,6 +59,77 @@ async function archived(root: string): Promise<{
   return { store, releaseId, snapshot: join(store.root, releaseId, "snapshot"), plan };
 }
 
+Deno.test("unit/history: non-activating deploy plans persist and decode the optional activate key", async () => {
+  await withTempDir(async (root) => {
+    const cluster = join(root, "demo");
+    await Deno.mkdir(cluster, { recursive: true });
+    const source = join(cluster, "action.ts");
+    await Deno.writeTextFile(source, "Deno.exit(0);\n");
+
+    async function archivePlan(
+      plan: ExecutionPlan,
+    ): Promise<{ snapshot: string; raw: Record<string, unknown> }> {
+      const store = new ReleaseStore(cluster, {
+        sourceExporter: exporter,
+        sourceImporter: importer,
+        lockTimeoutMs: 100,
+      });
+      const pending = await store.beginAttempt({
+        operation: "deploy",
+        selection: new ReleaseSelection(),
+      });
+      await pending.archivePlans(plan);
+      const releaseId = pending.releaseId;
+      await pending.closeIncomplete();
+      const snapshot = join(store.root, releaseId, "snapshot");
+      return {
+        snapshot,
+        raw: JSON.parse(await Deno.readTextFile(join(snapshot, "actual-plan.json"))),
+      };
+    }
+
+    const base = makePlan();
+    const withScripts = {
+      ...base,
+      steps: Object.freeze(base.steps.map((step) =>
+        Object.freeze({
+          ...step,
+          scripts: Object.freeze(step.scripts.map((item) => Object.freeze({ ...item, source }))),
+        })
+      )),
+    };
+    const nonActivating: ExecutionPlan = Object.freeze({ ...withScripts, activate: false });
+    const staged = await archivePlan(nonActivating);
+    assertEquals(staged.raw.activate, false);
+    const decoded = await __internal.decodePlan(
+      staged.raw,
+      staged.snapshot,
+      cluster,
+      importer,
+    );
+    assertEquals(decoded.activate, false);
+
+    // 旧快照（无该键）解码为激活语义
+    const legacy = structuredClone(staged.raw);
+    delete legacy.activate;
+    const legacyDecoded = await __internal.decodePlan(legacy, staged.snapshot, cluster, importer);
+    assertEquals(legacyDecoded.activate, undefined);
+
+    // 激活计划不写出该键，快照内容与现状一致
+    const activating = await archivePlan(Object.freeze({ ...withScripts }));
+    assertEquals("activate" in activating.raw, false);
+
+    // 非布尔值 fail-closed
+    const invalid = structuredClone(staged.raw);
+    invalid.activate = "yes";
+    const error = await assertRejects(
+      () => __internal.decodePlan(invalid, staged.snapshot, cluster, importer),
+      ConfigurationError,
+    );
+    assertStringIncludes(error.message, "activate must be a boolean");
+  });
+});
+
 Deno.test("unit/history: new writes use v4 and Deno v2/v3 snapshots remain readable", async () => {
   await withTempDir(async (root) => {
     const { snapshot } = await archived(root);
@@ -66,6 +137,8 @@ Deno.test("unit/history: new writes use v4 and Deno v2/v3 snapshots remain reada
     assertEquals(current.schema_version, 4);
     assertEquals(current.steps[0].management, null);
     assertEquals(current.steps[0].run_as, null);
+    assertEquals(current.steps[0].access_group, null);
+    assertEquals(current.steps[0].mode, null);
     assertEquals(current.steps[0].lifecycle_secret_values, []);
     assertEquals(current.steps[0].lifecycle_secret_files, []);
     assertEquals(current.steps[0].scripts[0].permissions.read, []);
@@ -96,6 +169,8 @@ Deno.test("unit/history: new writes use v4 and Deno v2/v3 snapshots remain reada
       delete step.environment_install;
       delete step.environment_manager;
       delete step.run_as;
+      delete step.access_group;
+      delete step.mode;
       delete step.lifecycle_secret_values;
       delete step.lifecycle_secret_files;
     }
@@ -202,6 +277,63 @@ Deno.test("unit/history: packageless rollback keeps app check/configure", () => 
   assertEquals(rollback.steps[1].dependsOn, ["app:node-a/demo:check"]);
 });
 
+Deno.test("unit/history: rollback keeps script-manager restart but drops service restart", () => {
+  const build = (kind: "script" | "service"): ExecutionPlan => {
+    const base = makePlan();
+    const [configure, deploy] = base.steps;
+    const invocation = deploy.scripts[0];
+    const manager = kind === "script"
+      ? Object.freeze({
+        kind: "script" as const,
+        start: invocation,
+        stop: invocation,
+        restart: invocation,
+      })
+      : Object.freeze({
+        kind: "service" as const,
+        unit: "demo.service",
+        tool: "systemctl" as const,
+        daemonReload: false,
+        onDeploy: "restart" as const,
+        timeoutMs: 1_000,
+      });
+    const management = Object.freeze({
+      configs: Object.freeze([]),
+      configScripts: Object.freeze([]),
+      manager,
+    });
+    const managed = (
+      id: string,
+      action: "stage" | "activate" | "restart",
+      dependsOn: readonly string[],
+    ) =>
+      Object.freeze({
+        ...deploy,
+        id,
+        action,
+        dependsOn: Object.freeze([...dependsOn]),
+        management,
+      });
+    return Object.freeze({
+      ...base,
+      steps: Object.freeze([
+        configure,
+        managed("app:node-a/demo:stage", "stage", ["app:node-a/demo:configure"]),
+        managed("app:node-a/demo:activate", "activate", ["app:node-a/demo:stage"]),
+        managed("app:node-a/demo:restart", "restart", ["app:node-a/demo:activate"]),
+      ]),
+    });
+  };
+  assertEquals(
+    deriveRollbackPlan(build("script")).steps.map((step) => step.action),
+    ["configure", "stage", "activate", "restart"],
+  );
+  assertEquals(
+    deriveRollbackPlan(build("service")).steps.map((step) => step.action),
+    ["configure", "stage", "activate"],
+  );
+});
+
 Deno.test("unit/history: v4 codec round-trips install_directory and delivery inputs", async () => {
   await withTempDir(async (root) => {
     const cluster = join(root, "demo");
@@ -234,11 +366,10 @@ Deno.test("unit/history: v4 codec round-trips install_directory and delivery inp
             : undefined,
           ...(step.action === "deploy"
             ? {
-              runAs: "deploy",
+              mode: "0644",
               lifecycleSecretValues: Object.freeze([] as string[]),
               lifecycleSecretFiles: Object.freeze([] as string[]),
               management: Object.freeze({
-                runAs: "deploy",
                 configs: Object.freeze([]),
                 configScripts: Object.freeze([]),
                 manager: Object.freeze({
@@ -279,18 +410,10 @@ Deno.test("unit/history: v4 codec round-trips install_directory and delivery inp
     assertEquals(deployStep?.bundleScripts?.[0].permissions.run, ["/usr/bin/sudo"]);
     assertEquals(deployStep?.bundleScripts?.[0].permissions.read, ["/etc/demo/config.json"]);
     assertEquals(deployStep?.bundleScripts?.[0].permissions.write, ["/srv/demo/state"]);
-    assertEquals(deployStep?.runAs, "deploy");
-    assertEquals(deployStep?.management?.runAs, "deploy");
+    assertEquals(deployStep?.mode, "0644");
+    assertEquals(deployStep?.runAs, undefined);
+    assertEquals(deployStep?.management?.runAs, undefined);
     assertEquals(deployStep?.lifecycleSecretValues, []);
-
-    const missingRunAs = structuredClone(current);
-    const managed = missingRunAs.steps.find((step: { action: string }) => step.action === "deploy");
-    managed.run_as = null;
-    await assertRejects(
-      () => __internal.decodePlan(missingRunAs, snapshot, cluster, importer),
-      ConfigurationError,
-      "is missing run_as",
-    );
   });
 });
 
@@ -409,11 +532,9 @@ Deno.test("unit/history: v4 codec round-trips service unit config", async () => 
           scripts: Object.freeze(step.scripts.map((item) => Object.freeze({ ...item, source }))),
           ...(step.action === "deploy"
             ? {
-              runAs: "deploy",
               lifecycleSecretValues: Object.freeze([] as string[]),
               lifecycleSecretFiles: Object.freeze([] as string[]),
               management: Object.freeze({
-                runAs: "deploy",
                 configs: Object.freeze([]),
                 configScripts: Object.freeze([]),
                 manager: Object.freeze({
@@ -428,6 +549,7 @@ Deno.test("unit/history: v4 codec round-trips service unit config", async () => 
                     workingDirectory: "/srv/demo/current",
                     command: "/srv/demo/current/bin/server",
                     args: Object.freeze(["--config", "config/application.ini"]),
+                    user: "deploy",
                     restartPolicy: "on-failure" as const,
                     restartSec: 5,
                     startLimitIntervalSec: 30,
@@ -456,6 +578,7 @@ Deno.test("unit/history: v4 codec round-trips service unit config", async () => 
       .management.manager.unit_config;
     assertEquals(encoded, {
       target: "/etc/systemd/system/demo.service",
+      user: "deploy",
       working_directory: "/srv/demo/current",
       command: "/srv/demo/current/bin/server",
       args: ["--config", "config/application.ini"],
@@ -469,6 +592,7 @@ Deno.test("unit/history: v4 codec round-trips service unit config", async () => 
     assert(service?.kind === "service");
     assertEquals(service.unitConfig, {
       target: "/etc/systemd/system/demo.service",
+      user: "deploy",
       workingDirectory: "/srv/demo/current",
       command: "/srv/demo/current/bin/server",
       args: ["--config", "config/application.ini"],
@@ -495,6 +619,78 @@ Deno.test("unit/history: v4 codec round-trips service unit config", async () => 
     assertEquals(legacyService.unitConfig?.restartSec, undefined);
     assertEquals(legacyService.unitConfig?.startLimitIntervalSec, undefined);
     assertEquals(legacyService.unitConfig?.startLimitBurst, undefined);
+  });
+});
+
+Deno.test("unit/history: v4 codec round-trips service enabled_explicit", async () => {
+  await withTempDir(async (root) => {
+    const cluster = join(root, "demo");
+    await Deno.mkdir(cluster);
+    const source = join(cluster, "action.ts");
+    await Deno.writeTextFile(source, "Deno.exit(0);\n");
+    const base = makePlan(["node-a"]);
+    const plan: ExecutionPlan = Object.freeze({
+      ...base,
+      steps: Object.freeze(base.steps.map((step) =>
+        Object.freeze({
+          ...step,
+          scripts: Object.freeze(step.scripts.map((item) => Object.freeze({ ...item, source }))),
+          ...(step.action === "deploy"
+            ? {
+              lifecycleSecretValues: Object.freeze([] as string[]),
+              lifecycleSecretFiles: Object.freeze([] as string[]),
+              management: Object.freeze({
+                configs: Object.freeze([]),
+                configScripts: Object.freeze([]),
+                manager: Object.freeze({
+                  kind: "service" as const,
+                  tool: "systemctl" as const,
+                  unit: "demo.service",
+                  enabled: true,
+                  enabledExplicit: true,
+                  daemonReload: false,
+                  onDeploy: "none" as const,
+                  timeoutMs: 30_000,
+                }),
+              }),
+            }
+            : {}),
+        })
+      )),
+    });
+    const store = new ReleaseStore(cluster, {
+      sourceExporter: exporter,
+      sourceImporter: importer,
+    });
+    const pending = await store.beginAttempt({
+      operation: "deploy",
+      selection: new ReleaseSelection(),
+    });
+    await pending.archivePlans(plan);
+    await pending.closeIncomplete();
+    const snapshot = join(store.root, pending.releaseId, "snapshot");
+    const current = JSON.parse(await Deno.readTextFile(join(snapshot, "actual-plan.json")));
+    const manager = current.steps.find((step: { action: string }) => step.action === "deploy")
+      .management.manager;
+    assertEquals(manager.enabled, true);
+    assertEquals(manager.enabled_explicit, true);
+    const decoded = await __internal.decodePlan(current, snapshot, cluster, importer);
+    const service = decoded.steps.find((step) => step.action === "deploy")?.management?.manager;
+    assert(service?.kind === "service");
+    assertEquals(service.enabled, true);
+    assertEquals(service.enabledExplicit, true);
+
+    const legacy = JSON.parse(JSON.stringify(current));
+    const legacyManager = legacy.steps.find((step: { action: string }) => step.action === "deploy")
+      .management.manager;
+    delete legacyManager.enabled_explicit;
+    legacyManager.enabled = null;
+    const legacyDecoded = await __internal.decodePlan(legacy, snapshot, cluster, importer);
+    const legacyService = legacyDecoded.steps.find((step) => step.action === "deploy")
+      ?.management?.manager;
+    assert(legacyService?.kind === "service");
+    assertEquals(legacyService.enabled, undefined);
+    assertEquals(legacyService.enabledExplicit, false);
   });
 });
 
@@ -573,5 +769,141 @@ Deno.test("unit/history: v4 codec round-trips nginx raw config format", async ()
       decoded.steps.find((step) => step.action === "deploy")?.management?.configs[0]?.format,
       "nginx",
     );
+  });
+});
+
+Deno.test("unit/history: v4 codec round-trips access_group and legacy snapshots stay readable", async () => {
+  await withTempDir(async (root) => {
+    const cluster = join(root, "demo");
+    await Deno.mkdir(cluster);
+    const source = join(cluster, "action.ts");
+    await Deno.writeTextFile(source, "Deno.exit(0);\n");
+    const base = makePlan(["node-a"]);
+    const plan: ExecutionPlan = Object.freeze({
+      ...base,
+      steps: Object.freeze(base.steps.map((step) =>
+        Object.freeze({
+          ...step,
+          scripts: Object.freeze(step.scripts.map((item) => Object.freeze({ ...item, source }))),
+          ...(step.action === "deploy"
+            ? {
+              runAs: "deploy",
+              installDirectory: "/srv/demo",
+              deployment: Object.freeze({ kind: "versioned" as const }),
+              lifecycleSecretValues: Object.freeze([] as string[]),
+              lifecycleSecretFiles: Object.freeze([] as string[]),
+              management: Object.freeze({
+                runAs: "deploy",
+                accessGroup: "www-data",
+                configs: Object.freeze([]),
+                configScripts: Object.freeze([]),
+                manager: undefined,
+              }),
+            }
+            : {}),
+        })
+      )),
+    });
+    const store = new ReleaseStore(cluster, {
+      sourceExporter: exporter,
+      sourceImporter: importer,
+    });
+    const pending = await store.beginAttempt({
+      operation: "deploy",
+      selection: new ReleaseSelection(),
+    });
+    await pending.archivePlans(plan);
+    await pending.closeIncomplete();
+    const snapshot = join(store.root, pending.releaseId, "snapshot");
+    const current = JSON.parse(await Deno.readTextFile(join(snapshot, "actual-plan.json")));
+    const deployStep = current.steps.find((step: { action: string }) => step.action === "deploy");
+    assertEquals(deployStep.access_group, "www-data");
+    const decoded = await __internal.decodePlan(current, snapshot, cluster, importer);
+    assertEquals(
+      decoded.steps.find((step) => step.action === "deploy")?.management?.accessGroup,
+      "www-data",
+    );
+
+    const legacy = JSON.parse(JSON.stringify(current));
+    delete legacy.steps.find((step: { action: string }) => step.action === "deploy").access_group;
+    const legacyDecoded = await __internal.decodePlan(legacy, snapshot, cluster, importer);
+    assertEquals(
+      legacyDecoded.steps.find((step) => step.action === "deploy")?.management?.accessGroup,
+      undefined,
+    );
+
+    const invalid = JSON.parse(JSON.stringify(current));
+    invalid.steps.find((step: { action: string }) => step.action === "deploy").access_group =
+      "root";
+    const error = await assertRejects(
+      () => __internal.decodePlan(invalid, snapshot, cluster, importer),
+      ConfigurationError,
+    );
+    assertStringIncludes(error.message, "access_group must be a canonical non-root Linux group");
+  });
+});
+
+Deno.test("unit/history: manager-less management with configs round-trips plan snapshots (117)", async () => {
+  await withTempDir(async (root) => {
+    const cluster = join(root, "demo");
+    await Deno.mkdir(cluster, { recursive: true });
+    const scriptSource = join(cluster, "action.ts");
+    const configSource = join(cluster, "config.json");
+    await Deno.writeTextFile(scriptSource, "Deno.exit(0);\n");
+    await Deno.writeTextFile(configSource, '{"value":"fixed"}\n');
+    const base = makePlan();
+    const step = base.steps[0];
+    const script = Object.freeze({ ...step.scripts[0], source: scriptSource });
+    const config = Object.freeze({
+      name: "file-0",
+      relativePath: "templates/config.json",
+      source: configSource,
+      target: "/etc/demo/config.json",
+      targetRoot: "absolute" as const,
+      mode: 0o600,
+      variables: Object.freeze([]),
+      format: "json" as const,
+      secretReferences: Object.freeze(new Map()),
+      onChange: "none" as const,
+    });
+    const plan: ExecutionPlan = Object.freeze({
+      ...base,
+      steps: Object.freeze([Object.freeze({
+        ...step,
+        scripts: Object.freeze([script]),
+        deliveryInputs: Object.freeze({
+          scripts: Object.freeze([script]),
+          files: Object.freeze([]),
+        }),
+        lifecycleSecretValues: Object.freeze([] as string[]),
+        lifecycleSecretFiles: Object.freeze([] as string[]),
+        management: Object.freeze({
+          configs: Object.freeze([config]),
+          configScripts: Object.freeze([script]),
+          manager: undefined,
+        }),
+      })]),
+    });
+    const store = new ReleaseStore(cluster, {
+      sourceExporter: exporter,
+      sourceImporter: importer,
+      lockTimeoutMs: 100,
+    });
+    const pending = await store.beginAttempt({
+      operation: "deploy",
+      selection: new ReleaseSelection(),
+    });
+    await pending.archivePlans(plan);
+    const releaseId = pending.releaseId;
+    await pending.closeIncomplete();
+    const snapshot = join(store.root, releaseId, "snapshot");
+    const persisted = JSON.parse(await Deno.readTextFile(join(snapshot, "actual-plan.json")));
+    assertEquals(persisted.steps[0].management.manager, null);
+    assertEquals(persisted.steps[0].management.configs.length, 1);
+    const decoded = await __internal.decodePlan(persisted, snapshot, cluster, importer);
+    const management = decoded.steps[0].management;
+    assertEquals(management?.configs.length, 1);
+    assertEquals(management?.configScripts.length, 1);
+    assertEquals(management?.manager, undefined);
   });
 });

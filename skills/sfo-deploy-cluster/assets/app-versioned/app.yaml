@@ -1,10 +1,10 @@
 schema_version: 1
 name: backend
 install_directory: /home/deploy/apps/backend
+mode: "0750"
 deployment:
   kind: versioned
 management:
-  run_as: deploy
   kind: service
   name: backend.service
   tool: auto

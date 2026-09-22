@@ -241,12 +241,14 @@ Deno.test("integration/environment placement: multipass template is a runnable v
       "env:eleph-server/mysql:install",
       "env:eleph-server/mysql:start",
       "env:eleph-server/mysql:restart",
+      "env:eleph-server/mysql:after-start",
       "env:eleph-server/nginx:install",
       "env:eleph-server/nginx:start",
       "env:eleph-server/nginx:restart",
       "env:eleph-server/redis:install",
       "env:eleph-server/redis:start",
       "env:eleph-server/redis:restart",
+      "env:eleph-server/redis:after-start",
     ]);
     for (const definition of cluster.environments.values()) {
       assertStringIncludes(definition.directory, "/environments/");

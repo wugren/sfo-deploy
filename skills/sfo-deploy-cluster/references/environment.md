@@ -54,9 +54,31 @@ manager:
 ```
 
 `install.kind: package` 只支持 `apt-get`/`yum`，`auto` 按此顺序探测；`manager.kind: system` 的
-`tool: auto` 按 `systemctl`/`service` 顺序探测。`manager` 可缺省，缺省时不管理应用运行。脚本方式用
-`install.kind: script` 和 `manager.kind: script`，后者必须声明
-`start`/`stop`/`restart`。新契约不声明 `check`；顶层 `scripts` 与 `install`/`manager` 互斥。
+`tool: auto` 按 `systemctl`/`service` 顺序探测。系统服务 `enabled` 缺省为 `true`（开机启动），显式
+`false` 关闭；`start_after_install: false` 时 `prepare` 新增独立 `enable` 步骤，仍设为开机启动但不
+启动服务。`manager` 可缺省，缺省时不管理应用运行。脚本方式用 `install.kind: script` 和
+`manager.kind: script`，后者必须声明 `start`/`stop`/`restart`。新契约不声明 `check`；顶层 `scripts`
+与 `install`/`manager` 互斥。
+
+新生命周期还可选声明 `init` 初始配置段，用于环境应用安装/更新流程的启动前/启动后配置：
+
+```yaml
+init:
+  before_start:
+    - path: scripts/init-before.ts
+      permissions:
+        run: [/usr/bin/install]
+        net: []
+  after_start:
+    - path: scripts/init-after.ts
+      permissions:
+        run: [/usr/bin/install]
+        net: []
+```
+
+`init` 整体可选；`before_start`/`after_start` 各是可选脚本列表，未声明或为空时不生成对应步骤。
+`prepare` 对声明顺序按 install → before_start → start/restart → after_start 执行；启动前/启动后
+失败都会阻断该环境实例的 prepare 且不写版本标记。显式 start/stop/restart 不执行 init 脚本。
 
 复制到 `environments/nginx/` 后，在 `cluster.yaml` 合并 `environments.nginx: [app-01]`。需要它的 app
 再添加 `depends_on: [nginx]`。给现有环境增加机器时复用定义，不复制每机目录。
@@ -65,14 +87,15 @@ manager:
 
 - 每个脚本自包含；框架不会上传任意兄弟模块，不导入过去的 `sfo_deploy.ts` 辅助文件。秘密 loader
   是特殊框架资源，见 secrets 参考。
-- run 权限列出实际子进程的规范绝对路径；net 列出实际 Deno 网络目标，不能写 URL
-  或通配符。read/write 分别列出 Deno 直接读/写 API 的规范绝对扩展路径；workspace 始终授权，只读路径
+- run 权限列出实际子进程的规范绝对路径；net 列出实际 Deno 网络目标，不能写 URL 或通配符。read/write
+  分别列出 Deno 直接读/写 API 的规范绝对扩展路径；workspace 始终授权，只读路径
   不能删除或写入。子进程自身网络行为不由 Deno net 列表限制。
 - check 使用真实状态判断，成功返回 0，不满足返回非零。install/configure
   实现实际需求并可重复执行，不生成始终成功的空实现。
 - 通过 `Deno.Command` 的固定 argv 传参；参数需要从框架上下文读取时，使用 `DEPLOYMENT_METADATA_PATH`
   指向的 JSON 文件并核对目标实现的上下文结构，不能猜测业务参数环境变量。
-- `requires_privilege: true` 只在环境脚本确需提权时设置。App 的非 root run_as 与环境提权是不同机制。
+- `requires_privilege: true` 只在环境脚本确需提权时设置。App 脚本以 SSH
+  身份执行，与环境提权是不同机制。
 
-当前 `prepare` 负责环境 check/install/可选 configure；`deploy` 和 `plan`
-不执行环境步骤。创建配置时不自动运行 prepare。
+当前 `prepare` 负责环境 check/install/可选 configure、新生命周期的 install/manager/init； `deploy`
+和 `plan` 不执行环境步骤。创建配置时不自动运行 prepare。

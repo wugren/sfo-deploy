@@ -8,7 +8,6 @@ import {
   type ExtractAppPackageRequest,
   type ExtractedAppPackage,
   extractValidatedAppPackage,
-  type ManagedAppIdentity,
   type ManagedConfigPublication,
   ManagedConfigPublicationError,
   type ManagedConfigPublishRequest,
@@ -30,11 +29,13 @@ import { type CommandResult, commandResult } from "./results.ts";
 export const DEFAULT_CONNECT_TIMEOUT_MS = 10_000;
 export const DEFAULT_COMMAND_TIMEOUT_MS = 300_000;
 export const DEFAULT_TERMINATE_TIMEOUT_MS = 2_000;
+export const DEFAULT_OPERATION_LEASE_TTL_MS = 600_000;
+export const DEFAULT_OPERATION_HEARTBEAT_INTERVAL_MS = 30_000;
+export const OPERATION_LEASE_EXPIRED_EXIT_CODE = 74;
 export const WORKSPACE_PREFIX = "/tmp/sfo-deploy-";
 
 const ENV_NAME_RE = /^[A-Z_][A-Z0-9_]*$/;
 const USER_RE = /^[A-Za-z_][A-Za-z0-9_.-]*$/;
-const APP_USER_RE = /^[a-z_][a-z0-9_-]{0,31}\$?$/;
 const ENVIRONMENT_RESOURCE_RE = /^[A-Za-z][A-Za-z0-9_.-]*$/;
 const ADDRESS_RE = /^[A-Za-z0-9][A-Za-z0-9.:%-]*$/;
 const COMMAND_RE = /^[A-Za-z0-9][A-Za-z0-9._+-]*$/;
@@ -47,8 +48,6 @@ export interface RemoteRunOptions {
   readonly privileged?: boolean;
   readonly cwd?: string;
 }
-
-export type RemoteAppRunOptions = Omit<RemoteRunOptions, "privileged">;
 
 export interface SecretManifestEntry {
   readonly name: string;
@@ -98,15 +97,6 @@ export interface RemoteSession extends AsyncDisposable {
     publications: readonly ManagedConfigPublication[],
     signal?: AbortSignal,
   ): Promise<void>;
-  validateManagedIdentity?(
-    runAs: string,
-    signal?: AbortSignal,
-  ): Promise<ManagedAppIdentity>;
-  runAsApp?(
-    runAs: string,
-    argv: readonly string[],
-    options?: RemoteAppRunOptions,
-  ): Promise<CommandResult>;
   acquireOperationLock?(
     request: RemoteOperationLockRequest,
     signal?: AbortSignal,
@@ -118,7 +108,7 @@ export interface RemoteSession extends AsyncDisposable {
   ): Promise<ScopedSecretCopy>;
   cleanupScopedSecretCopy?(copy: ScopedSecretCopy): Promise<void>;
   extractAppPackage?(
-    request: ExtractAppPackageRequest & { readonly runAs: string },
+    request: ExtractAppPackageRequest,
   ): Promise<ExtractedAppPackage>;
   exposeStepSecrets(
     secretNames: readonly string[],
@@ -152,7 +142,6 @@ export interface RemoteSession extends AsyncDisposable {
     readonly secretDir?: string;
     readonly permissions: ScriptPermissions;
     readonly privileged?: boolean;
-    readonly runAs?: string;
     readonly signal?: AbortSignal;
   }): Promise<CommandResult>;
   readEnvironmentVersion(resource: string, signal?: AbortSignal): Promise<string | undefined>;
@@ -170,6 +159,7 @@ export interface Transport {
 export interface SpawnedCommand {
   output(): Promise<Deno.CommandOutput>;
   kill(signo?: Deno.Signal): void;
+  readonly pid?: number;
 }
 
 export type CommandFactory = (
@@ -310,24 +300,31 @@ interface SessionOptions {
   readonly commandFactory: CommandFactory;
 }
 
-interface ValidatedAppIdentity extends ManagedAppIdentity {
-  readonly home: string;
-}
-
 interface HeldOperationLease {
   readonly lease: RemoteOperationLease;
   readonly child: SpawnedCommand;
   readonly output: Promise<Deno.CommandOutput>;
   readonly readyPath: string;
   readonly stopPath: string;
+  readonly leasePath: string;
+  readonly leaseTtlMs: number;
+  readonly heartbeatIntervalMs: number;
+  heartbeatRunning: boolean;
+  timer: ReturnType<typeof setInterval> | undefined;
+  lost: boolean;
+  /** 已进入正常释放流程：holder 退出是预期结果，不应判定为失锁。 */
+  releasing: boolean;
 }
 
 export class OpenSshRemoteSession implements RemoteSession {
   readonly #options: SessionOptions;
   readonly #workspaces = new Set<string>();
-  readonly #appIdentities = new Map<string, ValidatedAppIdentity>();
-  readonly #operationLeases = new Map<string, HeldOperationLease>();
+  /** 本会话创建的消费者秘密拷贝：path -> workspace，用于限定清理边界。 */
   readonly #scopedSecretCopies = new Map<string, string>();
+  readonly #operationLeases = new Map<string, HeldOperationLease>();
+  /** 会话级失锁广播：失锁时中止所有在途受保护操作，旧执行方不能继续写共享目标。 */
+  readonly #leaseAbort = new AbortController();
+  #leaseLostReason?: TransportError;
   #privilegePrefix?: readonly string[];
   #home?: string;
   #closed = false;
@@ -337,6 +334,27 @@ export class OpenSshRemoteSession implements RemoteSession {
   }
 
   async run(argv: readonly string[], options: RemoteRunOptions = {}): Promise<CommandResult> {
+    this.#ensureOpen();
+    this.#ensureLeaseUsable();
+    try {
+      const result = await this.#runRemote(argv, {
+        ...options,
+        signal: this.#protectedSignal(options.signal),
+      });
+      this.#ensureLeaseUsable();
+      return result;
+    } catch (cause) {
+      if (cause instanceof CancelledError && this.#leaseLostReason !== undefined) {
+        throw this.#leaseLostReason;
+      }
+      throw cause;
+    }
+  }
+
+  async #runRemote(
+    argv: readonly string[],
+    options: RemoteRunOptions = {},
+  ): Promise<CommandResult> {
     this.#ensureOpen();
     const arguments_ = validateArgv(argv);
     const command: string[] = [];
@@ -388,121 +406,21 @@ export class OpenSshRemoteSession implements RemoteSession {
     return stageBundle(this, bundle, { ...options, workspace });
   }
 
-  async validateManagedIdentity(
-    rawRunAs: string,
-    signal?: AbortSignal,
-  ): Promise<ManagedAppIdentity> {
-    this.#ensureOpen();
-    const runAs = appUser(rawRunAs);
-    const cached = this.#appIdentities.get(runAs);
-    if (cached !== undefined) return publicIdentity(cached);
-
-    const passwd = await this.run(["getent", "passwd", runAs], { signal });
-    requireSuccess(passwd, `App run user does not exist: ${runAs}`);
-    const passwdLines = passwd.stdout.trim().split(/\r?\n/u);
-    const fields = passwdLines.length === 1 ? passwdLines[0].split(":") : [];
-    if (fields.length !== 7 || fields[0] !== runAs || !/^(?:0|[1-9][0-9]*)$/u.test(fields[2])) {
-      throw new PreflightError(`Invalid App run user record: ${runAs}`);
-    }
-    let home: string;
-    try {
-      home = safeRemotePath(fields[5]);
-    } catch (cause) {
-      throw new PreflightError(`Invalid App run user HOME: ${runAs}`, { cause });
-    }
-    const targetUidResult = await this.run(["id", "-u", runAs], { signal });
-    requireSuccess(targetUidResult, `Failed to determine the App run user UID: ${runAs}`);
-    const uid = parsePositiveUid(targetUidResult.stdout, "App run user UID");
-    if (String(uid) !== fields[2]) {
-      throw new PreflightError(`App run user UID does not match: ${runAs}`);
-    }
-
-    const sshUidResult = await this.run(["id", "-u"], { signal });
-    requireSuccess(sshUidResult, "Failed to determine the SSH user UID");
-    const sshUid = parseUid(sshUidResult.stdout, "SSH user UID");
-    if (sshUid === 0) {
-      const sudoIdentity = await this.run(["sudo", "-n", "-u", runAs, "--", "id", "-u"], {
-        signal,
-      });
-      requireSuccess(sudoIdentity, `Failed to drop privileges to the App run user: ${runAs}`);
-      if (parsePositiveUid(sudoIdentity.stdout, "App UID after dropping privileges") !== uid) {
-        throw new PreflightError(`App UID after dropping privileges does not match: ${runAs}`);
-      }
-    } else {
-      const sshName = await this.run(["id", "-un"], { signal });
-      requireSuccess(sshName, "Failed to determine the SSH user name");
-      if (sshName.stdout.trim() !== runAs || sshUid !== uid) {
-        throw new PreflightError(`A non-root SSH identity must match run_as: ${runAs}`);
-      }
-    }
-    const identity = Object.freeze({
-      runAs,
-      uid,
-      sshUid,
-      requiresSudo: sshUid === 0,
-      home,
-    });
-    this.#appIdentities.set(runAs, identity);
-    return publicIdentity(identity);
-  }
-
-  async runAsApp(
-    runAs: string,
-    argv: readonly string[],
-    options: RemoteAppRunOptions = {},
-  ): Promise<CommandResult> {
-    const identity = await this.#validatedAppIdentity(runAs, options.signal);
-    const environment = { ...(options.environment ?? {}) };
-    if (Object.hasOwn(environment, "HOME") && environment.HOME !== identity.home) {
-      throw new TransportError("managed App command must not override the verified HOME");
-    }
-    environment.HOME = identity.home;
-    const scoped = ["env", ...environmentAssignments(environment, ["HOME"]), ...validateArgv(argv)];
-    const command = identity.requiresSudo
-      ? ["sudo", "-n", "-H", "-u", identity.runAs, "--", ...scoped]
-      : scoped;
-    return await this.run(command, {
-      signal: options.signal,
-      timeoutMs: options.timeoutMs,
-      cwd: options.cwd,
-    });
-  }
-
   async extractAppPackage(
-    request: ExtractAppPackageRequest & { readonly runAs: string },
+    request: ExtractAppPackageRequest,
   ): Promise<ExtractedAppPackage> {
     const workspace = this.#registeredWorkspace(request.workspace);
-    const identity = await this.#validatedAppIdentity(request.runAs, request.signal);
     const extracted = await extractValidatedAppPackage(this, { ...request, workspace });
     try {
-      if (identity.requiresSudo) {
-        requireSuccess(
-          await this.run(["chown", "-R", identity.runAs, "--", extracted.root], {
-            signal: request.signal,
-            privileged: true,
-          }),
-          "Failed to set the App unpack directory run identity",
-        );
-        requireSuccess(
-          await this.run(["chmod", "0711", "--", workspace], {
-            signal: request.signal,
-            privileged: true,
-          }),
-          "Failed to set App workspace traverse permissions",
-        );
-      }
       requireSuccess(
         await this.run(["chmod", "0700", "--", extracted.root], {
           signal: request.signal,
-          privileged: identity.requiresSudo,
         }),
         "Failed to restrict App unpack directory permissions",
       );
       return extracted;
     } catch (cause) {
-      await this.run(["rm", "-rf", "--", extracted.root], {
-        privileged: identity.requiresSudo,
-      }).catch(() => undefined);
+      await this.run(["rm", "-rf", "--", extracted.root]).catch(() => undefined);
       throw cause;
     }
   }
@@ -513,7 +431,6 @@ export class OpenSshRemoteSession implements RemoteSession {
   ): Promise<RemoteConfigCandidate> {
     this.#ensureOpen();
     const workspace = this.#registeredWorkspace(request.workspace);
-    const identity = await this.#validatedAppIdentity(requiredRunAs(request.runAs), signal);
     const updater = workspaceMember(workspace, request.updaterScript, "framework config updater");
     assertFrameworkUpdater(workspace, updater);
     const skeleton = workspaceMember(workspace, request.skeleton, "config skeleton");
@@ -521,15 +438,8 @@ export class OpenSshRemoteSession implements RemoteSession {
     const secretDir = workspaceMember(workspace, request.secretDir, "step secret copy directory");
     const secretRoot = await this.#expandSecretDirectory(request.secretRoot, signal);
     const fileSecrets = validateSecretNames(request.fileSecrets, "file secret");
-    const scope = await this.#createAppScope(identity, workspace, "config", signal);
-    const scopedUpdater = `${scope}/updater.js`;
-    const scopedSkeleton = `${scope}/skeleton`;
-    const scopedBindings = `${scope}/bindings.json`;
-    await this.#installAppInput(identity, updater, scopedUpdater, "0500", signal);
-    await this.#installAppInput(identity, skeleton, scopedSkeleton, "0400", signal);
-    await this.#installAppInput(identity, bindings, scopedBindings, "0400", signal);
-    const candidatePath = `${scope}/candidate-${safeConfigName(request.name)}`;
-    const result = await this.runAsApp(identity.runAs, [
+    const candidatePath = `${workspace}/candidate-${safeConfigName(request.name)}`;
+    const result = await this.run([
       runtimeExecutable(request.denoExecutable),
       "run",
       "--no-prompt",
@@ -540,22 +450,22 @@ export class OpenSshRemoteSession implements RemoteSession {
       "--deny-net",
       "--deny-run",
       "--deny-ffi",
-      `--allow-read=${permissionPath(scopedUpdater)},${permissionPath(scopedSkeleton)},${
-        permissionPath(scopedBindings)
+      `--allow-read=${permissionPath(updater)},${permissionPath(skeleton)},${
+        permissionPath(bindings)
       },${permissionPath(secretDir)}${
         fileSecrets.length > 0
           ? `,${fileSecrets.map((name) => permissionPath(`${secretRoot}/${name}`)).join(",")}`
           : ""
       }`,
       `--allow-write=${permissionPath(candidatePath)}`,
-      scopedUpdater,
+      updater,
       "update",
       "--format",
       request.format,
       "--input",
-      scopedSkeleton,
+      skeleton,
       "--bindings",
-      scopedBindings,
+      bindings,
       "--secrets",
       secretDir,
       "--secret-root",
@@ -564,9 +474,7 @@ export class OpenSshRemoteSession implements RemoteSession {
       candidatePath,
     ], { signal, timeoutMs: request.timeoutMs });
     if (result.exitCode !== 0) {
-      await this.run(["rm", "-rf", "--", scope], { privileged: identity.requiresSudo }).catch(
-        () => undefined,
-      );
+      await this.run(["rm", "-f", "--", candidatePath]).catch(() => undefined);
       const detail = [result.stdout, result.stderr].map((text) => text.trim()).filter(Boolean)
         .join("\n");
       throw new TransportError(
@@ -607,7 +515,7 @@ export class OpenSshRemoteSession implements RemoteSession {
           if (!argv.includes(candidate)) {
             throw new PreflightError("Config validator is missing {candidate}");
           }
-          const validation = await this.runAsApp(requiredRunAs(request.runAs), argv, {
+          const validation = await this.run(argv, {
             signal,
             timeoutMs: request.validator.timeoutMs,
           });
@@ -654,7 +562,6 @@ export class OpenSshRemoteSession implements RemoteSession {
           await this.#ensureReleaseParent(
             safeRemotePath(request.releaseRoot!),
             parent,
-            request.runAs,
             signal,
           );
         } else {
@@ -730,26 +637,31 @@ export class OpenSshRemoteSession implements RemoteSession {
             privileged: true,
           });
           if (compare.exitCode === 0) {
-            const fingerprints = await this.#secretFingerprints(
-              target,
-              request.secretRoot,
-              request.secretFiles,
-              signal,
-            );
-            await this.run(["rm", "-f", "--", candidate]).catch(() => undefined);
-            publications.push(Object.freeze({
-              name: request.candidate.name,
-              workspace,
-              target,
-              changed: false,
-              existed: true,
-              serviceChange: fingerprints?.changed,
-              secretFingerprintPath: fingerprints?.path,
-              secretFingerprints: fingerprints?.hashes,
-            }));
-            continue;
-          }
-          if (compare.exitCode !== 1) {
+            // 内容相同仍需收敛请求的 mode/owner/group；只有元数据也一致才跳过发布。
+            const metadataMatches = originalMode.padStart(4, "0") === mode &&
+              (owner === undefined || owner === originalOwner) &&
+              (group === undefined || group === originalGroup);
+            if (metadataMatches) {
+              const fingerprints = await this.#secretFingerprints(
+                target,
+                request.secretRoot,
+                request.secretFiles,
+                signal,
+              );
+              await this.run(["rm", "-f", "--", candidate]).catch(() => undefined);
+              publications.push(Object.freeze({
+                name: request.candidate.name,
+                workspace,
+                target,
+                changed: false,
+                existed: true,
+                serviceChange: fingerprints?.changed,
+                secretFingerprintPath: fingerprints?.path,
+                secretFingerprints: fingerprints?.hashes,
+              }));
+              continue;
+            }
+          } else if (compare.exitCode !== 1) {
             throw new TransportError(`Failed to compare the config target ${target}`);
           }
         }
@@ -979,7 +891,6 @@ export class OpenSshRemoteSession implements RemoteSession {
   async #ensureReleaseParent(
     root: string,
     parent: string,
-    runAs: string | undefined,
     signal?: AbortSignal,
   ): Promise<void> {
     if (!parent.startsWith(`${root}/`)) {
@@ -1001,8 +912,14 @@ export class OpenSshRemoteSession implements RemoteSession {
         privileged: true,
       });
       if (existing.exitCode === 1) {
-        const argv = ["/usr/bin/install", "-d", "-m", "0750"];
-        if (runAs !== undefined) argv.push("-o", userOrGroup(runAs, "run_as"));
+        const argv = [
+          "/usr/bin/install",
+          "-d",
+          "-m",
+          "0750",
+          "-o",
+          userOrGroup(this.#options.user, "SSH user"),
+        ];
         argv.push("--", current);
         requireSuccess(
           await this.run(argv, { signal, privileged: true }),
@@ -1123,16 +1040,26 @@ export class OpenSshRemoteSession implements RemoteSession {
     options: { readonly signal?: AbortSignal; readonly mode?: number } = {},
   ): Promise<void> {
     this.#ensureOpen();
+    this.#ensureLeaseUsable();
     const source = await regularLocalFile(localPath, "upload source");
     const remote = safeRemotePath(remotePath);
     const mode = fileMode(options.mode ?? 0o600);
-    const result = await this.#runLocal(
-      this.#options.scpExecutable,
-      [...this.#sshOptions(true), "--", source, this.#scpDestination(remote)],
-      options.signal,
-      this.#options.commandTimeoutMs,
-      "upload file",
-    );
+    let result: CommandResult;
+    try {
+      result = await this.#runLocal(
+        this.#options.scpExecutable,
+        [...this.#sshOptions(true), "--", source, this.#scpDestination(remote)],
+        this.#protectedSignal(options.signal),
+        this.#options.commandTimeoutMs,
+        "upload file",
+      );
+    } catch (cause) {
+      if (cause instanceof CancelledError && this.#leaseLostReason !== undefined) {
+        throw this.#leaseLostReason;
+      }
+      throw cause;
+    }
+    this.#ensureLeaseUsable();
     requireSuccess(result, `Failed to upload file ${source} -> ${remote}`);
     requireSuccess(
       await this.run(["chmod", mode.toString(8).padStart(4, "0"), "--", remote], {
@@ -1306,17 +1233,29 @@ export class OpenSshRemoteSession implements RemoteSession {
           existing !== undefined && existing.kind === file.kind &&
           existing.sha256 === file.sha256
         ) {
-          requireSuccess(
-            await this.run(["chmod", "0600", "--", destination], { signal, privileged }),
-            `Failed to fix secret permissions ${destination}`,
-          );
-          results.push(Object.freeze({
-            name: file.name,
-            kind: file.kind,
-            sha256: file.sha256,
-            status: "unchanged",
-          }));
-          continue;
+          // 清单命中仍需校验实际内容；漂移或缺失时重新发布，避免成功结果掩盖内容不一致。
+          const actual = await this.run(["sha256sum", "--", destination], { signal, privileged });
+          if (actual.exitCode === 0) {
+            const hash = /^([0-9a-f]{64})\s+/u.exec(actual.stdout)?.[1];
+            if (hash === undefined) {
+              throw new TransportError(`Invalid secret hash output for ${file.name}`);
+            }
+            if (hash === file.sha256) {
+              requireSuccess(
+                await this.run(["chmod", "0600", "--", destination], { signal, privileged }),
+                `Failed to fix secret permissions ${destination}`,
+              );
+              results.push(Object.freeze({
+                name: file.name,
+                kind: file.kind,
+                sha256: file.sha256,
+                status: "unchanged",
+              }));
+              continue;
+            }
+          } else if (actual.exitCode !== 1) {
+            throw new TransportError(`Failed to read the secret ${destination}`);
+          }
         }
         const staged = `${workspace}/secret-${index}`;
         await this.uploadFile(file.source, staged, { signal, mode: 0o600 });
@@ -1447,33 +1386,25 @@ export class OpenSshRemoteSession implements RemoteSession {
     });
   }
 
+  /**
+   * 为单个消费者（生命周期脚本或配置渲染器）建立只含其声明秘密的拷贝目录。
+   * 身份统一为 SSH 登录用户：秘密来自 home 内时直接复制，来自特权目录时提权读取后归还属主。
+   */
   async createScopedSecretCopy(
     request: ScopedSecretCopyRequest,
     signal?: AbortSignal,
   ): Promise<ScopedSecretCopy> {
     this.#ensureOpen();
     const workspace = this.#registeredWorkspace(request.workspace);
-    const identity = await this.#validatedAppIdentity(request.runAs, signal);
     const sourceDirectory = await this.#expandSecretDirectory(request.sourceDirectory, signal);
     const sourcePrivileged = await this.#secretCommandsPrivileged(sourceDirectory, signal);
     const names = validateSecretNames(request.names, "consumer");
-    await this.#prepareManagedWorkspace(identity, workspace, signal);
     const path = `${workspace}/consumer-secrets-${crypto.randomUUID().replaceAll("-", "")}`;
     try {
-      if (identity.requiresSudo) {
-        requireSuccess(
-          await this.run(["install", "-d", "-m", "0700", "-o", identity.runAs, "--", path], {
-            signal,
-            privileged: true,
-          }),
-          "Failed to create the consumer secret copy directory",
-        );
-      } else {
-        requireSuccess(
-          await this.run(["mkdir", "-m", "0700", "--", path], { signal }),
-          "Failed to create the consumer secret copy directory",
-        );
-      }
+      requireSuccess(
+        await this.run(["mkdir", "-m", "0700", "--", path], { signal }),
+        "Failed to create the consumer secret copy directory",
+      );
       for (const name of names) {
         const source = `${sourceDirectory}/${name}`;
         const destination = `${path}/${name}`;
@@ -1485,55 +1416,37 @@ export class OpenSshRemoteSession implements RemoteSession {
         if (compatibleRemoteStatField(type.stdout, 0) !== "regular file") {
           throw new PreflightError(`Secret source is not a regular file: ${name}`);
         }
-        const install = ["install", "-m", "0600"];
-        if (sourcePrivileged || identity.requiresSudo) install.push("-o", identity.runAs);
-        install.push("--", source, destination);
         requireSuccess(
-          await this.run(install, {
+          await this.run(["install", "-m", "0600", "--", source, destination], {
             signal,
-            privileged: sourcePrivileged || identity.requiresSudo,
+            privileged: sourcePrivileged,
           }),
           `Failed to copy the consumer secret: ${name}`,
         );
-        const mode = await this.run(["stat", "-c", "%a", "--", destination], {
-          signal,
-          privileged: identity.requiresSudo,
-        });
+        if (sourcePrivileged) {
+          requireSuccess(
+            await this.run(["chown", this.#options.user, "--", destination], {
+              signal,
+              privileged: true,
+            }),
+            `Failed to set the consumer secret owner: ${name}`,
+          );
+        }
+        const mode = await this.run(["stat", "-c", "%a", "--", destination], { signal });
         requireSuccess(mode, `Failed to check consumer secret permissions: ${name}`);
         if (compatibleRemoteStatField(mode.stdout, 1) !== "600") {
           throw new TransportError(`Consumer secret permissions are not 0600: ${name}`);
         }
-        const owner = await this.run(["stat", "-c", "%u", "--", destination], {
-          signal,
-          privileged: identity.requiresSudo,
-        });
-        requireSuccess(owner, `Failed to check the consumer secret owner: ${name}`);
-        if (compatibleRemoteStatField(owner.stdout, 2) !== String(identity.uid)) {
-          throw new TransportError(`Consumer secret owner is not run_as: ${name}`);
-        }
       }
-      const directoryMode = await this.run(["stat", "-c", "%a", "--", path], {
-        signal,
-        privileged: identity.requiresSudo,
-      });
+      const directoryMode = await this.run(["stat", "-c", "%a", "--", path], { signal });
       requireSuccess(directoryMode, "Failed to check consumer secret directory permissions");
       if (compatibleRemoteStatField(directoryMode.stdout, 1) !== "700") {
         throw new TransportError("Consumer secret copy directory permissions are not 0700");
       }
-      const directoryOwner = await this.run(["stat", "-c", "%u", "--", path], {
-        signal,
-        privileged: identity.requiresSudo,
-      });
-      requireSuccess(directoryOwner, "Failed to check the consumer secret directory owner");
-      if (compatibleRemoteStatField(directoryOwner.stdout, 2) !== String(identity.uid)) {
-        throw new TransportError("Consumer secret copy directory owner is not run_as");
-      }
-      this.#scopedSecretCopies.set(path, identity.runAs);
-      return Object.freeze({ workspace, path, runAs: identity.runAs });
+      this.#scopedSecretCopies.set(path, workspace);
+      return Object.freeze({ workspace, path });
     } catch (cause) {
-      await this.run(["rm", "-rf", "--", path], { privileged: identity.requiresSudo }).catch(
-        () => undefined,
-      );
+      await this.run(["rm", "-rf", "--", path]).catch(() => undefined);
       throw cause;
     }
   }
@@ -1542,13 +1455,11 @@ export class OpenSshRemoteSession implements RemoteSession {
     this.#ensureOpen();
     const workspace = this.#registeredWorkspace(copy.workspace);
     const path = workspaceMember(workspace, copy.path, "consumer secret copy directory");
-    const runAs = this.#scopedSecretCopies.get(path);
-    if (runAs === undefined || runAs !== copy.runAs) {
+    if (this.#scopedSecretCopies.get(path) !== workspace) {
       throw new TransportError("Consumer secret copy is not registered in the current session");
     }
-    const identity = await this.#validatedAppIdentity(runAs);
     requireSuccess(
-      await this.run(["rm", "-rf", "--", path], { privileged: identity.requiresSudo }),
+      await this.run(["rm", "-rf", "--", path]),
       "Failed to clean up the consumer secret copy",
     );
     this.#scopedSecretCopies.delete(path);
@@ -1562,12 +1473,22 @@ export class OpenSshRemoteSession implements RemoteSession {
     const app = lockComponent(request.app, "App");
     const target = lockComponent(request.target, "target");
     const timeoutMs = positiveTimeout(request.timeoutMs, "target operation lock");
+    const leaseTtlMs = positiveTimeout(
+      request.leaseTtlMs ?? DEFAULT_OPERATION_LEASE_TTL_MS,
+      "target operation lock lease TTL",
+    );
     const digest = await sha256Text(`${app}\0${target}`);
     const id = crypto.randomUUID().replaceAll("-", "");
     const lockPath = `/tmp/sfo-deploy-operation-${digest}.lock`;
     const readyPath = `/tmp/sfo-deploy-lock-ready-${id}`;
     const stopPath = `/tmp/sfo-deploy-lock-stop-${id}`;
+    const leasePath = `/tmp/sfo-deploy-lock-lease-${id}`;
     const seconds = Math.max(0.001, timeoutMs / 1000).toFixed(3);
+    const leaseTtlSeconds = Math.max(1, Math.ceil(leaseTtlMs / 1000)).toFixed(0);
+    const heartbeatIntervalMs = Math.max(
+      1_000,
+      Math.min(DEFAULT_OPERATION_HEARTBEAT_INTERVAL_MS, Math.floor(leaseTtlMs / 4)),
+    );
     const holderArgv = validateArgv([
       "flock",
       "--exclusive",
@@ -1578,10 +1499,12 @@ export class OpenSshRemoteSession implements RemoteSession {
       lockPath,
       "/usr/bin/sh",
       "-c",
-      'umask 077; : > "$1"; : > "$2"; while test -f "$2"; do /usr/bin/sleep 0.1; done',
+      'umask 077; : > "$1"; : > "$2"; : > "$3"; while test -f "$2"; do lease_mtime=$(/usr/bin/stat -c %Y "$3" 2>/dev/null || echo 0); now=$(/usr/bin/date +%s); if test -z "$lease_mtime" || test "$lease_mtime" -eq 0 || test $((now - lease_mtime)) -ge "$4"; then exit 74; fi; /usr/bin/sleep 0.1; done',
       "sfo-lock-holder",
       readyPath,
       stopPath,
+      leasePath,
+      leaseTtlSeconds,
     ]);
     const rendered = `exec ${holderArgv.map(quotePosix).join(" ")}`;
     let child: SpawnedCommand;
@@ -1608,13 +1531,31 @@ export class OpenSshRemoteSession implements RemoteSession {
           }
           throw new TransportError("Target operation lock holder exited early");
         }
-        const ready = await this.run(["/usr/bin/test", "-f", readyPath], {
+        const ready = await this.#runRemote(["/usr/bin/test", "-f", readyPath], {
           signal,
           timeoutMs: Math.min(timeoutMs, this.#options.connectTimeoutMs),
         });
         if (ready.exitCode === 0) {
           const lease = Object.freeze({ id, app, target });
-          this.#operationLeases.set(id, { lease, child, output, readyPath, stopPath });
+          const held: HeldOperationLease = {
+            lease,
+            child,
+            output,
+            readyPath,
+            stopPath,
+            leasePath,
+            leaseTtlMs,
+            heartbeatIntervalMs,
+            heartbeatRunning: false,
+            timer: undefined,
+            lost: false,
+            releasing: false,
+          };
+          this.#operationLeases.set(id, held);
+          this.#watchOperationLease(held);
+          held.timer = setInterval(() => {
+            void this.#heartbeatOperationLease(held);
+          }, heartbeatIntervalMs);
           return lease;
         }
         if (ready.exitCode !== 1) {
@@ -1624,9 +1565,25 @@ export class OpenSshRemoteSession implements RemoteSession {
       throw new PreflightError("Target operation lock acquisition timed out");
     } catch (cause) {
       await terminateAndReap(child, output, this.#options.terminateTimeoutMs);
-      await this.run(["rm", "-f", "--", readyPath]).catch(() => undefined);
-      await this.run(["rm", "-f", "--", stopPath]).catch(() => undefined);
+      await this.#runRemote(["rm", "-f", "--", readyPath]).catch(() => undefined);
+      await this.#runRemote(["rm", "-f", "--", stopPath]).catch(() => undefined);
+      await this.#runRemote(["rm", "-f", "--", leasePath]).catch(() => undefined);
       throw cause;
+    }
+  }
+
+  async #heartbeatOperationLease(held: HeldOperationLease): Promise<void> {
+    if (held.heartbeatRunning || held.lost || !this.#operationLeases.has(held.lease.id)) return;
+    held.heartbeatRunning = true;
+    try {
+      const result = await this.#runRemote(["/usr/bin/touch", "--", held.leasePath], {
+        timeoutMs: Math.max(1_000, Math.min(held.leaseTtlMs / 4, 30_000)),
+      });
+      void result;
+    } catch {
+      // 心跳是软操作：瞬时失败不应终止 managed 步骤；holder 依赖 TTL 缓冲继续持锁。
+    } finally {
+      held.heartbeatRunning = false;
     }
   }
 
@@ -1639,22 +1596,71 @@ export class OpenSshRemoteSession implements RemoteSession {
         "Target operation lock lease is not registered in the current session",
       );
     }
-    this.#operationLeases.delete(lease.id);
-    requireSuccess(
-      await this.run(["rm", "-f", "--", held.stopPath]),
-      "Failed to notify the target operation lock to release",
-    );
-    const released = await Promise.race([
-      held.output.then((output) => output.code === 0, () => false),
-      pollDelay(this.#options.terminateTimeoutMs).then(() => false),
-    ]);
-    if (!released) {
-      await terminateAndReap(held.child, held.output, this.#options.terminateTimeoutMs);
+    if (held.timer !== undefined) {
+      clearInterval(held.timer);
+      held.timer = undefined;
     }
-    requireSuccess(
-      await this.run(["rm", "-f", "--", held.readyPath, held.stopPath]),
-      "Failed to clean up the target operation lock state",
-    );
+    held.releasing = true;
+    let notifyError: unknown;
+    try {
+      requireSuccess(
+        await this.#runRemote(["rm", "-f", "--", held.stopPath]),
+        "Failed to notify the target operation lock to release",
+      );
+    } catch (cause) {
+      notifyError = cause;
+    }
+    const outcome = await Promise.race([
+      held.output.then(
+        (value) => ({ exited: true as const, code: value.code }),
+        () => ({ exited: true as const, code: undefined }),
+      ),
+      pollDelay(this.#options.terminateTimeoutMs).then(() => ({
+        exited: false as const,
+        code: undefined,
+      })),
+    ]);
+    let reclaimed = outcome.exited;
+    if (!reclaimed) {
+      await terminateAndReap(held.child, held.output, this.#options.terminateTimeoutMs);
+      reclaimed = await Promise.race([
+        held.output.then(() => true, () => true),
+        pollDelay(this.#options.terminateTimeoutMs).then(() => false),
+      ]);
+    }
+    if (!reclaimed) {
+      // 未确认回收时保留跟踪，让 close 或后续 release 仍能兜底处理。
+      throw this.#leaseLostReason ?? new TransportError(
+        `Target operation lock ${held.lease.app}@${held.lease.target} could not be reclaimed before release`,
+      );
+    }
+    this.#operationLeases.delete(lease.id);
+    let cleanupError: unknown;
+    try {
+      requireSuccess(
+        await this.#runRemote(["rm", "-f", "--", held.readyPath, held.stopPath, held.leasePath]),
+        "Failed to clean up the target operation lock state",
+      );
+    } catch (cause) {
+      cleanupError = cause;
+    }
+    const lost = held.lost || (outcome.exited && outcome.code !== 0);
+    if (lost) {
+      const reason = this.#leaseLostReason ?? new TransportError(
+        `Target operation lock ${held.lease.app}@${held.lease.target} was lost before release` +
+          (outcome.code === undefined ? "" : ` (holder exit code ${outcome.code})`),
+      );
+      if (this.#leaseLostReason === undefined) this.#leaseLostReason = reason;
+      if (notifyError !== undefined || cleanupError !== undefined) {
+        throw new AggregateError(
+          [reason, notifyError, cleanupError].filter((error) => error !== undefined),
+          "Target operation lock release failed",
+        );
+      }
+      throw reason;
+    }
+    if (notifyError !== undefined) throw notifyError;
+    if (cleanupError !== undefined) throw cleanupError;
   }
 
   async exposeStepSecrets(
@@ -1763,7 +1769,6 @@ export class OpenSshRemoteSession implements RemoteSession {
       readonly secretDir?: string;
       readonly permissions: ScriptPermissions;
       readonly privileged?: boolean;
-      readonly runAs?: string;
       readonly signal?: AbortSignal;
     },
   ): Promise<CommandResult> {
@@ -1787,69 +1792,29 @@ export class OpenSshRemoteSession implements RemoteSession {
     );
     net.forEach(validateNetPermission);
     const executablePath = runtimeExecutable(executable);
-    let executionScript = remoteScript;
-    let executionMetadata = metadata;
-    let scope: string | undefined;
-    let identity: ValidatedAppIdentity | undefined;
-    try {
-      if (options.runAs !== undefined) {
-        identity = await this.#validatedAppIdentity(options.runAs, options.signal);
-        scope = await this.#createAppScope(identity, workspace, "lifecycle-deno", options.signal);
-        executionScript = `${scope}/script.ts`;
-        executionMetadata = `${scope}/metadata.json`;
-        await this.#installAppInput(
-          identity,
-          remoteScript,
-          executionScript,
-          "0500",
-          options.signal,
-        );
-        await this.#installAppInput(
-          identity,
-          metadata,
-          executionMetadata,
-          "0400",
-          options.signal,
-        );
-        await this.#installOptionalAppInput(
-          identity,
-          `${workspace}/sfo-secret-loader.ts`,
-          `${scope}/sfo-secret-loader.ts`,
-          options.signal,
-        );
-      }
-      const argv = [
-        executablePath,
-        "run",
-        "--no-prompt",
-        "--no-config",
-        "--no-remote",
-        "--no-npm",
-        "--deny-ffi",
-        "--allow-env=DEPLOYMENT_METADATA_PATH,DEPLOYMENT_SECRETS_DIR,HOME",
-        `--allow-read=${read.join(",")}`,
-        `--allow-write=${write.join(",")}`,
-        run.length > 0 ? `--allow-run=${run.join(",")}` : "--deny-run",
-        net.length > 0 ? `--allow-net=${net.join(",")}` : "--deny-net",
-        executionScript,
-      ];
-      const environment: Record<string, string> = { DEPLOYMENT_METADATA_PATH: executionMetadata };
-      if (secretCopy !== undefined) environment.DEPLOYMENT_SECRETS_DIR = secretCopy;
-      const runOptions: RemoteAppRunOptions = {
-        signal: options.signal,
-        environment,
-        cwd: workspace,
-      };
-      return options.runAs === undefined
-        ? await this.run(argv, { ...runOptions, privileged: options.privileged })
-        : await this.runAsApp(options.runAs, argv, runOptions);
-    } finally {
-      if (scope !== undefined && identity !== undefined) {
-        await this.run(["rm", "-rf", "--", scope], { privileged: identity.requiresSudo }).catch(
-          () => undefined,
-        );
-      }
-    }
+    const argv = [
+      executablePath,
+      "run",
+      "--no-prompt",
+      "--no-config",
+      "--no-remote",
+      "--no-npm",
+      "--deny-ffi",
+      "--allow-env=DEPLOYMENT_METADATA_PATH,DEPLOYMENT_SECRETS_DIR,HOME",
+      `--allow-read=${read.join(",")}`,
+      `--allow-write=${write.join(",")}`,
+      run.length > 0 ? `--allow-run=${run.join(",")}` : "--deny-run",
+      net.length > 0 ? `--allow-net=${net.join(",")}` : "--deny-net",
+      remoteScript,
+    ];
+    const environment: Record<string, string> = { DEPLOYMENT_METADATA_PATH: metadata };
+    if (secretCopy !== undefined) environment.DEPLOYMENT_SECRETS_DIR = secretCopy;
+    return await this.run(argv, {
+      signal: options.signal,
+      environment,
+      cwd: workspace,
+      privileged: options.privileged,
+    });
   }
 
   async removeFile(path: string, signal?: AbortSignal): Promise<void> {
@@ -1922,17 +1887,17 @@ export class OpenSshRemoteSession implements RemoteSession {
     this.#ensureOpen();
     const workspace = this.#registeredWorkspace(path);
     this.#workspaces.delete(workspace);
-    for (const copy of this.#scopedSecretCopies.keys()) {
-      if (copy.startsWith(`${workspace}/`)) this.#scopedSecretCopies.delete(copy);
+    for (const [copy, owner] of this.#scopedSecretCopies) {
+      if (owner === workspace) this.#scopedSecretCopies.delete(copy);
     }
   }
 
   async cleanupWorkspace(path: string, signal?: AbortSignal): Promise<void> {
     const workspace = this.#registeredWorkspace(path);
-    const result = await this.run(["rm", "-rf", "--", workspace], { signal });
+    const result = await this.#runRemote(["rm", "-rf", "--", workspace], { signal });
     requireSuccess(result, `Failed to clean up the remote workspace ${workspace}`);
-    for (const path of this.#scopedSecretCopies.keys()) {
-      if (path.startsWith(`${workspace}/`)) this.#scopedSecretCopies.delete(path);
+    for (const [copy, owner] of this.#scopedSecretCopies) {
+      if (owner === workspace) this.#scopedSecretCopies.delete(copy);
     }
     this.#workspaces.delete(workspace);
   }
@@ -2070,87 +2035,42 @@ export class OpenSshRemoteSession implements RemoteSession {
     return workspace;
   }
 
-  async #validatedAppIdentity(
-    runAs: string,
-    signal?: AbortSignal,
-  ): Promise<ValidatedAppIdentity> {
-    const normalized = appUser(runAs);
-    if (!this.#appIdentities.has(normalized)) {
-      await this.validateManagedIdentity(normalized, signal);
-    }
-    return this.#appIdentities.get(normalized)!;
-  }
-
-  async #prepareManagedWorkspace(
-    identity: ValidatedAppIdentity,
-    workspace: string,
-    signal?: AbortSignal,
-  ): Promise<void> {
-    if (!identity.requiresSudo) return;
-    requireSuccess(
-      await this.run(["chmod", "0711", "--", workspace], { signal, privileged: true }),
-      "Failed to set managed workspace traverse permissions",
-    );
-  }
-
-  async #createAppScope(
-    identity: ValidatedAppIdentity,
-    workspace: string,
-    purpose: string,
-    signal?: AbortSignal,
-  ): Promise<string> {
-    await this.#prepareManagedWorkspace(identity, workspace, signal);
-    const scope = `${workspace}/${purpose}-${crypto.randomUUID().replaceAll("-", "")}`;
-    if (identity.requiresSudo) {
-      requireSuccess(
-        await this.run(["install", "-d", "-m", "0700", "-o", identity.runAs, "--", scope], {
-          signal,
-          privileged: true,
-        }),
-        "Failed to create the unprivileged App execution directory",
-      );
-    } else {
-      requireSuccess(
-        await this.run(["mkdir", "-m", "0700", "--", scope], { signal }),
-        "Failed to create the unprivileged App execution directory",
-      );
-    }
-    return scope;
-  }
-
-  async #installAppInput(
-    identity: ValidatedAppIdentity,
-    source: string,
-    destination: string,
-    mode: "0400" | "0500",
-    signal?: AbortSignal,
-  ): Promise<void> {
-    const argv = ["install", "-m", mode];
-    if (identity.requiresSudo) argv.push("-o", identity.runAs);
-    argv.push("--", source, destination);
-    requireSuccess(
-      await this.run(argv, { signal, privileged: identity.requiresSudo }),
-      "Failed to prepare unprivileged App execution input",
-    );
-  }
-
-  async #installOptionalAppInput(
-    identity: ValidatedAppIdentity,
-    source: string,
-    destination: string,
-    signal?: AbortSignal,
-  ): Promise<void> {
-    const exists = await this.run(["/usr/bin/test", "-f", source], {
-      signal,
-      privileged: identity.requiresSudo,
-    });
-    if (exists.exitCode === 1) return;
-    requireSuccess(exists, "Failed to check optional App execution input");
-    await this.#installAppInput(identity, source, destination, "0400", signal);
-  }
-
   #ensureOpen(): void {
     if (this.#closed) throw new TransportError("SSH session is already closed");
+  }
+
+  #ensureLeaseUsable(): void {
+    if (this.#leaseLostReason !== undefined) throw this.#leaseLostReason;
+  }
+
+  /** 合并调用方信号与会话失锁信号；仅用于 run/uploadFile 等受保护写入口。 */
+  #protectedSignal(signal?: AbortSignal): AbortSignal {
+    if (signal === undefined || this.#leaseAbort.signal.aborted) return this.#leaseAbort.signal;
+    return AbortSignal.any([signal, this.#leaseAbort.signal]);
+  }
+
+  #watchOperationLease(held: HeldOperationLease): void {
+    held.output.then(
+      (value) => this.#onOperationLeaseExit(held, value.code),
+      () => this.#onOperationLeaseExit(held, undefined),
+    );
+  }
+
+  #onOperationLeaseExit(held: HeldOperationLease, code: number | undefined): void {
+    if (held.releasing || !this.#operationLeases.has(held.lease.id) || held.lost) return;
+    held.lost = true;
+    if (held.timer !== undefined) {
+      clearInterval(held.timer);
+      held.timer = undefined;
+    }
+    const detail = code === 74
+      ? "lease expired before the operation finished"
+      : `holder exited unexpectedly (code ${code ?? "unknown"})`;
+    const reason = new TransportError(
+      `Target operation lock ${held.lease.app}@${held.lease.target} was lost: ${detail}`,
+    );
+    if (this.#leaseLostReason === undefined) this.#leaseLostReason = reason;
+    if (!this.#leaseAbort.signal.aborted) this.#leaseAbort.abort(reason);
   }
 }
 
@@ -2159,28 +2079,109 @@ async function terminateAndReap(
   output: Promise<Deno.CommandOutput>,
   terminateTimeoutMs: number,
 ): Promise<void> {
-  try {
-    child.kill("SIGTERM");
-  } catch {
-    // 进程可能已在竞态中退出；仍需等待 output 以回收。
-  }
-  const terminated = await Promise.race([
-    output.then(() => true, () => true),
-    new Promise<false>((resolvePromise) =>
-      setTimeout(() => resolvePromise(false), terminateTimeoutMs)
-    ),
-  ]);
-  if (!terminated) {
-    try {
-      child.kill("SIGKILL");
-    } catch {
-      // 同上。
-    }
-  }
+  const descendants = trackDescendants(child);
+  signalProcessTree(child, descendants, "SIGTERM");
   await Promise.race([
     output.then(() => undefined, () => undefined),
     pollDelay(terminateTimeoutMs),
   ]);
+  signalProcessTree(child, trackDescendants(child, descendants), "SIGKILL");
+  await Promise.race([
+    output.then(() => undefined, () => undefined),
+    pollDelay(terminateTimeoutMs),
+  ]);
+}
+
+/** 采集被跟踪进程的后代 pid；无 pid 的测试替身返回既有集合。 */
+function trackDescendants(child: SpawnedCommand, existing: readonly number[] = []): number[] {
+  const tracked = new Set<number>(existing);
+  if (typeof child.pid === "number" && Number.isInteger(child.pid) && child.pid > 0) {
+    for (const pid of descendantPids(child.pid)) tracked.add(pid);
+  }
+  return [...tracked];
+}
+
+function signalProcessTree(
+  child: SpawnedCommand,
+  descendants: readonly number[],
+  signo: Deno.Signal,
+): void {
+  try {
+    child.kill(signo);
+  } catch {
+    // 进程可能已在竞态中退出；仍需等待 output 以回收。
+  }
+  for (const pid of descendants) {
+    try {
+      Deno.kill(pid, signo);
+    } catch {
+      // 后代可能已退出或不允许操作；终止为 best-effort。
+    }
+  }
+}
+
+/** 枚举 rootPid 的全部后代；无 /proc 且 ps 不可用时返回空数组。 */
+function descendantPids(rootPid: number): number[] {
+  const children = new Map<number, number[]>();
+  if (!readProcessChildren(children) && !readProcessChildrenViaPs(children)) return [];
+  const result: number[] = [];
+  const queue = [rootPid];
+  const seen = new Set<number>([rootPid]);
+  while (queue.length > 0) {
+    const current = queue.shift() as number;
+    for (const child of children.get(current) ?? []) {
+      if (seen.has(child)) continue;
+      seen.add(child);
+      result.push(child);
+      queue.push(child);
+    }
+  }
+  return result;
+}
+
+function readProcessChildren(children: Map<number, number[]>): boolean {
+  try {
+    for (const entry of Deno.readDirSync("/proc")) {
+      if (!entry.isDirectory || !/^\d+$/.test(entry.name)) continue;
+      const stat = Deno.readTextFileSync(`/proc/${entry.name}/stat`);
+      const close = stat.lastIndexOf(")");
+      if (close < 0) continue;
+      const fields = stat.slice(close + 2).split(" ");
+      const ppid = Number(fields[1]);
+      if (!Number.isInteger(ppid)) continue;
+      const pid = Number(entry.name);
+      const list = children.get(ppid);
+      if (list === undefined) children.set(ppid, [pid]);
+      else list.push(pid);
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function readProcessChildrenViaPs(children: Map<number, number[]>): boolean {
+  try {
+    const output = new Deno.Command("ps", {
+      args: ["-A", "-o", "pid=,ppid="],
+      stdin: "null",
+      stdout: "piped",
+      stderr: "null",
+    }).outputSync();
+    if (!output.success) return false;
+    for (const line of new TextDecoder().decode(output.stdout).split("\n")) {
+      const match = line.trim().match(/^(\d+)\s+(\d+)$/);
+      if (match === null) continue;
+      const pid = Number(match[1]);
+      const ppid = Number(match[2]);
+      const list = children.get(ppid);
+      if (list === undefined) children.set(ppid, [pid]);
+      else list.push(pid);
+    }
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function quotePosix(value: string): string {
@@ -2226,41 +2227,6 @@ function environmentAssignments(
     return left.localeCompare(right);
   });
   return Object.freeze(entries.map(([name, value]) => `${name}=${value}`));
-}
-
-function appUser(value: string): string {
-  if (typeof value !== "string" || value === "root" || !APP_USER_RE.test(value)) {
-    throw new PreflightError("run_as must be a canonical non-root Linux user");
-  }
-  return value;
-}
-
-function requiredRunAs(value: string | undefined): string {
-  if (value === undefined) throw new PreflightError("managed App invocation is missing run_as");
-  return appUser(value);
-}
-
-function parseUid(output: string, label: string): number {
-  const text = output.trim();
-  if (!/^(?:0|[1-9][0-9]*)$/u.test(text)) throw new PreflightError(`Invalid ${label} output`);
-  const uid = Number(text);
-  if (!Number.isSafeInteger(uid)) throw new PreflightError(`Invalid ${label} output`);
-  return uid;
-}
-
-function parsePositiveUid(output: string, label: string): number {
-  const uid = parseUid(output, label);
-  if (uid <= 0) throw new PreflightError(`${label} must be greater than 0`);
-  return uid;
-}
-
-function publicIdentity(identity: ValidatedAppIdentity): ManagedAppIdentity {
-  return Object.freeze({
-    runAs: identity.runAs,
-    uid: identity.uid,
-    sshUid: identity.sshUid,
-    requiresSudo: identity.requiresSudo,
-  });
 }
 
 function compatibleRemoteStatField(output: string, index: number): string {

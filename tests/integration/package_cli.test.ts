@@ -12,6 +12,8 @@ import {
 Deno.test("integration/package: public module exposes new TypeScript consumer path", () => {
   assert(CLI_ACTIONS.includes("deploy"));
   assert(CLI_ACTIONS.includes("fetch"));
+  assert(!(CLI_ACTIONS as readonly string[]).includes("install"));
+  assert(!(CLI_ACTIONS as readonly string[]).includes("configure"));
   assertEquals(typeof createCli, "function");
   assertEquals(typeof loadCluster, "function");
   const transport: Transport | undefined = undefined;

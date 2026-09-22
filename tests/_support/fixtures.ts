@@ -119,7 +119,7 @@ export async function writeCluster(
   if (options.appV1Inline) {
     await Deno.writeTextFile(
       join(cluster, "apps", "demo", "app.yaml"),
-      `schema_version: 1\nname: demo\nversion: "1.0.0"\npackage:\n  provider: http\n  source: {url: "https://example.invalid/demo.bin"}\n  hash: {algorithm: sha256, value: "${demoHash}"}\ndepends_on: [base]\nmanagement:\n  run_as: deploy\n  kind: service\n  name: demo.service\n  tool: systemctl\n`,
+      `schema_version: 1\nname: demo\nversion: "1.0.0"\npackage:\n  provider: http\n  source: {url: "https://example.invalid/demo.bin"}\n  hash: {algorithm: sha256, value: "${demoHash}"}\ndepends_on: [base]\nmanagement:\n  kind: service\n  name: demo.service\n  tool: systemctl\n`,
     );
   } else {
     await Deno.writeTextFile(
@@ -128,7 +128,7 @@ export async function writeCluster(
     );
     await Deno.writeTextFile(
       join(cluster, "apps", "demo", "app.yaml"),
-      `schema_version: 1\nname: demo\ninstall_directory: /srv/demo\ndepends_on: [base]\nconfigs:\n  - kind: file\n    source: templates/application.json\n    target: /etc/demo/application.json\n    format: json\nmanagement:\n  run_as: deploy\n  kind: service\n  name: demo.service\n  tool: systemctl\n`,
+      `schema_version: 1\nname: demo\ninstall_directory: /srv/demo\ndepends_on: [base]\nconfigs:\n  - kind: file\n    source: templates/application.json\n    target: /etc/demo/application.json\n    format: json\nmanagement:\n  kind: service\n  name: demo.service\n  tool: systemctl\n`,
     );
     await Deno.writeTextFile(
       join(cluster, "apps", "demo", "templates", "application.json"),

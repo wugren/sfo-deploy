@@ -215,16 +215,13 @@ Deno.test("integration/remote-deployment: 配置渲染器使用固定参数和 d
       secretDir: `${workspace}/secrets`,
       secretRoot: "/home/deploy/.sfo-deploy/secrets",
       fileSecrets: Object.freeze([]),
-      runAs: "deploy",
       timeoutMs: 1234,
     });
     const denoRuns = rendered.filter((command) => command.includes("'/usr/bin/deno' 'run'"));
     assertEquals(denoRuns.length, 1);
-    assert(
-      denoRuns.every((command) =>
-        command.includes("'sudo' '-n' '-H' '-u' 'deploy' '--' 'env' 'HOME=/home/deploy'")
-      ),
-    );
+    // 配置渲染器以 SSH 身份直接运行，不再降权到 run_as，也不注入 HOME。
+    assert(denoRuns.every((command) => !command.includes("'sudo'")));
+    assert(denoRuns.every((command) => !command.includes("'HOME=")));
     assert(rendered.every((command) =>
       [...command].every((character) => {
         const code = character.codePointAt(0)!;

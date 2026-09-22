@@ -90,6 +90,72 @@ Deno.test("unit/secrets transport: too-wide directory mode fails closed", async 
   assertStringIncludes(error.message, "0700");
 });
 
+function driftSession(
+  recorded: Array<readonly string[]>,
+  manifestJson: string,
+  actualHash: string,
+): OpenSshRemoteSession {
+  return new OpenSshRemoteSession({
+    address: "10.0.0.1",
+    user: "deploy",
+    port: 22,
+    knownHosts: "/dev/null",
+    sshExecutable: "ssh",
+    scpExecutable: "scp",
+    connectTimeoutMs: 1_000,
+    commandTimeoutMs: 1_000,
+    terminateTimeoutMs: 100,
+    commandFactory: factory((command, args) => {
+      const joined = args.join(" ");
+      if (command === "ssh" && joined.includes("$HOME")) return "/home/deploy\n";
+      if (joined.includes("'stat'") && joined.includes("'%a'")) return "700\n";
+      if (joined.includes("cat") && joined.includes("manifest.json")) return manifestJson;
+      if (joined.includes("'sha256sum'")) {
+        return `${actualHash}  /home/deploy/.sfo-deploy/secrets/DB_PASSWORD\n`;
+      }
+      return "";
+    }, recorded),
+  });
+}
+
+Deno.test("unit/secrets transport: manifest match with drifted content republishes", async () => {
+  await withTempDir(async (root) => {
+    const recorded: Array<readonly string[]> = [];
+    const expected = objectFile(`${root}/staged`).sha256;
+    const manifest = JSON.stringify([
+      { name: "DB_PASSWORD", kind: "value", sha256: expected },
+    ]);
+    const client = driftSession(recorded, manifest, "0".repeat(64));
+    const staged = `${root}/staged`;
+    await Deno.writeTextFile(staged, "value");
+    const results = await client.deploySecrets([objectFile(staged)], "~/.sfo-deploy/secrets/");
+    assertEquals(results[0].status, "written");
+    const joined = recorded.map((entry) => entry.join(" "));
+    assert(joined.some((line) => line.includes("'sha256sum'")));
+    assert(joined.some((line) => line.includes("'install'") && line.includes("'0600'")));
+    assert(joined.some((line) => line.includes("'mv'") && line.includes("'-T'")));
+  });
+});
+
+Deno.test("unit/secrets transport: manifest match with intact content stays unchanged", async () => {
+  await withTempDir(async (root) => {
+    const recorded: Array<readonly string[]> = [];
+    const expected = objectFile(`${root}/staged`).sha256;
+    const manifest = JSON.stringify([
+      { name: "DB_PASSWORD", kind: "value", sha256: expected },
+    ]);
+    const client = driftSession(recorded, manifest, expected);
+    const staged = `${root}/staged`;
+    await Deno.writeTextFile(staged, "value");
+    const results = await client.deploySecrets([objectFile(staged)], "~/.sfo-deploy/secrets/");
+    assertEquals(results[0].status, "unchanged");
+    const joined = recorded.map((entry) => entry.join(" "));
+    assert(joined.some((line) => line.includes("'sha256sum'")));
+    assert(joined.some((line) => line.includes("'chmod'") && line.includes("'0600'")));
+    assert(!joined.some((line) => line.includes(".DB_PASSWORD.deployment-")));
+  });
+});
+
 function objectFile(source: string): RemoteSecretUpload {
   const sha256 = "4a44dc15364204a80fe80e9039455cc1608281820fe2b24f1e5233ade6af1dd5";
   return Object.freeze({

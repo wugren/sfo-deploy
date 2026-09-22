@@ -121,12 +121,11 @@ def main() -> int:
     args = parser.parse_args()
 
     root = Path(args.root).resolve()
-    packet = root / "docs" / "versions" / args.version / "modules" / args.module / args.task_name
-    plan = packet / "pipeline" / "plan.md"
-    design = plan if plan.is_file() else packet / "design.md"
+    packet = root / ".harness" / "tasks" / args.version / "modules" / args.module / args.task_name
+    design = packet / "design.md"
     testplan = packet / "testplan.yaml"
     if not design.is_file() or not testplan.is_file():
-        fail(f"missing design/pipeline or testplan for task packet: {packet}")
+        fail(f"missing design or testplan for task packet: {packet}")
 
     rows = table_rows(design.read_text(encoding="utf-8"), "Consumer Migration Closure", design)
     inputs = inline_list(testplan.read_text(encoding="utf-8"), "evidence_inputs", testplan)

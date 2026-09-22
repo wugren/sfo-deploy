@@ -70,6 +70,11 @@ clusters/production/
 version、parameters、defaults、脚本和资源； 不支持逐机器 overrides，需要差异时应创建不同名称的
 Environment。
 
+环境应用需要启动前/启动后初始配置时，可在 `environment.yaml` 新生命周期中声明可选 `init`：
+`init.before_start`/`init.after_start` 各是一个可选的 Deno 脚本列表；`prepare` 按
+`install → before_start → start/restart → after_start` 执行，失败时不写入环境版本标记， 显式
+start/stop/restart 不执行 `init` 脚本。
+
 旧 `cluster.yaml schema_version: 1` 与 `environments/<机器名>/<环境名>/` 每机环境布局
 已移除，框架不再接受 v1 配置；升级到 v2
 时，应合并重复定义、移动其完整资源目录并显式填写放置映射。只支持 v2 的版本不能读取
@@ -111,8 +116,7 @@ if (import.meta.main) Deno.exitCode = await cli(Deno.args);
   显式移除。
 - 执行 app/environment 脚本时，框架在开启秘密交付的步骤（环境 `configure`、App `configure`/`deploy`
   及含 updater/hook 的动作）把本机 `cluster.yaml.secrets` 已声明放置秘密的 机器范围副本放进 0700
-  workspace，注入 `DEPLOYMENT_SECRETS_DIR`；脚本用框架随步骤上传的
-  `sfo-secret-loader.ts`
+  workspace，注入 `DEPLOYMENT_SECRETS_DIR`；脚本用框架随步骤上传的 `sfo-secret-loader.ts`
   按名读取（值密钥返回字符串，文件密钥返回受限绝对路径）， 密钥不进入环境变量、argv 或长期进程。
 - 旧 `config_secrets`/`file_secrets` 与 `DEPLOYMENT_CONTEXT_PATH` context JSON 机制已移除；
   非秘密步骤元数据改由 `DEPLOYMENT_METADATA_PATH` 指向的 0600 JSON 提供。
@@ -126,18 +130,19 @@ if (import.meta.main) Deno.exitCode = await cli(Deno.args);
 schema_version: 2
 name: production
 executor_region: cn-east
-deployer_version: "0.1.0"   # 可选：要求精确匹配的 sfo-deploy 版本
+deployer_version: "0.1.0" # 可选：要求精确匹配的 sfo-deploy 版本
 environments:
   postgresql: [app-01]
 apps:
   backend: [app-01]
 ```
 
-`deployer_version` 是可选的精确版本门禁：声明后，只有与它完全一致的 sfo-deploy 版本才能装载并继续执行
-该集群的受控动作（validate/plan/deploy/check/install/prepare/configure/start/stop/restart）；不一致时在
-任何 SSH 连接前报错停止。未声明该字段的集群行为不变。sfo-deploy 的运行时版本来自仓库根
-`deno.json` 的 `version` 字段；升级工具版本时需同步更新各受影响集群的 `deployer_version`，否则这些集群
-会 fail-closed 拒绝部署。`history`、`rollback`、`fetch`、`install-deno`、`secrets-deploy`
+`deployer_version` 是可选的精确版本门禁：声明后，只有与它完全一致的 sfo-deploy
+版本才能装载并继续执行
+该集群的受控动作（validate/plan/deploy/check/prepare/start/stop/restart）；不一致时在 任何 SSH
+连接前报错停止。未声明该字段的集群行为不变。sfo-deploy 的运行时版本来自仓库根 `deno.json` 的
+`version` 字段；升级工具版本时需同步更新各受影响集群的 `deployer_version`，否则这些集群 会
+fail-closed 拒绝部署。`history`、`rollback`、`fetch`、`install-deno`、`secrets-deploy`
 不做受控执行，不受该门禁约束。
 
 `clusters/production/environments/postgresql/environment.yaml` 只定义一次 PostgreSQL
@@ -205,7 +210,6 @@ configs:
     format: ini
     on_change: restart
 management:
-  run_as: deploy
   kind: service
   name: backend.service
   tool: auto
@@ -266,17 +270,19 @@ secrets:
 
 ### App schema 1 内置配置和服务
 
-声明 `management` 时必须同时声明规范的非 root Linux 用户 `run_as`。SSH 用户为 root 时，框架先用固定
-`getent passwd`/`id` 参数验证该账号存在且 UID 大于 0，并从 `getent` 取得规范绝对 HOME，再以等价于
-`sudo -n -H -u <run_as> -- env HOME=<verified-home> DEPLOYMENT_*=... <command>` 的固定 argv 执行 App
-updater、hook 和生命周期脚本。环境变量在降权后注入，绝不继承 root HOME；SSH 用户非 root 时必须与
-`run_as` 完全一致，也会显式使用已验证 HOME。验证或降权失败时不会退回 root 执行。systemd 查询和最终
-配置发布仍由框架的固定特权原语负责。
+App schema 1 的 `management` 不再声明 `run_as` 或 `access_group`：部署、解包、内置
+stage/activate、App updater、hook 和生命周期脚本都以机器的 SSH 登录用户执行；root SSH 时即 root， 非
+root SSH 时只在系统原语上使用非交互 `sudo -n`。框架生成的 unit 用 `unit_config.user` 作为
+`User=`，未声明时取 SSH 用户，root SSH 且未声明时准备阶段失败关闭。systemd 查询和最终配置发布仍由
+框架的固定特权原语负责。
 
-顶层 `configs` 的 `kind: file` 支持 `format: yaml|json|toml|ini` 的结构化配置，以及
-`format: nginx` 的 Nginx 原生纯文本配置。`nginx` 格式按 UTF-8 原文发布，不解析 Nginx DSL，
-不支持普通变量和 `${SECRET_NAME}` 秘密占位符；语法应由部署环境的 `nginx -t` 或其他外部检查器
-验证。结构化配置值中的
+versioned App 可在根节点声明可选 `mode`（八进制）。声明后框架在提交候选版本前收敛发布根与版本树，
+目录与已有执行位的文件按 `X` 语义获得执行/穿越位，例如 `mode: "0644"` 表示“文件 0644、目录 0755”；
+未声明时发布根保持 `0750`。
+
+顶层 `configs` 的 `kind: file` 支持 `format: yaml|json|toml|ini` 的结构化配置，以及 `format: nginx`
+的 Nginx 原生纯文本配置。`nginx` 格式按 UTF-8 原文发布，不解析 Nginx DSL， 不支持普通变量和
+`${SECRET_NAME}` 秘密占位符；语法应由部署环境的 `nginx -t` 或其他外部检查器 验证。结构化配置值中的
 `${SECRET_NAME}` 引用 `cluster.yaml.secrets` 已声明并放置到目标机器的秘密；整值占位符按秘密声明的
 `type` 注入， 缺省 `string`。嵌入字符串中的占位符只做字符串替换。`kind: file` 的占位符注入
 `secrets-deploy` 后的稳定文件路径。已移除的 `updater` 字段会被定向拒收。除内置 `nginx` 原生配置
@@ -309,9 +315,12 @@ tar.gz 协议。秘密不在 manifest 或包内；每个 config updater 和每�
 
 `management.kind: service` 使用 `name` 和 `tool: auto|systemctl|service`。`auto` 先探测
 `systemctl`，没有 systemd 时探测 `service`，可覆盖 Ubuntu/CentOS 常见场景；显式工具不回退。 框架经
-root/`sudo -n` 执行状态读取、可选 enable/disable、daemon-reload（systemctl 时）以及
-start/stop/reload/restart，并在动作后确认状态。显式 `start`、`stop`、`restart` CLI 动作归该声明
-所有。脚本管理由 `management.kind: script` 提供，必须声明 `start`、`stop`、`restart` 三个脚本。
+root/`sudo -n` 执行状态读取、enable/disable、daemon-reload（systemctl 时）以及
+start/stop/reload/restart，并在动作后确认状态。`enabled` 缺省为 `true`，即部署后服务开机启动
+（systemd `enable`、SysV `chkconfig on`）；显式 `enabled: false` 关闭。缺省 `enabled: true` 只收敛
+开机状态，不覆盖 `on_deploy`/`on_change`；只有显式 `enabled: true` 才保留部署时 start/restart 的
+覆盖行为。显式 `start`、`stop`、`restart` CLI 动作归该声明 所有。脚本管理由
+`management.kind: script` 提供，必须声明 `start`、`stop`、`restart` 三个脚本。
 
 `management.kind: script` 必须提供 `start`、`stop`、`restart` 三个脚本。
 
@@ -319,8 +328,11 @@ start/stop/reload/restart，并在动作后确认状态。显式 `start`、`stop
 受支持结构化格式，或在 managed 配置之外使用显式生命周期脚本。
 
 每个目标的 managed configure/deploy/start/stop/restart（以及回退重放）都在同一 App/目标 `flock`
-租约内完成；控制端的 configure/start/stop/restart/deploy/rollback 也各自拥有 release attempt。
-未取得锁不产生远端副作用，成功、失败、超时和取消都会清理并释放。任一候选生成或验证失败都不会改动最终配置；服务收敛失败时框架尝试恢复本次已发布配置及操作前的
+租约内完成；控制端的 start/stop/restart/deploy/rollback 也各自拥有 release attempt。
+未取得锁不产生远端副作用，成功、失败、超时和取消都会清理并释放。持有期间控制端周期心跳续租；
+一旦控制端崩溃、断连或变成孤儿，远端 holder 会在有界租约 TTL 内自动退出并释放锁，后续操作无需人工
+登录目标机清理。若 holder 在持有期间提前退出或租约过期，控制端进入失败关闭：后续受保护命令与锁释放
+直接报错，不再写入目标机；内部清理仍使用无守卫命令尽力释放工作区与锁。任一候选生成或验证失败都不会改动最终配置；服务收敛失败时框架尝试恢复本次已发布配置及操作前的
 enabled/active 状态。恢复不完整会明确报告 partial/recovery 失败，绝不伪报成功。v2/v3 App 无
 配置契约没有旧版本兼容；v2/v3/v4 配置必须重写为 schema 1，不能保留冲突脚本。schema 1 配置条目 不声明
 `name`，直接用 `kind: script|file` 表达类型。`kind: file` 的目标路径唯一，`kind: script`
@@ -391,8 +403,10 @@ keep_versions: 5
 
 Environment 还可以在 schema v1 中声明顶层 `install` 和可选 `manager`：`install.kind: package` 用
 `apt-get`/`yum` 幂等安装系统包，`install.kind: script` 执行安装脚本；`manager.kind: system` 按
-目标机选择 `systemctl` 或 `service`，`manager.kind: script` 使用 start/stop/restart 脚本。`manager`
-缺省表示不管理应用运行；新契约没有独立 `check`，顶层 `scripts` 与新生命周期互斥。
+目标机选择 `systemctl` 或 `service`，`manager.kind: script` 使用 start/stop/restart 脚本。系统 服务
+`enabled` 缺省为 `true`（开机启动），显式 `false` 关闭；`start_after_install: false` 时 `prepare`
+新增独立 `enable` 步骤，仍设为开机启动但不启动服务。`manager` 缺省表示不管理应用运行；新契约没有独立
+`check`，顶层 `scripts` 与新生命周期互斥。
 
 旧脚本模式的顶层 `templates`（app.yaml / environment.yaml 的 `templates:` 字段）已移除：它把额外普通
 文件随脚本上传到 configure 步骤。现在模板文件交付统一由每个 `configs[].source`
@@ -478,11 +492,9 @@ sfo-deploy prepare --cluster production --env mysql --machine app-01
 
 ```powershell
 sfo-deploy validate --cluster production
-sfo-deploy configure --cluster production --environment app-01/postgresql
 sfo-deploy fetch --cluster production --app backend
 sfo-deploy deploy --cluster production --app backend
 sfo-deploy check --cluster production
-sfo-deploy install --cluster production --yes
 sfo-deploy prepare --cluster production --env postgresql
 sfo-deploy install-deno --cluster production --yes
 sfo-deploy install-deno --cluster production --machine app-01 --install-to /usr/local
@@ -495,8 +507,8 @@ sfo-deploy validate --config-root .\clusters --cluster production
 sfo-deploy plan --config-root .\clusters --cluster production --app backend
 sfo-deploy deploy --config-root .\clusters --cluster production --app backend
 sfo-deploy check --config-root .\clusters --cluster production --environment app-01/postgresql
-sfo-deploy install --config-root .\clusters --cluster production --environment app-01/postgresql
-sfo-deploy install --config-root .\clusters --cluster production --yes
+sfo-deploy prepare --config-root .\clusters --cluster production --env app-01/postgresql
+sfo-deploy prepare --config-root .\clusters --cluster production --yes
 ```
 
 项目绑定命令固定使用 `createCli()` 创建时解析的绝对配置根，因此不接受
@@ -506,29 +518,29 @@ sfo-deploy install --config-root .\clusters --cluster production --yes
 project-deploy plan --cluster production --machine app-01
 project-deploy deploy --cluster production --app backend
 project-deploy check --cluster production --environment app-01/postgresql
-project-deploy install --cluster production --yes
+project-deploy prepare --cluster production --env app-01/postgresql
 ```
 
-常用中文目标与动作的对应关系：配置环境或更新安全配置使用 `configure`（安全密钥与模板只随 `configure`
-投递），更新程序使用 `deploy`，检查环境使用 `check`。
+常用中文目标与动作的对应关系：App 更新使用 `deploy`（受管配置模板按计划随 configure/deploy
+步骤投递）， 环境应用安装、配置与更新使用 `prepare`，检查环境使用 `check`；集群密钥使用
+`secrets-deploy` 管理。
 
 可重复使用 `--machine`、`--app` 和 `--environment`；`deploy`/`plan` 只处理 App，只接受
 `--machine`/`--app` 范围筛选。`--executor-region` 覆盖执行器区域，`--address-kind private|public`
 显式覆盖地址类型。默认在执行过程中
-按步骤输出英文人可读的进度行（步骤、机器、资源、动作与状态/跳过原因），结束时给出
-简洁汇总；`plan` 的人可读预览更详细，为每个步骤补充步骤序号、目标机解析地址与地址类型、依赖、
+按步骤输出英文人可读的进度行（步骤、机器、资源、动作与状态/跳过原因），结束时给出 简洁汇总；`plan`
+的人可读预览更详细，为每个步骤补充步骤序号、目标机解析地址与地址类型、依赖、
 包提供方、发布方式、脚本相对路径与运行时、声明密钥的逻辑名称以及受管服务/配置信息，缺省字段
 不输出空行且永不打印密钥值或脚本绝对路径。需要机器可解析结果时追加 `--json`，输出保持稳定 JSON 契约（结构与键名与既有版本一致）。计划只包含敏感输入的逻辑名称，不包含配置密钥值或文件
-私钥内容。执行器在 stdout、
-stderr、错误和 cleanup 信息离开执行边界前使用本次操作解析出的全部秘密脱敏；无法安全建立或应用
-redactor 时 stdout/stderr 置空，只返回固定错误类别和结构化状态。
+私钥内容。执行器在 stdout、 stderr、错误和 cleanup
+信息离开执行边界前使用本次操作解析出的全部秘密脱敏；无法安全建立或应用 redactor 时 stdout/stderr
+置空，只返回固定错误类别和结构化状态。
 
-`check` 和 `install` 是环境动作，且不能同时提供 `--app`。省略 `--environment [MACHINE/]NAME`
-时，二者默认检查/安装当前选择范围内（未加 `--machine`
-时为全部机器）的全部环境；显式传入时只处理所选环境。`check` 直接执行；`install`
-在缺省全量时会先打印目标环境并等待输入 `yes` 确认，非交互终端必须显式传 `--yes`
-才继续，明确拒绝或取消则退出码 130
-且不执行任何远端步骤。若显式选择的环境依赖其他环境，必须同时明确选择这些依赖，否则规划失败。
+`check` 是环境动作，不能同时提供 `--app`。省略 `--environment [MACHINE/]NAME` 时，`check`
+默认检查当前选择范围内（未加 `--machine` 时为全部机器）的全部环境；显式传入时只处理所选环境。
+环境安装、配置与更新统一使用 `prepare`；`prepare` 在缺省全量时会先打印目标环境并等待输入 `yes`
+确认，非交互终端必须显式传 `--yes` 才继续，明确拒绝或取消则退出码 130 且不执行任何远端
+步骤。若显式选择的环境依赖其他环境，必须同时明确选择这些依赖，否则规划失败。
 
 `deploy` 是远端修改动作，只规划并执行 App；它不生成 environment 的 `check`/`install`/`configure`
 步骤，也不支持 `--environment` 或 `--with-dependencies`。环境应用先用 `prepare` 安装、配置和更新。
@@ -539,10 +551,15 @@ attempt 并真正连接远端执行；拒绝、EOF 或非交互终端未显式�
 任一准备失败时，不切换任何目标的 `latest`，并恢复已准备目标的配置及服务设置。
 全部准备成功后，按应用依赖顺序逐目标原子切换 `latest`，紧接着执行一次启动或重启；两者之间不插入
 配置发布、标记写入、清理或其他目标操作。服务成功后更新版本标记并清理旧版本。
-这是协调阶段边界，不保证跨机器原子提交。自定义 deploy 脚本保持原有语义。
-内置 versioned App 也可传 `--no-activate` 只执行上传与部署：新版本目录落地并完成配置/unit 发布，
-但不切换任何目标的 `latest`、不写版本标记、不启动或重启服务，服务与 `latest` 保持执行前状态；
-之后运行普通 `deploy` 会重新补齐 `stage` 并切换激活。
+这是协调阶段边界，不保证跨机器原子提交。自定义 deploy 脚本保持原有语义。 传 `--no-activate` 时只做
+“交付但不激活”：versioned App 的新版本目录落地并完成配置/unit 发布，packageless App 仍发布受管配置
+与配置脚本，但都不切换任何目标的 `latest`、不写版本标记、不执行任何受管服务收敛（不 daemon-reload、
+不 enable、不 reload/restart/start），服务与 `latest` 保持执行前状态。非激活部署后配置已在目标机但
+未被服务加载；后续普通 `deploy` 会重新补齐 `stage` 并切换激活，packageless 场景可用 `restart`
+（或再次变更配置触发 `on_change`）让服务采用新配置。
+
+`start`、`stop`、`restart` 控制 App 生命周期，默认只处理 App：未显式选择环境时不生成 environment
+步骤，需处理环境生命周期时显式传入 `--environment [MACHINE/]NAME`/`--env` 才会纳入对应环境节点。
 
 受管配置 target 支持三个内置目录变量：`${INSTALL_DIRECTORY}` 是 `install_directory` 本身，
 `${CURRENT_VERSION_DIRECTORY}` 是当前动作定位的版本目录（deploy 时为候选版本，configure 时为
@@ -550,8 +567,8 @@ attempt 并真正连接远端执行；拒绝、EOF 或非交互终端未显式�
 `'${CURRENT_VERSION_DIRECTORY}/resources/application.yml'`；内置部署准备时解析到本次
 `<version>/resources/`，不写入旧 `latest` 指向的目录。`${LATEST_DIRECTORY}` 不做候选版本
 重定位。`<install_directory>/latest/resources/...` 绝对路径写法继续兼容。
-发布前框架会先校验发布根，再在候选版本内逐级创建缺失的目标父目录；目录 mode 为 `0750`，owner 为 App
-`run_as`。中间目录必须是普通目录，真实路径越界或符号链接逃逸会在写入前拒绝。单独 `configure`
+发布前框架会先校验发布根，再在候选版本内逐级创建缺失的目标父目录；目录 mode 为 `0750`，owner 为 SSH
+登录用户。中间目录必须是普通目录，真实路径越界或符号链接逃逸会在写入前拒绝。单独 `configure`
 仍使用原 target，不激活版本。 同版本部署跳过制品暂存，但仍处理配置和服务，不代表远端零修改。 执行
 `deploy` 前需先用 `fetch` 把 App 安装包下载到本地缓存（见上文“本地部署包缓存”），缓存缺失时
 命令会在任何 SSH 连接前预检失败（退出码 3）并提示先运行 `fetch`。
@@ -574,7 +591,7 @@ schema v2 的集中放置不会改变筛选语义：Environment 在装载后仍�
 
 ## 发布历史与回退
 
-`configure`、`start`、`stop`、`restart`、`deploy` 和 `rollback` 都会创建控制端 release attempt，
+`start`、`stop`、`restart`、`deploy` 和 `rollback` 都会创建控制端 release attempt，
 保存本次实际执行计划的不可变快照并与目标锁共同覆盖执行生命周期；命令成功时，结果中的
 `release_id`（`--json` 模式下的 JSON 字段）是本次发布
 ID（即使远端版本一致、仅记录跳过步骤也会生成该审计记录）。可以浏览
@@ -603,9 +620,9 @@ JSON），因此即使配置加载或规划提前失败也能看到当时请求�
 不能用于其它动作，历史与回退也不能和机器、App、环境、区域、地址或依赖过滤器混用。历史查询和回退直接读取快照，不依赖当前
 `cluster.yaml`、App 或环境声明仍然可被加载。
 
-只有成功的 deploy/rollback 记录可作为回退来源；configure/start/stop/restart 记录用于审计，不伪造
-rollback plan。回退重放快照中的 App `deploy` 和已声明的 `configure`；旧 deploy
-快照还会重放其传递依赖的环境 `check`。新 deploy 快照没有环境步骤。回退不会执行环境
+只有成功的 deploy/rollback 记录可作为回退来源；start/stop/restart 记录用于审计，不伪造 rollback
+plan。回退重放快照中的 App `deploy` 和已声明的 `configure`；旧 deploy 快照还会重放其传递依赖的环境
+`check`。新 deploy 快照没有环境步骤。回退不会执行环境
 `install`/`configure`，也不会自动回滚数据库变更、已发送消息、外部服务写入或其他脚本副作用。只有状态为
 `succeeded`、快照完整且校验通过的记录可以回退；失败、取消、仍在执行或因进程中断而缺少终态的
 `incomplete` 记录均不可回退。回退本身也会产生新的发布记录，可以继续审计和作为后续回退来源。

@@ -199,9 +199,37 @@ function replaceMarkers(value: unknown, binding: Binding, raw: string): void {
     throw new Error(`marker for secret ${binding.secret} does not appear in the config`);
   }
 
+  function replaceScalar(
+    container: Record<string, unknown> | unknown[],
+    key: string | number,
+    child: string,
+  ): void {
+    const slots = container as Record<string | number, unknown>;
+    if (child === binding.marker) {
+      slots[key] = convertValue(raw, binding.type);
+      binding.found = true;
+    } else if (child.includes(binding.textMarker)) {
+      if (binding.type !== "string") {
+        throw new Error(
+          `non-string type for ${binding.secret} can only be a whole-value placeholder`,
+        );
+      }
+      slots[key] = child.replaceAll(binding.textMarker, raw);
+      binding.found = true;
+    } else if (child.includes(binding.marker)) {
+      throw new Error(`whole-value marker for ${binding.secret} cannot be embedded in a string`);
+    }
+  }
+
   function visit(item: unknown): void {
     if (Array.isArray(item)) {
-      item.forEach(visit);
+      item.forEach((child, index) => {
+        if (typeof child === "string") {
+          replaceScalar(item, index, child);
+          return;
+        }
+        visit(child);
+      });
       return;
     }
     if (item === null || typeof item !== "object") return;
@@ -212,20 +240,7 @@ function replaceMarkers(value: unknown, binding: Binding, raw: string): void {
         visit(child);
         continue;
       }
-      if (child === binding.marker) {
-        record[key] = convertValue(raw, binding.type);
-        binding.found = true;
-      } else if (child.includes(binding.textMarker)) {
-        if (binding.type !== "string") {
-          throw new Error(
-            `non-string type for ${binding.secret} can only be a whole-value placeholder`,
-          );
-        }
-        record[key] = child.replaceAll(binding.textMarker, raw);
-        binding.found = true;
-      } else if (child.includes(binding.marker)) {
-        throw new Error(`whole-value marker for ${binding.secret} cannot be embedded in a string`);
-      }
+      replaceScalar(record, key, child);
     }
   }
 }

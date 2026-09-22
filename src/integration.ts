@@ -85,8 +85,6 @@ export const CLI_ACTIONS: readonly [
   "validate",
   "plan",
   "check",
-  "install",
-  "configure",
   "prepare",
   "deploy",
   "fetch",
@@ -102,8 +100,6 @@ export const CLI_ACTIONS: readonly [
     "validate",
     "plan",
     "check",
-    "install",
-    "configure",
     "prepare",
     "deploy",
     "fetch",
@@ -120,12 +116,7 @@ export const CLI_ACTIONS: readonly [
 export type CliAction = typeof CLI_ACTIONS[number];
 
 const HISTORY_ACTIONS = new Set<CliAction>(["history", "rollback"]);
-const RECORDED_LIFECYCLE_ACTIONS = new Set<CliAction>([
-  "configure",
-  "start",
-  "stop",
-  "restart",
-]);
+const RECORDED_LIFECYCLE_ACTIONS = new Set<CliAction>(["start", "stop", "restart"]);
 
 export interface RunOptionsInit {
   readonly configRoot: string | URL;
@@ -256,8 +247,7 @@ export class RunOptions {
       }
     }
     if (
-      (options.action === "check" || options.action === "install" ||
-        options.action === "prepare") && apps.length > 0
+      (options.action === "check" || options.action === "prepare") && apps.length > 0
     ) {
       throw new ConfigurationError(
         `Environment action ${options.action} cannot be combined with --app`,
@@ -495,7 +485,7 @@ export async function run(
   if (request.action === "plan") return plan;
 
   if (
-    (request.action === "install" || request.action === "prepare") &&
+    request.action === "prepare" &&
     request.environments.length === 0 && dependencies.confirmPlan
   ) {
     const prepared = await prepareExecution(plan, {
@@ -507,7 +497,9 @@ export async function run(
     let primary: unknown;
     try {
       if (!(await dependencies.confirmPlan(plan))) {
-        throw new CancelledError("Cancelled: default full install was not confirmed");
+        throw new CancelledError(
+          "Cancelled: default full environment preparation was not confirmed",
+        );
       }
       return await executePrepared(
         prepared,
@@ -560,12 +552,12 @@ async function runLifecycleAttempt(
   onProgress?: ProgressListener,
   signal?: AbortSignal,
 ): Promise<DeploymentResult> {
-  const operation = options.action as ReleaseOperation;
-  if (!RECORDED_LIFECYCLE_ACTIONS.has(operation)) {
+  const operation = options.action as string;
+  if (!(RECORDED_LIFECYCLE_ACTIONS as ReadonlySet<string>).has(operation)) {
     throw new ConfigurationError(`Not a recordable lifecycle action: ${operation}`);
   }
   const pending = await releaseStore(options, providers).beginAttempt({
-    operation,
+    operation: operation as ReleaseOperation,
     selection: releaseSelection(options),
   });
   try {

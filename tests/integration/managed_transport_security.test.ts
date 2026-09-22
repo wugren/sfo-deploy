@@ -6,7 +6,7 @@ import type {
   BuiltDeploymentBundle,
   DeploymentBundleManifest,
 } from "../../src/deployment_bundle.ts";
-import { PreflightError, TransportError } from "../../src/errors.ts";
+import { PreflightError } from "../../src/errors.ts";
 import { type CommandFactory, OpenSshTransport, type SpawnedCommand } from "../../src/transport.ts";
 
 function output(code = 0, stdout = "", stderr = ""): Deno.CommandOutput {
@@ -157,7 +157,6 @@ Deno.test("integration/managed-transport: 真实 OpenSSH 路径的部署成员�
       secretDir: `${workspace}/secrets-current`,
       secretRoot: "/home/deploy/.sfo-deploy/secrets",
       fileSecrets: Object.freeze([]),
-      runAs: "deploy",
       timeoutMs: 1000,
     });
     const publications = await session.publishManagedConfigs!([{
@@ -166,7 +165,6 @@ Deno.test("integration/managed-transport: 真实 OpenSSH 路径的部署成员�
       mode: 0o600,
       owner: "deploy",
       group: "deploy",
-      runAs: "deploy",
       secretRoot: "/home/deploy/.sfo-deploy/secrets",
       secretFiles: Object.freeze([]),
     }]);
@@ -180,140 +178,34 @@ Deno.test("integration/managed-transport: 真实 OpenSSH 路径的部署成员�
   });
 });
 
-Deno.test("integration/managed-transport: Deno 在 root 与非 root 下使用已验证 HOME 和内层协议环境", async () => {
+Deno.test("integration/managed-transport: Deno 脚本以 SSH 身份运行且不注入 HOME 覆盖", async () => {
   await withTempDir(async (root) => {
     const knownHosts = join(root, "known_hosts");
     await Deno.writeTextFile(knownHosts, "fixture\n");
-    const rootCalls: string[] = [];
-    const rootFactory: CommandFactory = (_command, args) => {
-      const remote = String(args.at(-1) ?? "");
-      rootCalls.push(remote);
-      if (remote.includes("'getent' 'passwd' 'deploy'")) {
-        return spawned(output(0, "deploy:x:1000:1000::/home/deploy:/bin/sh\n"));
-      }
-      if (remote === "exec 'id' '-u'") return spawned(output(0, "0\n"));
-      if (remote.includes("'id' '-u' 'deploy'")) return spawned(output(0, "1000\n"));
-      if (remote.includes("'sudo' '-n' '-u' 'deploy' '--' 'id' '-u'")) {
-        return spawned(output(0, "1000\n"));
-      }
+    const calls: string[] = [];
+    const factory: CommandFactory = (_command, args) => {
+      calls.push(String(args.at(-1) ?? ""));
       return spawned(output());
     };
-    const base = resolved("root-node");
-    const rootTarget = Object.freeze({
-      ...base,
-      machine: Object.freeze({ ...base.machine, sshUser: "root" }),
-    });
-    const rootSession = await new OpenSshTransport({ knownHosts, commandFactory: rootFactory })
-      .connect(rootTarget);
-    const identity = await rootSession.validateManagedIdentity!("deploy");
-    assertEquals(identity, {
-      runAs: "deploy",
-      uid: 1000,
-      sshUid: 0,
-      requiresSudo: true,
-    });
-    const workspace = await rootSession.createWorkspace();
-    const metadata = `${workspace}/metadata.json`;
+    const session = await new OpenSshTransport({ knownHosts, commandFactory: factory }).connect(
+      resolved("node-a"),
+    );
+    const workspace = await session.createWorkspace();
     const secrets = `${workspace}/scoped-secrets`;
-    await rootSession.executeDeno("/usr/bin/deno", `${workspace}/lifecycle.ts`, {
+    await session.executeDeno("/usr/bin/deno", `${workspace}/lifecycle.ts`, {
       workspace,
-      metadataPath: metadata,
+      metadataPath: `${workspace}/metadata.json`,
       secretDir: secrets,
       permissions: Object.freeze({ run: Object.freeze([]), net: Object.freeze([]) }),
-      runAs: "deploy",
     });
-    assert(rootCalls.some((call) => call.includes("'getent' 'passwd' 'deploy'")));
-    const lifecycleCalls = rootCalls.filter((call) => call.includes("'/usr/bin/deno' 'run'"));
-    assertEquals(lifecycleCalls.length, 1);
-    for (const call of lifecycleCalls) {
-      const sudo = call.indexOf("exec 'sudo' '-n' '-H' '-u' 'deploy' '--'");
-      const innerEnv = call.indexOf("'env'", sudo);
-      assert(sudo >= 0);
-      assert(innerEnv > sudo);
-      assert(!call.slice(0, sudo).includes("'env'"));
-      assert(call.indexOf("'HOME=/home/deploy'", innerEnv) > innerEnv);
-      assert(call.indexOf("'DEPLOYMENT_METADATA_PATH=", innerEnv) > innerEnv);
-      assert(call.indexOf(`'DEPLOYMENT_SECRETS_DIR=${secrets}'`, innerEnv) > innerEnv);
-    }
-    await assertRejects(
-      () =>
-        rootSession.runAsApp!("deploy", ["/usr/bin/id"], {
-          environment: { HOME: "/root" },
-        }),
-      TransportError,
-      "must not override",
-    );
-    await assertRejects(
-      () => rootSession.validateManagedIdentity!("root"),
-      PreflightError,
-      "non-root",
-    );
-    await rootSession.close();
-
-    const mismatchFactory: CommandFactory = (_command, args) => {
-      const remote = String(args.at(-1) ?? "");
-      if (remote.includes("'getent' 'passwd' 'deploy'")) {
-        return spawned(output(0, "deploy:x:1000:1000::/home/deploy:/bin/sh\n"));
-      }
-      if (remote === "exec 'id' '-u'") return spawned(output(0, "2000\n"));
-      if (remote.includes("'id' '-u' 'deploy'")) return spawned(output(0, "1000\n"));
-      if (remote.includes("'id' '-un'")) return spawned(output(0, "other\n"));
-      return spawned(output());
-    };
-    const mismatch = await new OpenSshTransport({ knownHosts, commandFactory: mismatchFactory })
-      .connect(resolved("node-a"));
-    await assertRejects(
-      () => mismatch.validateManagedIdentity!("deploy"),
-      PreflightError,
-      "must match run_as",
-    );
-    await mismatch.close();
-
-    const nonRootCalls: string[] = [];
-    const nonRoot = await new OpenSshTransport({
-      knownHosts,
-      commandFactory: (_command, args) => {
-        const remote = String(args.at(-1) ?? "");
-        nonRootCalls.push(remote);
-        if (remote.includes("'getent' 'passwd' 'deploy'")) {
-          return spawned(output(0, "deploy:x:1000:1000::/srv/deploy-home:/bin/sh\n"));
-        }
-        if (remote === "exec 'id' '-u'" || remote.includes("'id' '-u' 'deploy'")) {
-          return spawned(output(0, "1000\n"));
-        }
-        if (remote.includes("'id' '-un'")) return spawned(output(0, "deploy\n"));
-        return spawned(output());
-      },
-    }).connect(resolved("node-a"));
-    const nonRootWorkspace = await nonRoot.createWorkspace();
-    await nonRoot.executeDeno("/usr/bin/deno", `${nonRootWorkspace}/lifecycle.ts`, {
-      workspace: nonRootWorkspace,
-      metadataPath: `${nonRootWorkspace}/metadata.json`,
-      secretDir: `${nonRootWorkspace}/scoped-secrets`,
-      permissions: Object.freeze({ run: Object.freeze([]), net: Object.freeze([]) }),
-      runAs: "deploy",
-    });
-    const nonRootLifecycle = nonRootCalls.find((call) => call.includes("'/usr/bin/deno' 'run'"))!;
-    assert(nonRootLifecycle.includes("exec 'env' 'HOME=/srv/deploy-home'"));
-    assert(!nonRootLifecycle.includes("'sudo'"));
-    await nonRoot.close();
-
-    const dangerousHome = await new OpenSshTransport({
-      knownHosts,
-      commandFactory: (_command, args) => {
-        const remote = String(args.at(-1) ?? "");
-        if (remote.includes("'getent' 'passwd' 'deploy'")) {
-          return spawned(output(0, "deploy:x:1000:1000::/home/deploy/../root:/bin/sh\n"));
-        }
-        return spawned(output());
-      },
-    }).connect(resolved("node-a"));
-    await assertRejects(
-      () => dangerousHome.validateManagedIdentity!("deploy"),
-      PreflightError,
-      "Invalid App run user HOME",
-    );
-    await dangerousHome.close();
+    const lifecycle = calls.filter((call) => call.includes("'/usr/bin/deno' 'run'"));
+    assertEquals(lifecycle.length, 1);
+    assert(!lifecycle[0].includes("'sudo'"), lifecycle[0]);
+    assert(!lifecycle[0].includes("'getent'"), lifecycle[0]);
+    assert(!lifecycle[0].includes("'HOME="), lifecycle[0]);
+    assert(lifecycle[0].includes(`'DEPLOYMENT_SECRETS_DIR=${secrets}'`), lifecycle[0]);
+    assert(lifecycle[0].includes("'DEPLOYMENT_METADATA_PATH="), lifecycle[0]);
+    await session.close();
   });
 });
 

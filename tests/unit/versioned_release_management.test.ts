@@ -6,6 +6,7 @@ import { PreflightError, TransportError } from "../../src/errors.ts";
 import {
   cleanupVersionedRelease,
   finalizeVersionedRelease,
+  modeChmodExpression,
   prepareVersionedRelease,
   restoreVersionedRelease,
   switchVersionedRelease,
@@ -46,10 +47,7 @@ async function fixture(root: string, old = "v1", next = "v2") {
     await Deno.symlink(old, `${root}/latest`);
     await Deno.writeTextFile(`${root}/.demo.version`, `${old}\n`);
   }
-  const identity = await new Deno.Command("id", { args: ["-un"] }).output();
-  assertEquals(identity.code, 0);
-  const runAs = new TextDecoder().decode(identity.stdout).trim();
-  return { installDirectory: root, resource: "demo", version: next, runAs };
+  return { installDirectory: root, resource: "demo", version: next };
 }
 
 Deno.test("unit/versioned-release: prepare leaves old link and marker; switch only renames; commit follows", async () => {
@@ -177,6 +175,75 @@ Deno.test("unit/versioned-release: reject traversal and symlink release without 
   });
 });
 
+Deno.test("unit/versioned-release: mode converges the release root and tree with X semantics", async () => {
+  await withTempDir(async (root) => {
+    const session = new LocalSession();
+    const request = await fixture(root);
+    session.calls.length = 0;
+    const state = await prepareVersionedRelease(session, { ...request, mode: "0644" });
+    const commands = session.calls.map((call) => call.argv);
+    const rootIndex = commands.findIndex((argv) =>
+      argv[0] === "/usr/bin/chmod" && argv[2] === "--" && argv[3] === root
+    );
+    const treeIndex = commands.findIndex((argv) =>
+      argv[0] === "/usr/bin/chmod" && argv[1] === "-R" && argv.at(-1) === state.releasePath
+    );
+    assert(rootIndex >= 0, JSON.stringify(commands));
+    assertEquals(commands[rootIndex], [
+      "/usr/bin/chmod",
+      "u=rwX,g=rX,o=rX",
+      "--",
+      root,
+    ]);
+    assert(treeIndex === rootIndex + 1, JSON.stringify(commands));
+    assertEquals(commands[treeIndex], [
+      "/usr/bin/chmod",
+      "-R",
+      "u=rwX,g=rX,o=rX",
+      "--",
+      state.releasePath,
+    ]);
+    assert(!commands.some((argv) => argv[0] === "/usr/bin/chgrp"));
+    for (const call of session.calls) {
+      if (call.argv[0] !== "/usr/bin/test") continue;
+      assert(call.options.privileged !== true, JSON.stringify(call));
+    }
+    await cleanupVersionedRelease(session, state);
+  });
+});
+
+Deno.test("unit/versioned-release: mode expression keeps declared bits and derives directory X", () => {
+  assertEquals(modeChmodExpression("0644"), "u=rwX,g=rX,o=rX");
+  assertEquals(modeChmodExpression("0640"), "u=rwX,g=rX,o=");
+  assertEquals(modeChmodExpression("0750"), "u=rwx,g=rx,o=");
+  assertEquals(modeChmodExpression("0600"), "u=rwX,g=,o=");
+});
+
+Deno.test("unit/versioned-release: absent mode issues no permission convergence", async () => {
+  await withTempDir(async (root) => {
+    const session = new LocalSession();
+    const state = await prepareVersionedRelease(session, await fixture(root));
+    const commands = session.calls.map((call) => call.argv);
+    assert(!commands.some((argv) => argv[0] === "/usr/bin/chgrp"));
+    assert(!commands.some((argv) => argv[0] === "/usr/bin/chmod"));
+    await cleanupVersionedRelease(session, state);
+  });
+});
+
+Deno.test("unit/versioned-release: invalid mode is rejected before any remote command", async () => {
+  await withTempDir(async (root) => {
+    const session = new LocalSession();
+    const request = await fixture(root);
+    for (const mode of ["8888", "4755", "27", "rwxr", ""]) {
+      await assertRejects(
+        () => prepareVersionedRelease(session, { ...request, mode }),
+        PreflightError,
+      );
+    }
+    assertEquals(session.calls.length, 0);
+  });
+});
+
 Deno.test("unit/versioned-release: systemd preparation precedes immediate action and recovery forces restart", async () => {
   class SystemdRecorder extends FakeSession {
     enabled = false;
@@ -219,22 +286,15 @@ Deno.test("unit/versioned-release: systemd preparation precedes immediate action
   }
 });
 
-Deno.test("unit/versioned-release: committed marker is readable by app and real same-version stage succeeds", async () => {
+Deno.test("unit/versioned-release: committed marker uses the deploy identity and a real same-version stage succeeds", async () => {
   await withTempDir(async (root) => {
     const decoder = new TextDecoder();
     const uidResult = await new Deno.Command("id", { args: ["-u"] }).output();
     assertEquals(uidResult.code, 0);
-    const isRoot = decoder.decode(uidResult.stdout).trim() === "0";
+    const currentUid = Number(decoder.decode(uidResult.stdout).trim());
     const app = `${root}/app`;
     await Deno.mkdir(app);
     const request = await fixture(app);
-    // Root CI exercises a genuinely different uid. Non-root development uses the
-    // current application account, still checking the marker's uid/mode and real stage.
-    const runAs = isRoot ? "nobody" : request.runAs;
-    const account = await new Deno.Command("id", { args: ["-u", runAs] }).output();
-    assertEquals(account.code, 0);
-    const appUid = Number(decoder.decode(account.stdout).trim());
-    if (isRoot) assert(appUid !== 0);
     await Deno.chmod(root, 0o755);
     await Deno.chmod(app, 0o750);
     const packagePath = `${app}/package`;
@@ -261,40 +321,37 @@ Deno.test("unit/versioned-release: committed marker is readable by app and real 
         parameters: { version: "v2" },
       }),
     );
-    if (isRoot) {
-      const ownership = await new Deno.Command("chown", { args: ["-R", runAs, app] }).output();
-      assertEquals(ownership.code, 0, decoder.decode(ownership.stderr));
-    }
-    assertEquals((await Deno.stat(app)).uid, appUid);
+    assertEquals((await Deno.stat(app)).uid, currentUid);
     assertEquals((await Deno.stat(root)).mode! & 0o777, 0o755);
     const session = new LocalSession();
-    const state = await prepareVersionedRelease(session, { ...request, runAs });
+    const state = await prepareVersionedRelease(session, request);
     await switchVersionedRelease(session, state);
     await finalizeVersionedRelease(session, state);
     const marker = await Deno.stat(state.markerPath);
-    assertEquals(marker.uid, appUid);
+    assertEquals(marker.uid, currentUid);
     assertEquals(marker.mode! & 0o777, 0o640);
-    const asApp = (command: string, args: string[], env?: Record<string, string>) =>
-      new Deno.Command(isRoot ? "/usr/sbin/runuser" : command, {
-        args: isRoot ? ["-u", runAs, "--", command, ...args] : args,
-        cwd: root,
-        env,
-      }).output();
-    const read = await asApp("/usr/bin/cat", [state.markerPath]);
+    const read = await new Deno.Command("/usr/bin/cat", {
+      args: [state.markerPath],
+      cwd: root,
+    }).output();
     assertEquals(read.code, 0, decoder.decode(read.stderr));
     assertEquals(decoder.decode(read.stdout), "v2\n");
     await cleanupVersionedRelease(session, state);
-    const staged = await asApp(executable, [
-      "run",
-      "--no-config",
-      "--no-remote",
-      "--no-npm",
-      "--allow-read",
-      "--allow-write",
-      "--allow-run",
-      "--allow-env=DEPLOYMENT_METADATA_PATH",
-      script,
-    ], { DEPLOYMENT_METADATA_PATH: metadataPath, DENO_DIR: `${app}/deno-cache` });
+    const staged = await new Deno.Command(executable, {
+      args: [
+        "run",
+        "--no-config",
+        "--no-remote",
+        "--no-npm",
+        "--allow-read",
+        "--allow-write",
+        "--allow-run",
+        "--allow-env=DEPLOYMENT_METADATA_PATH",
+        script,
+      ],
+      cwd: root,
+      env: { DEPLOYMENT_METADATA_PATH: metadataPath, DENO_DIR: `${app}/deno-cache` },
+    }).output();
     assertEquals(staged.code, 0, decoder.decode(staged.stderr));
     assert(decoder.decode(staged.stdout).includes("skipping staging"));
     assertEquals(await Deno.readLink(state.latestPath), "v2");

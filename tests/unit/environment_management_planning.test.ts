@@ -4,10 +4,17 @@ import { loadCluster } from "../../src/config.ts";
 import { PlanningError } from "../../src/errors.ts";
 import { buildPlan } from "../../src/planning.ts";
 
-async function writeLifecycle(root: string, manager = "", managerScript = false): Promise<string> {
+async function writeLifecycle(
+  root: string,
+  manager = "",
+  managerScript = false,
+  init = "",
+  managerExtra = "",
+): Promise<string> {
   const directory = join(root, "demo", "environments", "runtime");
   await Deno.mkdir(join(directory, "scripts"), { recursive: true });
   await Deno.writeTextFile(join(directory, "scripts", "action.ts"), "Deno.exit(0);\n");
+  await Deno.writeTextFile(join(directory, "scripts", "init.ts"), "Deno.exit(0);\n");
   await Deno.writeTextFile(
     join(directory, "environment.yaml"),
     `schema_version: 1
@@ -20,11 +27,11 @@ install:
   packages: [nginx]
 ${
       manager
-        ? `manager:\n  kind: system\n  name: nginx\n  tool: auto\n  enabled: true\n`
+        ? `manager:\n  kind: system\n  name: nginx\n  tool: auto\n  enabled: true\n${managerExtra}`
         : managerScript
         ? `manager:\n  kind: script\n  start: {path: scripts/action.ts, permissions: {run: [], net: []}}\n  stop: {path: scripts/action.ts, permissions: {run: [], net: []}}\n  restart: {path: scripts/action.ts, permissions: {run: [], net: []}}\n`
         : ""
-    }`,
+    }${init}`,
   );
   await Deno.mkdir(join(root, "demo"), { recursive: true });
   await Deno.writeTextFile(
@@ -60,6 +67,18 @@ Deno.test("unit/environment management planning: prepare plans start/restart and
   });
 });
 
+Deno.test("unit/environment management planning: start_after_install false plans a standalone enable step", async () => {
+  await withTempDir(async (root) => {
+    const cluster = await loadCluster(
+      await writeLifecycle(root, "system", false, "", "  start_after_install: false\n"),
+    );
+    const plan = buildPlan(cluster, { action: "prepare" });
+    assertEquals(plan.steps.map((step) => step.action), ["install", "enable"]);
+    assertEquals(plan.steps[1].dependsOn, ["env:node-a/runtime:install"]);
+    assertEquals(plan.steps[1].environmentManager?.kind, "system");
+  });
+});
+
 Deno.test("unit/environment management planning: script manager supplies one invocation per action", async () => {
   await withTempDir(async (root) => {
     const cluster = await loadCluster(await writeLifecycle(root, "", true));
@@ -67,10 +86,10 @@ Deno.test("unit/environment management planning: script manager supplies one inv
     assertEquals(prepare.steps.map((step) => step.action), ["install", "start", "restart"]);
     assertEquals(prepare.steps[1].scripts.length, 1);
     assertEquals(prepare.steps[2].scripts.length, 1);
-    const direct = buildPlan(cluster, { action: "restart" });
+    const direct = buildPlan(cluster, { action: "restart", environments: ["runtime"] });
     assertEquals(direct.steps.map((step) => step.action), ["restart"]);
     assertEquals(direct.steps[0].scripts.length, 1);
-    const stop = buildPlan(cluster, { action: "stop" });
+    const stop = buildPlan(cluster, { action: "stop", environments: ["runtime"] });
     assertEquals(stop.steps.map((step) => step.action), ["stop"]);
     assertEquals(stop.steps[0].scripts.length, 1);
     assertEquals(stop.steps[0].environmentManager?.kind, "script");
@@ -83,7 +102,7 @@ Deno.test("unit/environment management planning: system manager does not plan st
     await assertRejects(
       async () => {
         await Promise.resolve();
-        buildPlan(cluster, { action: "stop" });
+        buildPlan(cluster, { action: "stop", environments: ["runtime"] });
       },
       PlanningError,
       "has no action script",
@@ -102,5 +121,78 @@ Deno.test("unit/environment management planning: direct check fails closed", asy
       PlanningError,
       "does not support a check step",
     );
+  });
+});
+
+Deno.test("unit/environment management planning: init before_start and after_start order with system manager", async () => {
+  await withTempDir(async (root) => {
+    const init = `init:
+  before_start:
+    - path: scripts/init.ts
+      permissions:
+        run: []
+        net: []
+  after_start:
+    - path: scripts/init.ts
+      permissions:
+        run: []
+        net: []
+`;
+    const cluster = await loadCluster(await writeLifecycle(root, "system", false, init));
+    const plan = buildPlan(cluster, { action: "prepare" });
+    assertEquals(plan.steps.map((step) => step.action), [
+      "install",
+      "before-start",
+      "start",
+      "restart",
+      "after-start",
+    ]);
+    assertEquals(plan.steps[1].scripts.length, 1);
+    assertEquals(plan.steps[4].scripts.length, 1);
+    assertEquals(plan.steps[1].dependsOn, ["env:node-a/runtime:install"]);
+    assertEquals(plan.steps[2].dependsOn, ["env:node-a/runtime:before-start"]);
+    assertEquals(plan.steps[4].dependsOn, ["env:node-a/runtime:restart"]);
+  });
+});
+
+Deno.test("unit/environment management planning: init optional when only before_start", async () => {
+  await withTempDir(async (root) => {
+    const init = `init:
+  before_start:
+    - path: scripts/init.ts
+      permissions:
+        run: []
+        net: []
+`;
+    const cluster = await loadCluster(await writeLifecycle(root, "system", false, init));
+    const plan = buildPlan(cluster, { action: "prepare" });
+    assertEquals(plan.steps.map((step) => step.action), [
+      "install",
+      "before-start",
+      "start",
+      "restart",
+    ]);
+    assertEquals(plan.steps.some((step) => step.action === "after-start"), false);
+  });
+});
+
+Deno.test("unit/environment management planning: init optional when only after_start", async () => {
+  await withTempDir(async (root) => {
+    const init = `init:
+  after_start:
+    - path: scripts/init.ts
+      permissions:
+        run: []
+        net: []
+`;
+    const cluster = await loadCluster(await writeLifecycle(root, "system", false, init));
+    const plan = buildPlan(cluster, { action: "prepare" });
+    assertEquals(plan.steps.map((step) => step.action), [
+      "install",
+      "start",
+      "restart",
+      "after-start",
+    ]);
+    assertEquals(plan.steps.some((step) => step.action === "before-start"), false);
   });
 });

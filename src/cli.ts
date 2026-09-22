@@ -407,7 +407,7 @@ async function confirmExecutionPlan(
     );
     const phaseText = activate
       ? "built-in versioned Apps complete every stage first, then activate"
-      : "activation is skipped: versions are uploaded and deployed without switching latest or restarting";
+      : "activation is skipped: managed config and versions are published without switching latest or reloading/restarting";
     await writeText(
       stderr,
       `Deployment will process ${steps.length} steps (${phaseText}): ${steps.join(", ")}\n`,
@@ -436,7 +436,9 @@ async function confirmExecutionPlan(
     ].sort();
     await writeText(
       stderr,
-      `Default full install will process ${targets.length} environments: ${targets.join(", ")}\n`,
+      `Default full operation will process ${targets.length} environment apps: ${
+        targets.join(", ")
+      }\n`,
     );
   }
   if (stdin.isTerminal && !stdin.isTerminal()) return false;
@@ -446,7 +448,7 @@ async function confirmExecutionPlan(
       ? "Confirm deployment? Type yes to continue, anything else cancels: "
       : plan.requestedAction === "prepare"
       ? "Confirm default full environment preparation? Type yes to continue, anything else cancels: "
-      : "Confirm default full install? Type yes to continue, anything else cancels: ",
+      : "Confirm default full operation? Type yes to continue, anything else cancels: ",
   );
   const buffer = new Uint8Array(1024);
   const count = await stdin.read(buffer);
@@ -1090,8 +1092,6 @@ const ACTION_DESCRIPTIONS: Readonly<Record<CliAction, string>> = {
   validate: "Load and validate the cluster configuration",
   plan: "Preview the deploy plan without running remote steps",
   check: "Check whether the selected environments are satisfied",
-  install: "Install or initialize the selected environments",
-  configure: "Configure environments or Apps (deliver secrets and templates)",
   prepare:
     "Deploy/update selected environment apps (check, install on demand, configure, start or restart)",
   deploy: "Deploy selected Apps and archive release snapshots",
@@ -1117,6 +1117,9 @@ const ACTION_LABELS: Readonly<Record<string, string>> = {
   check: "check",
   install: "install",
   configure: "configure",
+  "before-start": "before-start",
+  "after-start": "after-start",
+  enable: "enable",
   start: "start",
   stop: "stop",
   restart: "restart",
@@ -1203,7 +1206,7 @@ const CHECK_OPTION = helpOption(
 );
 const NO_ACTIVATE_OPTION = helpOption(
   "--no-activate",
-  "Deploy only: upload and stage the new version, but skip switching latest and restarting the service",
+  "Deploy only: upload, stage, and publish managed config, but skip switching latest and converging the service",
 );
 const JSON_OPTION = helpOption(
   "--json",
@@ -1211,7 +1214,7 @@ const JSON_OPTION = helpOption(
 );
 const YES_OPTION = helpOption(
   "--yes",
-  "Skip deploy, default full install, and install-deno confirmations",
+  "Skip deploy, prepare full runs, and install-deno confirmations",
 );
 const GLOBAL_HELP_OPTION = helpOption("-h, --help", "Show help");
 const ACTION_HELP_OPTION = helpOption("-h, --help", "Show help for this action");
@@ -1256,15 +1259,6 @@ const ACTION_HELP: Readonly<Record<CliAction, ActionHelp>> = {
     options: ENVIRONMENT_ONLY_OPTIONS,
     notes: Object.freeze(["Environment action; --app is not supported"]),
   },
-  install: {
-    usageSuffix: "",
-    options: Object.freeze([...ENVIRONMENT_ONLY_OPTIONS, YES_OPTION]),
-    notes: Object.freeze([
-      "Environment action; --app is not supported",
-      "When --environment is omitted, cover all environments in the selected scope; default full install asks for confirmation",
-    ]),
-  },
-  configure: { usageSuffix: "", options: SELECTOR_OPTIONS_WITH_DEPENDENCIES },
   prepare: {
     usageSuffix: "",
     options: Object.freeze([
@@ -1287,7 +1281,7 @@ const ACTION_HELP: Readonly<Record<CliAction, ActionHelp>> = {
     notes: Object.freeze([
       "Every deployment writes release history; successful results include release_id",
       "Asks for confirmation before execution; automated calls must pass --yes",
-      "--no-activate stages the new version only: it does not switch latest or restart the service",
+      "--no-activate publishes config and versions without switching latest or reloading/restarting the service",
       "Handle only Apps; use prepare for environments; --environment/--with-dependencies are not supported",
     ]),
   },
@@ -1299,9 +1293,27 @@ const ACTION_HELP: Readonly<Record<CliAction, ActionHelp>> = {
       "The cache directory comes from packages_dir in ~/.sfo-deploy/config.yaml (default ~/.sfo-deploy/packages)",
     ]),
   },
-  start: { usageSuffix: "", options: SELECTOR_OPTIONS_WITH_DEPENDENCIES },
-  stop: { usageSuffix: "", options: SELECTOR_OPTIONS_WITH_DEPENDENCIES },
-  restart: { usageSuffix: "", options: SELECTOR_OPTIONS_WITH_DEPENDENCIES },
+  start: {
+    usageSuffix: "",
+    options: SELECTOR_OPTIONS_WITH_DEPENDENCIES,
+    notes: Object.freeze([
+      "Handle only Apps by default; environment nodes are added only when --environment/--env is given",
+    ]),
+  },
+  stop: {
+    usageSuffix: "",
+    options: SELECTOR_OPTIONS_WITH_DEPENDENCIES,
+    notes: Object.freeze([
+      "Handle only Apps by default; environment nodes are added only when --environment/--env is given",
+    ]),
+  },
+  restart: {
+    usageSuffix: "",
+    options: SELECTOR_OPTIONS_WITH_DEPENDENCIES,
+    notes: Object.freeze([
+      "Handle only Apps by default; environment nodes are added only when --environment/--env is given",
+    ]),
+  },
   history: {
     usageSuffix: " [--release-id ID]",
     options: Object.freeze([HISTORY_RELEASE_ID_OPTION]),

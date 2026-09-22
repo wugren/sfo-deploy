@@ -141,6 +141,89 @@ Deno.test("unit/environment management config: system manager defaults start_aft
   });
 });
 
+Deno.test("unit/environment management config: system manager defaults enabled on boot", async () => {
+  await withTempDir(async (root) => {
+    const lifecycle = `${packageLifecycle}manager:
+  kind: system
+  name: nginx
+  tool: auto
+  start_after_install: false
+`;
+    const directory = await writeLifecycleCluster(root, lifecycle);
+    const cluster = await loadCluster(directory);
+    const definition = cluster.environments.get("node-a/runtime")!;
+    assertEquals(definition.manager?.kind, "system");
+    if (definition.manager?.kind !== "system") throw new Error("expected system manager");
+    assertEquals(definition.manager.enabled, true);
+    assertEquals(definition.manager.startAfterInstall, false);
+  });
+});
+
+Deno.test("unit/environment management config: system manager honors explicit disable", async () => {
+  await withTempDir(async (root) => {
+    const lifecycle = `${packageLifecycle}manager:
+  kind: system
+  name: nginx
+  tool: auto
+  enabled: false
+`;
+    const directory = await writeLifecycleCluster(root, lifecycle);
+    const cluster = await loadCluster(directory);
+    const definition = cluster.environments.get("node-a/runtime")!;
+    assertEquals(definition.manager?.kind, "system");
+    if (definition.manager?.kind !== "system") throw new Error("expected system manager");
+    assertEquals(definition.manager.enabled, false);
+  });
+});
+
+Deno.test("unit/environment management config: init before_start and after_start normalize", async () => {
+  await withTempDir(async (root) => {
+    const lifecycle = `${packageLifecycle}init:
+  before_start:
+    - path: scripts/action.ts
+      permissions:
+        run: [/usr/bin/systemctl]
+        net: []
+  after_start:
+    - path: scripts/action.ts
+      permissions:
+        run: [/usr/bin/systemctl]
+        net: []
+`;
+    const directory = await writeLifecycleCluster(root, lifecycle);
+    const cluster = await loadCluster(directory);
+    const definition = cluster.environments.get("node-a/runtime")!;
+    assertEquals(definition.init?.beforeStart.length, 1);
+    assertEquals(definition.init?.afterStart.length, 1);
+    assertEquals(definition.init?.beforeStart[0].relativePath, "scripts/action.ts");
+    assertEquals(definition.init?.afterStart[0].permissions.run, ["/usr/bin/systemctl"]);
+  });
+});
+
+Deno.test("unit/environment management config: init without lifecycle scripts is rejected", async () => {
+  const cases: readonly [string, string][] = [
+    [
+      "scripts and init conflict",
+      `schema_version: 1\nname: runtime\nversion: "1"\nscripts:\n  check: [{path: scripts/action.ts, permissions: {run: [], net: []}}]\ninit:\n  before_start: [{path: scripts/action.ts, permissions: {run: [], net: []}}]\n`,
+    ],
+    [
+      "init unknown field",
+      `${packageLifecycle}init:\n  before_start_typo:\n    - path: scripts/action.ts\n      permissions: {run: [], net: []}\n`,
+    ],
+  ];
+  for (const [label, lifecycle] of cases) {
+    const error = await withTempDir(async (root) => {
+      const directory = await writeLifecycleCluster(root, lifecycle, "runtime");
+      return await assertRejects(() => loadCluster(directory), ConfigurationError);
+    });
+    assertStringIncludes(
+      error.message,
+      label.startsWith("scripts") ? "must choose exactly one of" : "contains unknown fields",
+      label,
+    );
+  }
+});
+
 Deno.test("unit/environment management config: conflicts and invalid declarations fail closed", async () => {
   const cases: readonly [string, string, string][] = [
     [

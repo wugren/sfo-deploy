@@ -19,11 +19,9 @@ from pathlib import Path
 
 HIGH_RISK_STAGES = {"proposal", "design", "implementation", "testing", "acceptance"}
 STAGES = HIGH_RISK_STAGES | {"general"}
-PIPELINE_STAGES = ("design", "implementation", "testing", "acceptance")
-MODES = {"manual", "auto-pipeline"}
-WORKFLOW_TIERS = {"trivial", "standard", "high-risk"}
-ACTIVATIONS = {"always", "bootstrap", "mode", "stage", "trigger"}
-LIST_FIELDS = {"tiers", "stages", "modes", "triggers", "path_patterns"}
+WORKFLOW_TIERS = {"standard", "high-risk"}
+ACTIVATIONS = {"always", "bootstrap", "stage", "trigger"}
+LIST_FIELDS = {"tiers", "stages", "triggers", "path_patterns"}
 SCALAR_FIELDS = {"activation", "file"}
 
 
@@ -97,12 +95,13 @@ def validate_entries(path: Path, rules: list[dict[str, object]]) -> None:
         missing = [field for field in ("file", "activation") if not rule.get(field)]
         if missing:
             fail(f"{path}: rule {rule_id} missing fields: {', '.join(missing)}")
+        if "modes" in rule:
+            fail(f"{path}: rule {rule_id} uses removed execution-mode metadata")
         activation = str(rule["activation"])
         if activation not in ACTIVATIONS:
             fail(f"{path}: rule {rule_id} has unsupported activation {activation!r}")
         tiers = set(rule.get("tiers", WORKFLOW_TIERS))
         stages = set(rule.get("stages", []))
-        modes = set(rule.get("modes", []))
         if not tiers:
             fail(f"{path}: rule {rule_id} must not declare an empty tiers list")
         if not tiers <= WORKFLOW_TIERS:
@@ -112,12 +111,8 @@ def validate_entries(path: Path, rules: list[dict[str, object]]) -> None:
             )
         if not stages <= STAGES:
             fail(f"{path}: rule {rule_id} has unsupported stages: {sorted(stages - STAGES)}")
-        if not modes <= MODES:
-            fail(f"{path}: rule {rule_id} has unsupported modes: {sorted(modes - MODES)}")
         if activation == "stage" and not stages:
             fail(f"{path}: stage rule {rule_id} must declare stages")
-        if activation == "mode" and not modes:
-            fail(f"{path}: mode rule {rule_id} must declare modes")
         if activation == "trigger" and not (rule.get("triggers") or rule.get("path_patterns")):
             fail(f"{path}: trigger rule {rule_id} needs triggers or path_patterns")
         relative = Path(str(rule["file"]))
@@ -148,19 +143,15 @@ def entry_matches(
     *,
     workflow_tier: str,
     stage: str,
-    mode: str,
     triggers: set[str],
     changed_paths: list[str],
     include_bootstrap: bool,
 ) -> tuple[bool, list[str]]:
     tiers = set(rule.get("tiers", WORKFLOW_TIERS))
     stages = set(rule.get("stages", []))
-    modes = set(rule.get("modes", []))
     if workflow_tier not in tiers:
         return False, []
     if stages and stage not in stages:
-        return False, []
-    if modes and mode not in modes:
         return False, []
 
     activation = str(rule["activation"])
@@ -172,8 +163,6 @@ def entry_matches(
             reasons.append("bootstrap")
     elif activation == "stage":
         reasons.append(f"stage:{stage}")
-    elif activation == "mode":
-        reasons.append(f"mode:{mode}")
     elif activation == "trigger":
         declared = normalized_triggers(list(rule.get("triggers", [])))
         for trigger in sorted(triggers & declared):
@@ -227,8 +216,6 @@ def add_packet_documents(
     packet: str | None,
     *,
     stage: str,
-    mode: str,
-    auto_pipeline_start_stage: str | None,
 ) -> None:
     if not packet:
         return
@@ -236,30 +223,12 @@ def add_packet_documents(
     if not packet_path.is_dir():
         fail(f"task packet directory does not exist: {packet}")
     names: list[str] = ["proposal.md", "risk-profile.yaml"]
-    if mode == "auto-pipeline":
-        names.append("pipeline/plan.md")
-        if auto_pipeline_start_stage != "design" and stage in {
-            "design", "implementation", "testing", "acceptance"
-        }:
-            names.append("design.md")
-    elif stage in {"design", "implementation", "testing", "acceptance"}:
+    if stage in {"design", "implementation", "testing", "acceptance"}:
         names.append("design.md")
-    if stage == "testing":
-        if (
-            mode != "auto-pipeline"
-            or PIPELINE_STAGES.index("testing")
-            < PIPELINE_STAGES.index(str(auto_pipeline_start_stage))
-        ):
-            names.append("testing.md")
-        names.append("testplan.yaml")
-    elif stage == "acceptance":
-        if (
-            mode != "auto-pipeline"
-            or PIPELINE_STAGES.index("testing")
-            < PIPELINE_STAGES.index(str(auto_pipeline_start_stage))
-        ):
-            names.append("testing.md")
-        names.extend(["testplan.yaml", "acceptance-report.md"])
+    if stage in {"testing", "acceptance"}:
+        names.extend(["testing.md", "testplan.yaml"])
+    if stage == "acceptance":
+        names.append("acceptance-report.md")
     for name in names:
         relative = (Path(packet) / name).as_posix()
         add_result(
@@ -381,14 +350,12 @@ def route_context(
     *,
     workflow_tier: str,
     stage: str,
-    mode: str,
     triggers: set[str],
     changed_paths: list[str],
     include_bootstrap: bool,
     packet: str | None,
     module: str | None,
     architecture_docs: list[str],
-    auto_pipeline_start_stage: str | None = None,
     scope_paths: list[str] | None = None,
     evidence_paths: list[str] | None = None,
 ) -> list[dict[str, object]]:
@@ -403,7 +370,6 @@ def route_context(
                 rule,
                 workflow_tier=workflow_tier,
                 stage=stage,
-                mode=mode,
                 triggers=triggers,
                 changed_paths=changed_paths,
                 include_bootstrap=include_bootstrap,
@@ -422,11 +388,6 @@ def route_context(
             root,
             packet,
             stage=stage,
-            mode=mode,
-            auto_pipeline_start_stage=(
-                auto_pipeline_start_stage
-                or ("design" if mode == "auto-pipeline" else None)
-            ),
         )
     for relative in expand_scope_files(root, scope_paths or []):
         add_result(
@@ -492,8 +453,6 @@ def main() -> int:
     parser.add_argument("--root", default=".")
     parser.add_argument("--workflow-tier", choices=sorted(WORKFLOW_TIERS))
     parser.add_argument("--stage", choices=sorted(STAGES))
-    parser.add_argument("--mode", choices=sorted(MODES), default="manual")
-    parser.add_argument("--auto-pipeline-start-stage", choices=PIPELINE_STAGES)
     parser.add_argument("--packet", help="repo-relative active task packet directory")
     parser.add_argument("--module", help="project module name for docs/modules/<module>.md")
     parser.add_argument("--architecture-doc", action="append", default=[])
@@ -521,10 +480,6 @@ def main() -> int:
         fail("--workflow-tier is required unless --validate-index is used")
     if not args.stage:
         fail("--stage is required unless --validate-index is used")
-    if args.mode == "auto-pipeline" and args.workflow_tier != "high-risk":
-        fail("--mode auto-pipeline requires --workflow-tier high-risk")
-    if args.mode == "auto-pipeline" and not args.auto_pipeline_start_stage:
-        fail("--mode auto-pipeline requires --auto-pipeline-start-stage")
     changed_paths = changed_paths_from_args(root, args.changed_path, args.changed_paths_file)
     results = route_context(
         root,
@@ -532,8 +487,6 @@ def main() -> int:
         custom_rules,
         workflow_tier=args.workflow_tier,
         stage=args.stage,
-        mode=args.mode,
-        auto_pipeline_start_stage=args.auto_pipeline_start_stage,
         triggers=normalized_triggers(args.trigger),
         changed_paths=changed_paths,
         include_bootstrap=args.include_bootstrap,
@@ -548,7 +501,6 @@ def main() -> int:
             "schema_version": 1,
             "workflow_tier": args.workflow_tier,
             "stage": args.stage,
-            "mode": args.mode,
             "context": results,
         }, indent=2))
     else:

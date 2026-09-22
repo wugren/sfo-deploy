@@ -8,7 +8,7 @@ import re
 import sys
 from pathlib import Path
 
-from task_manifest import TaskManifestError, stage_is_automatic, task_policy
+from task_manifest import TaskManifestError, parse_task_manifest
 
 
 MAX_HUMAN_DOC_LINES = 1000
@@ -200,7 +200,6 @@ def section_body(text: str, heading: str, path: Path) -> str:
     next_heading = re.search(r"(?m)^##\s+", text[match.end() :])
     end = match.end() + next_heading.start() if next_heading else len(text)
     return text[match.end() : end]
-
 
 
 def visible_section_body(text: str, heading: str, path: Path) -> str:
@@ -619,26 +618,10 @@ def check_doc(path: Path, max_lines: int) -> None:
 
 
 def packet_path(root: Path, version: str, module: str, submodule: str | None) -> Path:
-    packet = root / "docs" / "versions" / version / "modules" / module
+    packet = root / ".harness" / "tasks" / version / "modules" / module
     if submodule:
         packet = packet / submodule
     return packet
-
-
-def task_stage_policy(packet: Path) -> tuple[str | None, bool, bool]:
-    """Return current stage plus automatic design/testing decisions."""
-    manifest = packet / "task.yaml"
-    if not manifest.is_file():
-        return None, False, False
-    try:
-        policy = task_policy(manifest)
-    except TaskManifestError as error:
-        fail(str(error))
-    return (
-        policy["stage"],
-        stage_is_automatic(policy, "design"),
-        stage_is_automatic(policy, "testing"),
-    )
 
 
 def main() -> int:
@@ -656,20 +639,21 @@ def main() -> int:
     args = parser.parse_args()
 
     packet = packet_path(Path(args.root), args.version, args.module, args.submodule)
-    stage, automatic_design, automatic_testing = task_stage_policy(packet)
+    manifest = packet / "task.yaml"
+    try:
+        stage = parse_task_manifest(manifest).get("stage") if manifest.is_file() else None
+    except TaskManifestError as error:
+        fail(str(error))
     if args.docs in {"all", "mandatory", "proposal"}:
         check_doc(packet / "proposal.md", args.max_lines)
     if (
         args.docs in {"all", "mandatory", "design"}
         and stage != "proposal"
-        and not automatic_design
     ):
         check_doc(packet / "design.md", args.max_lines)
     if args.docs in {"all", "testing"}:
         testing = packet / "testing.md"
-        if automatic_testing:
-            pass
-        elif testing.exists():
+        if testing.exists():
             check_doc(testing, args.max_lines)
         elif args.docs == "testing":
             fail(f"missing required file: {testing}")

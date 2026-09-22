@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate lightweight trivial/standard acceptance against an approved proposal."""
+"""Validate lightweight standard acceptance against an approved proposal."""
 
 from __future__ import annotations
 
@@ -160,8 +160,8 @@ def validate_change_record(root: Path, task_path: Path, task: dict[str, object])
         fail(f"{task_path} standard task requires change_record")
     relative, path = safe_root_relative(root, value, "change_record")
     parts = PurePosixPath(relative).parts
-    if len(parts) != 3 or parts[:2] != ("docs", "changes") or not relative.endswith(".md"):
-        fail("standard change_record must use docs/changes/<change>.md")
+    if len(parts) != 3 or parts[:2] != (".harness", "changes") or not relative.endswith(".md"):
+        fail("standard change_record must use .harness/changes/<change>.md")
     text = read_text(path)
     status = re.search(r"(?mi)^\s*-\s*Status:\s*(.+)$", text)
     if not status or status.group(1).strip().lower() != "complete":
@@ -213,8 +213,8 @@ def check_report(path: Path, root: Path) -> None:
     except TaskManifestError as error:
         fail(str(error))
     tier = str(task.get("workflow_tier") or "")
-    if tier not in {"trivial", "standard"}:
-        fail(f"{path} applies only to confirmed trivial or standard tasks")
+    if tier != "standard":
+        fail(f"{path} applies only to confirmed standard tasks")
     if bullet(scope, "Workflow tier", path).lower() != tier:
         fail(f"{path} Workflow tier does not match task.yaml: {tier}")
     report_value = task.get("completion_report") or "completion-report.md"
@@ -253,12 +253,9 @@ def check_report(path: Path, root: Path) -> None:
         fail(f"{proposal} Proposal Items change_id coverage must exactly match task.yaml")
 
     change_record = bullet(scope, "Change record", path, allow_not_applicable=True)
-    if tier == "standard":
-        expected_record = validate_change_record(root, task_path, task)
-        if change_record != expected_record:
-            fail(f"{path} Change record must bind {expected_record}")
-    elif change_record.lower() not in {"n/a", "na", "not-applicable"}:
-        fail(f"{path} trivial task Change record must be not-applicable")
+    expected_record = validate_change_record(root, task_path, task)
+    if change_record != expected_record:
+        fail(f"{path} Change record must bind {expected_record}")
 
     delivery = section_body(text, "Delivery Summary", path)
     bullet(delivery, "Outcome", path)

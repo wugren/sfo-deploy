@@ -9,6 +9,18 @@ import type { AppServiceManagement, ManagedConfigFile } from "./types.ts";
 const TEXT_ENCODER = new TextEncoder();
 const MAX_UNIT_BYTES = 64 * 1024;
 
+/** 生成 unit 的运行用户：显式 unit_config.user，缺省取机器 SSH 用户；root SSH 必须显式声明。 */
+export function resolveUnitUser(service: AppServiceManagement, sshUser: string): string {
+  const declared = service.unitConfig?.user;
+  if (declared !== undefined) return declared;
+  if (sshUser === "root") {
+    throw new PreflightError(
+      "systemd unit must declare unit_config.user when the SSH user is root",
+    );
+  }
+  return sshUser;
+}
+
 /** 把 service.unitConfig 归一为现有 managed config 发布事务可消费的候选描述。 */
 export function serviceUnitManagedConfig(
   service: AppServiceManagement,
@@ -37,13 +49,13 @@ export function serviceUnitManagedConfig(
 export function generateSystemdUnitSkeleton(
   config: ManagedConfigFile,
   service: AppServiceManagement,
-  runAs: string,
+  user: string,
 ): GeneratedConfigSkeleton {
   const unitConfig = service.unitConfig;
   if (unitConfig === undefined) {
     throw new PreflightError(`systemd service ${service.unit} is missing unit_config`);
   }
-  const content = TEXT_ENCODER.encode(renderUnit(service, runAs));
+  const content = TEXT_ENCODER.encode(renderUnit(service, user));
   if (content.byteLength > MAX_UNIT_BYTES) {
     throw new PreflightError(
       `systemd unit ${service.unit} exceeds the ${MAX_UNIT_BYTES} byte limit`,
@@ -61,7 +73,7 @@ export function generateSystemdUnitSkeleton(
 
 function renderUnit(
   service: AppServiceManagement,
-  runAs: string,
+  user: string,
 ): string {
   const unitConfig = service.unitConfig!;
   const command = quoteExecStartArgument(unitConfig.command, "command");
@@ -83,7 +95,7 @@ function renderUnit(
     "Type=simple",
     ...(unitConfig.restartPolicy === undefined ? [] : [`Restart=${unitConfig.restartPolicy}`]),
     ...(unitConfig.restartSec === undefined ? [] : [`RestartSec=${unitConfig.restartSec}s`]),
-    `User=${runAs}`,
+    `User=${user}`,
     `WorkingDirectory=${quoteUnitPath(unitConfig.workingDirectory, "working_directory")}`,
     `ExecStart=${[command, ...args].join(" ")}`,
     "",
@@ -100,13 +112,19 @@ function serviceUnitConfigName(unit: string): string {
 
 function quoteUnitPath(value: string, label: string): string {
   assertUnitText(value, label);
-  return /\s/.test(value) ? `"${value}"` : value;
+  // systemd 的 WorkingDirectory 解析不剥离双引号，无法安全表示含空白的路径；失败关闭。
+  if (/\s/u.test(value)) {
+    throw new PreflightError(`systemd unit ${label} must not contain whitespace`);
+  }
+  return value;
 }
 
 function quoteExecStartArgument(value: string, label: string): string {
   if (value === "") return '""';
   assertUnitText(value, label);
-  if (/\s/.test(value)) return `"${value}"`;
+  // 单引号会被 systemd 视为引用起始，分号在 systemd 254+ 会被视为命令分隔符；
+  // 两者都需用双引号包裹以保留字面值。
+  if (/[\s';]/u.test(value)) return `"${value}"`;
   return value;
 }
 

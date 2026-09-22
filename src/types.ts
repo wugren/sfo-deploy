@@ -18,7 +18,10 @@ export type PlanAction =
   | "stop"
   | "restart"
   | "stage"
-  | "activate";
+  | "activate"
+  | "before-start"
+  | "after-start"
+  | "enable";
 
 export interface PackageSpec {
   readonly provider: string;
@@ -159,6 +162,8 @@ export interface SystemdUnitConfig {
   readonly workingDirectory: string;
   readonly command: string;
   readonly args: readonly string[];
+  /** 生成 unit 的 User=；缺省使用机器 SSH 登录用户，必须是规范非 root 账号名。 */
+  readonly user?: string;
   readonly restartPolicy?: SystemdRestartPolicy;
   readonly restartSec?: number;
   readonly startLimitIntervalSec?: number;
@@ -171,8 +176,10 @@ export interface AppServiceManagement {
   readonly unit: string;
   /** auto 探测 systemctl/service；显式工具不回退。 */
   readonly tool: "auto" | "systemctl" | "service";
-  /** undefined 表示保留目标节点当前 enable 状态。 */
+  /** 缺省 true：系统服务默认开机启动；显式 false 关闭。 */
   readonly enabled?: boolean;
+  /** enabled 是否由配置显式声明；缺省 enable 不覆盖部署动作。 */
+  readonly enabledExplicit?: boolean;
   readonly daemonReload: boolean;
   readonly onDeploy: SystemdDeployAction;
   readonly timeoutMs: number;
@@ -204,6 +211,7 @@ export interface EnvironmentSystemManager {
   readonly kind: "system";
   readonly name: string;
   readonly tool: EnvironmentServiceTool;
+  /** 缺省 true：系统服务默认开机启动；显式 false 关闭。 */
   readonly enabled?: boolean;
   readonly startAfterInstall: boolean;
   readonly timeoutMs: number;
@@ -221,6 +229,14 @@ export type EnvironmentManagerDefinition =
   | EnvironmentSystemManager
   | EnvironmentScriptManager;
 
+/** 环境应用安装时的初始配置声明；只支持 Deno 脚本。 */
+export interface EnvironmentInitializationDefinition {
+  /** app 启动前执行的初始配置脚本。 */
+  readonly beforeStart: readonly ScriptInvocation[];
+  /** app 启动后执行的初始配置脚本。 */
+  readonly afterStart: readonly ScriptInvocation[];
+}
+
 export type AppConfigKind = "script" | "file";
 export type AppServiceTool = EnvironmentServiceTool;
 
@@ -235,8 +251,10 @@ export type AppManagerDefinition = AppScriptManagement | AppServiceManagement;
 
 /** App schema 1 的顶层 configs/management 归一声明。 */
 export interface AppManagementDefinition {
-  /** 运行 App 配置脚本和 script manager 的目标节点非 root Linux 用户。 */
+  /** @deprecated 仅用于解码旧 plan v4 快照；新配置与新计划不再产生该字段，含此字段的计划拒绝重放。 */
   readonly runAs?: string;
+  /** @deprecated 仅用于解码旧 plan v4 快照；新配置与新计划不再产生该字段。 */
+  readonly accessGroup?: string;
   /** 缺省表示只交付受管配置，不由框架管理系统服务。 */
   readonly manager?: AppManagerDefinition;
   /** 内部归一表示：顶层 configs 的 file 条目。 */
@@ -278,12 +296,16 @@ export interface EnvironmentDefinition {
   readonly requiresPrivilege: boolean;
   readonly install?: EnvironmentInstallDefinition;
   readonly manager?: EnvironmentManagerDefinition;
+  /** 环境应用安装时的可选初始配置（启动前/启动后）。 */
+  readonly init?: EnvironmentInitializationDefinition;
 }
 
 export interface AppDefinition {
   readonly name: string;
   readonly directory: string;
   readonly installDirectory?: string;
+  /** App 根级发布权限位；仅 versioned App 可用，未声明时保持 0750 默认行为。 */
+  readonly mode?: string;
   readonly version?: string;
   readonly package?: PackageSpec;
   /** 显式声明无安装包、check/configure 型 App；普通 App 必须为 false。 */
@@ -338,8 +360,10 @@ export interface PlanStep {
   readonly templates: readonly ConfigTemplate[];
   readonly dependsOn: readonly string[];
   readonly installDirectory?: string;
-  /** managed App 的固定非 root 运行身份；旧计划与非 managed 步骤缺省。 */
+  /** @deprecated 仅用于解码旧 plan v4 快照；重放前 fail closed。 */
   readonly runAs?: string;
+  /** App 根级发布权限位；新计划可缺省，旧计划无该字段。 */
+  readonly mode?: string;
   /** App v4 内置发布声明；旧计划缺省。 */
   readonly deployment?: DeploymentDefinition;
   /** App v3 显式 opt-in 的内置管理声明；旧计划和非 App 步骤保持缺省。 */
@@ -364,6 +388,8 @@ export interface ExecutionPlan {
   readonly schemaVersion: 3 | 4;
   readonly cluster: string;
   readonly requestedAction: string;
+  /** deploy 计划是否包含激活阶段（切换 latest 并启动/重启/重载服务）；缺省或未写出表示包含。 */
+  readonly activate?: boolean;
   readonly steps: readonly PlanStep[];
 }
 

@@ -8,6 +8,9 @@ import type { PackageSpec } from "./types.ts";
 
 const PROVIDER_NAME_RE = /^[A-Za-z][A-Za-z0-9_.-]*$/;
 const METADATA_SCHEMA_VERSION = 1;
+const METADATA_LOCK_TIMEOUT_MS = 5_000;
+const METADATA_LOCK_STALE_MS = 30_000;
+const METADATA_LOCK_RETRY_MS = 25;
 
 export type CachePolicy = "local-only" | "remote-fallback";
 
@@ -41,6 +44,8 @@ interface VerifiedEntry {
 export class PackageCache {
   readonly packagesDir: string;
   readonly registry: DownloadProviderRegistry;
+  /** 按元数据路径串行化审计记录的读-改-写，避免并发丢更新。 */
+  readonly #recordQueues = new Map<string, Promise<void>>();
 
   constructor(options: PackageCacheOptions) {
     if (
@@ -230,6 +235,91 @@ export class PackageCache {
     metadata: PackageMetadata,
   ): Promise<void> {
     const metadataPath = `${target}.json`;
+    const previous = this.#recordQueues.get(metadataPath) ?? Promise.resolve();
+    const run = previous.catch(() => undefined).then(async () => {
+      const lockDir = `${metadataPath}.lock`;
+      if (!await this.#tryAcquireMetadataLock(lockDir)) {
+        await this.#writeOverflowRecord(metadataPath, metadata);
+        return;
+      }
+      try {
+        await this.#writeRecord(metadataPath, provider, request, metadata);
+      } finally {
+        await Deno.remove(lockDir, { recursive: true }).catch(() => undefined);
+      }
+    });
+    this.#recordQueues.set(metadataPath, run.catch(() => undefined));
+    await run;
+  }
+
+  /** 有界获取锁目录；取得返回 true，超时返回 false。 */
+  async #tryAcquireMetadataLock(lockDir: string): Promise<boolean> {
+    const deadline = Date.now() + METADATA_LOCK_TIMEOUT_MS;
+    while (Date.now() < deadline) {
+      try {
+        await Deno.mkdir(lockDir, { mode: 0o700 });
+        return true;
+      } catch (cause) {
+        if (!(cause instanceof Deno.errors.AlreadyExists)) throw cause;
+        if (await removeStaleMetadataLock(lockDir)) continue;
+        await delay(METADATA_LOCK_RETRY_MS);
+      }
+    }
+    return false;
+  }
+
+  /** 未取得锁时写入唯一命名的独立记录，避免无锁覆盖聚合文件。 */
+  async #writeOverflowRecord(metadataPath: string, metadata: PackageMetadata): Promise<void> {
+    const overflowPath = `${metadataPath}.overflow-${randomBytes(8).toString("hex")}.json`;
+    const payload = JSON.stringify({
+      kind: metadata.kind,
+      name: metadata.name,
+      version: metadata.version ?? null,
+      cluster: metadata.cluster ?? null,
+      fetched_at: new Date().toISOString(),
+    });
+    try {
+      await Deno.writeTextFile(overflowPath, payload, { mode: 0o600, createNew: true });
+    } catch (cause) {
+      throw new DownloadError("Failed to write local deployment package cache metadata", { cause });
+    }
+  }
+
+  /** 收集同目录下待合并的溢出记录；损坏文件保留但不合并。 */
+  async #collectOverflowRecords(
+    metadataPath: string,
+  ): Promise<{ records: unknown[]; paths: string[] }> {
+    const directory = dirname(metadataPath);
+    const prefix = `${basename(metadataPath)}.overflow-`;
+    const records: unknown[] = [];
+    const paths: string[] = [];
+    let entries: Deno.DirEntry[];
+    try {
+      entries = [...Deno.readDirSync(directory)];
+    } catch {
+      return { records, paths };
+    }
+    for (const entry of entries) {
+      if (!entry.isFile || !entry.name.startsWith(prefix) || !entry.name.endsWith(".json")) {
+        continue;
+      }
+      const path = join(directory, entry.name);
+      try {
+        records.push(JSON.parse(await Deno.readTextFile(path)));
+        paths.push(path);
+      } catch {
+        // 损坏的溢出记录无法合并；保留文件以便人工检查。
+      }
+    }
+    return { records, paths };
+  }
+
+  async #writeRecord(
+    metadataPath: string,
+    provider: string,
+    request: DownloadRequest,
+    metadata: PackageMetadata,
+  ): Promise<void> {
     let records: unknown[] = [];
     try {
       const parsed = JSON.parse(await Deno.readTextFile(metadataPath)) as Record<string, unknown>;
@@ -237,6 +327,8 @@ export class PackageCache {
     } catch {
       // 元数据仅用于审计；损坏或无元数据时重建，不影响包文件本身。
     }
+    const overflows = await this.#collectOverflowRecords(metadataPath);
+    records = records.concat(overflows.records);
     records.push({
       kind: metadata.kind,
       name: metadata.name,
@@ -257,13 +349,19 @@ export class PackageCache {
       undefined,
       2,
     );
-    const temporary = join(dirname(metadataPath), `.${basename(metadataPath)}.tmp`);
+    const temporary = join(
+      dirname(metadataPath),
+      `.${basename(metadataPath)}.${randomBytes(6).toString("hex")}.tmp`,
+    );
     await Deno.writeTextFile(temporary, payload, { mode: 0o600, createNew: true });
     try {
       await Deno.rename(temporary, metadataPath);
     } catch (cause) {
       await Deno.remove(temporary).catch(() => undefined);
       throw new DownloadError("Failed to write local deployment package cache metadata", { cause });
+    }
+    for (const path of overflows.paths) {
+      await Deno.remove(path).catch(() => undefined);
     }
   }
 }
@@ -336,6 +434,7 @@ async function copyVerified(
   throwIfAborted(signal);
   let input: Deno.FsFile | undefined;
   let output: Deno.FsFile | undefined;
+  let created = false;
   const digest = createHash(request.hashAlgorithm.toLowerCase());
   let size = 0;
   try {
@@ -347,6 +446,7 @@ async function copyVerified(
     }
     input = await Deno.open(source, { read: true });
     output = await Deno.open(destination, { write: true, createNew: true, mode: 0o600 });
+    created = true;
     const buffer = new Uint8Array(64 * 1024);
     while (true) {
       throwIfAborted(signal);
@@ -378,7 +478,7 @@ async function copyVerified(
     output = undefined;
     input?.close();
     input = undefined;
-    await Deno.remove(destination).catch(() => undefined);
+    if (created) await Deno.remove(destination).catch(() => undefined);
     throw cause;
   } finally {
     output?.close();
@@ -395,4 +495,20 @@ function constantTimeEqual(left: string, right: string): boolean {
 
 function throwIfAborted(signal?: AbortSignal): void {
   if (signal?.aborted) throw new DownloadError("Download cancelled", { cause: signal.reason });
+}
+
+async function removeStaleMetadataLock(lockDir: string): Promise<boolean> {
+  try {
+    const info = await Deno.stat(lockDir);
+    const mtime = info.mtime?.getTime();
+    if (mtime === undefined || Date.now() - mtime < METADATA_LOCK_STALE_MS) return false;
+    await Deno.remove(lockDir, { recursive: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }

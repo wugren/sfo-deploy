@@ -1,8 +1,17 @@
 import { createHash } from "node:crypto";
 import { gzipSync } from "node:zlib";
 import { join } from "jsr:@std/path@1.1.6";
-import { assert, assertEquals, withTempDir } from "../_support/assert.ts";
-import { resolved } from "../_support/fixtures.ts";
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+  withTempDir,
+} from "../_support/assert.ts";
+import { PreflightError } from "../../src/errors.ts";
+import { resolved, writeCluster } from "../_support/fixtures.ts";
+import { loadCluster } from "../../src/config.ts";
+import { buildPlan } from "../../src/planning.ts";
 import {
   type DownloadProvider,
   DownloadProviderRegistry,
@@ -27,6 +36,7 @@ import type {
   ExecutionPlan,
   ManagedConfigFile,
   PackageSpec,
+  PlanStep,
   ScriptInvocation,
 } from "../../src/types.ts";
 
@@ -137,7 +147,6 @@ function managedPlan(
     })
   );
   const management: AppManagementDefinition = Object.freeze({
-    runAs: "deploy",
     configs,
     configScripts: Object.freeze([]),
     manager: Object.freeze({
@@ -165,7 +174,6 @@ function managedPlan(
       secretValues: Object.freeze([]),
       secretFiles: Object.freeze([]),
       templates: Object.freeze([]),
-      runAs: "deploy",
       management,
       deliveryInputs: Object.freeze({
         scripts: Object.freeze([...afterDeploy]),
@@ -181,11 +189,15 @@ function managedTransport(options: {
   failHook?: boolean;
   commandOutput?: CommandResult;
   initialUnitMissing?: boolean;
+  unitUserId?: string;
+  failActiveAfterRestart?: boolean;
 }) {
   const events: string[] = [];
   const scopedRequests: { names: readonly string[]; path: string }[] = [];
   let publicationBatchSize = 0;
   let systemdStateReads = 0;
+  let restartSeen = false;
+  let activeFailures = 0;
   const session = {
     acquireOperationLock(): Promise<{ id: string; app: string; target: string }> {
       events.push("lock");
@@ -195,22 +207,13 @@ function managedTransport(options: {
       events.push("unlock");
       return Promise.resolve();
     },
-    validateManagedIdentity(): Promise<{
-      runAs: string;
-      uid: number;
-      sshUid: number;
-      requiresSudo: boolean;
-    }> {
-      events.push("identity");
-      return Promise.resolve({ runAs: "deploy", uid: 1000, sshUid: 1000, requiresSudo: false });
-    },
     createScopedSecretCopy(
       request: { readonly names: readonly string[] },
-    ): Promise<{ workspace: string; path: string; runAs: string }> {
+    ): Promise<{ workspace: string; path: string }> {
       const path = `/tmp/sfo-deploy-managed-dv/secrets-${events.length}`;
       events.push("scoped-secrets");
       scopedRequests.push({ names: [...request.names], path });
-      return Promise.resolve({ workspace: "/tmp/sfo-deploy-managed-dv", path, runAs: "deploy" });
+      return Promise.resolve({ workspace: "/tmp/sfo-deploy-managed-dv", path });
     },
     cleanupScopedSecretCopy(): Promise<void> {
       events.push("cleanup-secrets");
@@ -251,10 +254,14 @@ function managedTransport(options: {
       }));
     },
     createManagedConfigCandidate(
-      request: { readonly name: string; readonly updaterScript: string; readonly runAs?: string },
+      request: {
+        readonly name: string;
+        readonly updaterScript: string;
+        readonly secretDir: string;
+      },
     ): Promise<{ name: string; workspace: string; path: string }> {
       assert(request.updaterScript.endsWith(REMOTE_CONFIG_UPDATER_BUNDLE_PATH));
-      assertEquals(request.runAs, "deploy");
+      assert(request.secretDir.startsWith("/tmp/sfo-deploy-managed-dv/secrets-"));
       events.push(`candidate:${request.name}`);
       return Promise.resolve({
         name: request.name,
@@ -296,6 +303,11 @@ function managedTransport(options: {
     },
     run(argv: readonly string[]): Promise<CommandResult> {
       events.push(`run:${argv[0]}:${argv[1] ?? ""}`);
+      if (argv[0] === "id" && argv[1] === "-u") {
+        return Promise.resolve(
+          commandResult(0, options.unitUserId === undefined ? "" : `${options.unitUserId}\n`),
+        );
+      }
       if (argv[0] === "systemctl" && argv[1] === "is-enabled") {
         systemdStateReads += 1;
         if (options.initialUnitMissing && systemdStateReads === 1) {
@@ -305,10 +317,17 @@ function managedTransport(options: {
       }
       if (argv[0] === "systemctl" && argv[1] === "is-active") {
         systemdStateReads += 1;
+        if (options.failActiveAfterRestart && restartSeen && activeFailures === 0) {
+          activeFailures += 1;
+          return Promise.resolve(commandResult(1, "inactive\n"));
+        }
         if (options.initialUnitMissing && systemdStateReads === 2) {
           return Promise.resolve(commandResult(4, "inactive\n"));
         }
         return Promise.resolve(commandResult(0, "active\n"));
+      }
+      if (argv[0] === "systemctl" && argv[1] === "restart") {
+        restartSeen = true;
       }
       return Promise.resolve(commandResult(0));
     },
@@ -487,6 +506,137 @@ Deno.test("dv/app-management: redactor 无法构造时 stdout/stderr fail closed
   });
 });
 
+function withSshUser(step: PlanStep, sshUser: string): PlanStep {
+  return Object.freeze({
+    ...step,
+    machine: Object.freeze({
+      ...step.machine,
+      machine: Object.freeze({ ...step.machine.machine, sshUser }),
+    }),
+  });
+}
+
+function withGeneratedUnit(step: PlanStep, user?: string): PlanStep {
+  const management = step.management;
+  const manager = management?.manager;
+  if (management === undefined || manager?.kind !== "service") {
+    throw new Error("fixture expects a service manager");
+  }
+  return Object.freeze({
+    ...step,
+    management: Object.freeze({
+      ...management,
+      manager: Object.freeze({
+        ...manager,
+        unitConfig: Object.freeze({
+          target: "/etc/systemd/system/demo.service",
+          workingDirectory: "/srv/demo/current",
+          command: "/srv/demo/current/bin/server",
+          args: Object.freeze([] as string[]),
+          ...(user === undefined ? {} : { user }),
+        }),
+      }),
+    }),
+  });
+}
+
+Deno.test("dv/app-management: legacy run_as/access_group plans are rejected before replay", async () => {
+  await withTempDir(async (root) => {
+    await Promise.all(
+      ["alpha", "beta"].map((name) =>
+        Deno.writeTextFile(join(root, `${name}.json`), '{"value":"fixed"}\n')
+      ),
+    );
+    const remote = managedTransport({ changed: true });
+    const base = managedPlan(root, "configure");
+    const legacy: PlanStep = Object.freeze({
+      ...base.steps[0],
+      runAs: "deploy",
+      management: Object.freeze({
+        ...base.steps[0].management!,
+        runAs: "deploy",
+        accessGroup: "www-data",
+      }),
+    });
+    const plan: ExecutionPlan = Object.freeze({
+      ...base,
+      steps: Object.freeze([legacy]),
+    });
+    await assertRejects(
+      () => new DeploymentExecutor(remote.transport).execute(plan),
+      PreflightError,
+      "regenerate the plan",
+    );
+    assertEquals(remote.events.length, 0);
+  });
+});
+
+Deno.test("dv/app-management: root SSH without an explicit unit user fails before publication", async () => {
+  await withTempDir(async (root) => {
+    await Promise.all(
+      ["alpha", "beta"].map((name) =>
+        Deno.writeTextFile(join(root, `${name}.json`), '{"value":"fixed"}\n')
+      ),
+    );
+    const remote = managedTransport({ changed: true });
+    const base = managedPlan(root, "configure");
+    const plan: ExecutionPlan = Object.freeze({
+      ...base,
+      steps: Object.freeze([withSshUser(withGeneratedUnit(base.steps[0]), "root")]),
+    });
+    await assertRejects(
+      () => new DeploymentExecutor(remote.transport).execute(plan),
+      PreflightError,
+      "unit_config.user",
+    );
+    assert(!remote.events.includes("publish"));
+  });
+});
+
+Deno.test("dv/app-management: explicit unit user is verified remotely before publication", async () => {
+  await withTempDir(async (root) => {
+    await Promise.all(
+      ["alpha", "beta"].map((name) =>
+        Deno.writeTextFile(join(root, `${name}.json`), '{"value":"fixed"}\n')
+      ),
+    );
+    const remote = managedTransport({ changed: true, unitUserId: "1000" });
+    const base = managedPlan(root, "configure");
+    const plan: ExecutionPlan = Object.freeze({
+      ...base,
+      steps: Object.freeze([
+        withSshUser(withGeneratedUnit(base.steps[0], "app"), "root"),
+      ]),
+    });
+    const result = await new DeploymentExecutor(remote.transport).execute(plan);
+    assertEquals(result.steps[0].status, StepStatus.SUCCEEDED);
+    assert(remote.events.includes("run:id:-u"));
+    assert(remote.events.includes("publish"));
+  });
+});
+
+Deno.test("dv/app-management: missing explicit unit user fails before publication", async () => {
+  await withTempDir(async (root) => {
+    await Promise.all(
+      ["alpha", "beta"].map((name) =>
+        Deno.writeTextFile(join(root, `${name}.json`), '{"value":"fixed"}\n')
+      ),
+    );
+    const remote = managedTransport({ changed: true });
+    const base = managedPlan(root, "configure");
+    const plan: ExecutionPlan = Object.freeze({
+      ...base,
+      steps: Object.freeze([
+        withSshUser(withGeneratedUnit(base.steps[0], "app"), "root"),
+      ]),
+    });
+    const result = await new DeploymentExecutor(remote.transport).execute(plan);
+    assertEquals(result.steps[0].status, StepStatus.FAILED);
+    assertStringIncludes(result.steps[0].message ?? "", "unit user");
+    assert(!remote.events.includes("publish"));
+  });
+});
+
 Deno.test("dv/app-management: activate 发布 service unit 并触发 daemon-reload/restart", async () => {
   const remote = managedTransport({ changed: true, initialUnitMissing: true });
   const plan: ExecutionPlan = Object.freeze({
@@ -504,9 +654,7 @@ Deno.test("dv/app-management: activate 发布 service unit 并触发 daemon-relo
       secretValues: Object.freeze([]),
       secretFiles: Object.freeze([]),
       templates: Object.freeze([]),
-      runAs: "deploy",
       management: Object.freeze({
-        runAs: "deploy",
         configs: Object.freeze([]),
         configScripts: Object.freeze([]),
         manager: Object.freeze({
@@ -543,4 +691,276 @@ Deno.test("dv/app-management: activate 发布 service unit 并触发 daemon-relo
   assertEquals(remote.publicationBatchSize(), 1);
   assertEquals(remote.events.some((event) => event.startsWith("candidate:")), false);
   assert(remote.events.includes("run:cp:--"));
+});
+
+function decoupledPlan(enabledExplicit: boolean): ExecutionPlan {
+  return Object.freeze({
+    schemaVersion: 4,
+    cluster: "demo",
+    requestedAction: "deploy",
+    steps: Object.freeze([Object.freeze({
+      id: "app:node-a/demo:activate",
+      machine: resolved("node-a"),
+      kind: "app" as const,
+      resource: "demo",
+      action: "activate",
+      scripts: Object.freeze([]),
+      parameters: Object.freeze({}),
+      secretValues: Object.freeze([]),
+      secretFiles: Object.freeze([]),
+      templates: Object.freeze([]),
+      management: Object.freeze({
+        configs: Object.freeze([]),
+        configScripts: Object.freeze([]),
+        manager: Object.freeze({
+          kind: "service" as const,
+          tool: "systemctl" as const,
+          unit: "demo.service",
+          enabled: true,
+          enabledExplicit,
+          daemonReload: false,
+          onDeploy: "none" as const,
+          timeoutMs: 30_000,
+          unitConfig: Object.freeze({
+            target: "/etc/systemd/system/demo.service",
+            workingDirectory: "/srv/demo/current",
+            command: "/srv/demo/current/bin/server",
+            args: Object.freeze([]),
+          }),
+        }),
+      }),
+      deliveryInputs: Object.freeze({
+        scripts: Object.freeze([]),
+        files: Object.freeze([]),
+      }),
+      dependsOn: Object.freeze([]),
+    })]),
+  });
+}
+
+Deno.test("dv/app-management: implicit enabled does not force a start or restart", async () => {
+  const remote = managedTransport({ changed: false });
+  const result = await new DeploymentExecutor(remote.transport).execute(decoupledPlan(false));
+  assertEquals(result.steps[0].status, StepStatus.SUCCEEDED);
+  assertEquals(result.steps[0].service?.action, "none");
+  assertEquals(
+    remote.events.some((event) => event.startsWith("run:systemctl:start")),
+    false,
+  );
+  assertEquals(
+    remote.events.some((event) => event.startsWith("run:systemctl:restart")),
+    false,
+  );
+});
+
+Deno.test("dv/110: deploy --no-activate suppresses service convergence from the pre-stage configure", async () => {
+  await withTempDir(async (root) => {
+    await Promise.all(
+      ["alpha", "beta"].map((name) =>
+        Deno.writeTextFile(join(root, `${name}.json`), '{"value":"fixed"}\n')
+      ),
+    );
+    const base = managedPlan(root, "configure");
+    const configure = base.steps[0];
+    const stageOnly: PlanStep = Object.freeze({
+      ...configure,
+      id: "app:node-a/demo:stage",
+      action: "stage",
+      deployment: Object.freeze({ kind: "versioned" as const }),
+      installDirectory: undefined,
+      dependsOn: Object.freeze([configure.id]),
+    });
+    const plan: ExecutionPlan = Object.freeze({
+      ...base,
+      requestedAction: "deploy",
+      steps: Object.freeze([configure, stageOnly]),
+    });
+    const remote = managedTransport({ changed: true });
+    const result = await new DeploymentExecutor(remote.transport).execute(plan);
+    assertEquals(result.steps[0].status, StepStatus.SUCCEEDED, JSON.stringify(result.steps));
+    // F3：前置 configure 不再发布受管配置，发布与提交延迟到 stage 事务。
+    assertEquals(result.steps[0].changed, false);
+    assertEquals(remote.events.includes("publish"), false, JSON.stringify(remote.events));
+    assertEquals(
+      remote.events.some((event) =>
+        event.startsWith("run:systemctl:restart") ||
+        event.startsWith("run:systemctl:start") ||
+        event.startsWith("run:systemctl:is-")
+      ),
+      false,
+      JSON.stringify(remote.events),
+    );
+  });
+});
+
+Deno.test("dv/110: standalone configure still converges the service manager", async () => {
+  await withTempDir(async (root) => {
+    await Promise.all(
+      ["alpha", "beta"].map((name) =>
+        Deno.writeTextFile(join(root, `${name}.json`), '{"value":"fixed"}\n')
+      ),
+    );
+    const remote = managedTransport({ changed: true });
+    const result = await new DeploymentExecutor(remote.transport).execute(
+      managedPlan(root, "configure"),
+    );
+    assertEquals(result.steps[0].status, StepStatus.SUCCEEDED);
+    assert(
+      remote.events.some((event) => event === "run:systemctl:restart"),
+      JSON.stringify(remote.events),
+    );
+  });
+});
+
+async function packagelessCluster(root: string): Promise<string> {
+  const directory = await writeCluster(root);
+  await Deno.mkdir(join(directory, "apps", "config", "templates"), { recursive: true });
+  await Deno.writeTextFile(
+    join(directory, "apps", "config", "templates", "settings.json"),
+    '{"value":"fixed"}\n',
+  );
+  await Deno.writeTextFile(
+    join(directory, "apps", "config", "app.yaml"),
+    `schema_version: 1\nname: config\npackageless: true\nconfigs:\n  - kind: file\n    source: templates/settings.json\n    target: /etc/config/settings.json\n    format: json\n    on_change: restart\nmanagement:\n  kind: service\n  name: config.service\n  tool: systemctl\n`,
+  );
+  await Deno.writeTextFile(
+    join(directory, "cluster.yaml"),
+    (await Deno.readTextFile(join(directory, "cluster.yaml"))).replace(
+      "apps:\n  demo: [node-a]",
+      "apps:\n  demo: [node-a]\n  config: [node-a]",
+    ),
+  );
+  return directory;
+}
+
+Deno.test("dv/118: packageless deploy --no-activate publishes configs without service convergence", async () => {
+  await withTempDir(async (root) => {
+    const cluster = await loadCluster(await packagelessCluster(root));
+    const plan = buildPlan(cluster, { action: "deploy", apps: ["config"], activate: false });
+    assertEquals(plan.activate, false);
+    assertEquals(plan.steps.map((step) => step.action), ["configure"]);
+    const remote = managedTransport({ changed: true });
+    const result = await new DeploymentExecutor(remote.transport).execute(plan);
+    assertEquals(result.steps[0].status, StepStatus.SUCCEEDED, JSON.stringify(result.steps));
+    // 配置仍发布并提交，但没有任何服务状态读取或收敛命令。
+    assert(remote.events.includes("publish"), JSON.stringify(remote.events));
+    assert(remote.events.includes("commit:1"), JSON.stringify(remote.events));
+    assertEquals(result.steps[0].service, undefined);
+    assertStringIncludes(result.steps[0].message ?? "", "service activation skipped");
+    assertEquals(
+      remote.events.some((event) => event.startsWith("run:systemctl")),
+      false,
+      JSON.stringify(remote.events),
+    );
+  });
+});
+
+Deno.test("dv/118: the same packageless deploy still converges the service when activating", async () => {
+  await withTempDir(async (root) => {
+    const cluster = await loadCluster(await packagelessCluster(root));
+    const plan = buildPlan(cluster, { action: "deploy", apps: ["config"] });
+    assertEquals(plan.activate, undefined);
+    const remote = managedTransport({ changed: true });
+    const result = await new DeploymentExecutor(remote.transport).execute(plan);
+    assertEquals(result.steps[0].status, StepStatus.SUCCEEDED, JSON.stringify(result.steps));
+    assertEquals(result.steps[0].service?.action, "restart");
+    assert(
+      remote.events.some((event) => event === "run:systemctl:restart"),
+      JSON.stringify(remote.events),
+    );
+  });
+});
+
+Deno.test("dv/115: packageless 部署状态查询失败后强制重启以采用旧配置", async () => {
+  await withTempDir(async (root) => {
+    await Promise.all(
+      ["alpha", "beta"].map((name) =>
+        Deno.writeTextFile(join(root, `${name}.json`), '{"value":"fixed"}\n')
+      ),
+    );
+    const base = managedPlan(root, "deploy");
+    const step = base.steps[0];
+    const management = Object.freeze({
+      ...step.management!,
+      manager: Object.freeze({ ...step.management!.manager!, onDeploy: "restart" as const }),
+    });
+    const plan: ExecutionPlan = Object.freeze({
+      ...base,
+      steps: Object.freeze([Object.freeze({ ...step, management })]),
+    });
+    const remote = managedTransport({ changed: true, failActiveAfterRestart: true });
+    const result = await new DeploymentExecutor(remote.transport).execute(plan);
+    assertEquals(result.steps[0].status, StepStatus.FAILED, JSON.stringify(result.steps));
+    assert(remote.events.includes("restore:2"), JSON.stringify(remote.events));
+    assertEquals(
+      remote.events.filter((event) => event === "run:systemctl:restart").length,
+      2,
+      JSON.stringify(remote.events),
+    );
+  });
+});
+
+Deno.test("dv/117: config-only app publishes configs and runs config script without service actions", async () => {
+  await withTempDir(async (root) => {
+    await Deno.writeTextFile(join(root, "config.json"), '{"value":"fixed"}\n');
+    const scriptPath = join(root, "configure.ts");
+    await Deno.writeTextFile(scriptPath, "Deno.exit(0);\n");
+    const invocation: ScriptInvocation = Object.freeze({
+      source: scriptPath,
+      relativePath: "scripts/configure.ts",
+      permissions: Object.freeze({ run: Object.freeze([]), net: Object.freeze([]) }),
+    });
+    const config: ManagedConfigFile = Object.freeze({
+      name: "file-0",
+      relativePath: "templates/config.json",
+      source: join(root, "config.json"),
+      target: "/etc/demo/config.json",
+      targetRoot: "absolute",
+      mode: 0o600,
+      variables: Object.freeze([]),
+      format: "json",
+      secretReferences: Object.freeze(new Map()),
+      onChange: "none",
+    });
+    const management: AppManagementDefinition = Object.freeze({
+      configs: Object.freeze([config]),
+      configScripts: Object.freeze([invocation]),
+      manager: undefined,
+    });
+    const plan: ExecutionPlan = Object.freeze({
+      schemaVersion: 4,
+      cluster: "demo",
+      requestedAction: "deploy",
+      steps: Object.freeze([Object.freeze({
+        id: "app:node-a/demo:configure",
+        machine: resolved("node-a"),
+        kind: "app" as const,
+        resource: "demo",
+        action: "configure",
+        scripts: Object.freeze([invocation]),
+        parameters: Object.freeze({}),
+        secretValues: Object.freeze([]),
+        secretFiles: Object.freeze([]),
+        templates: Object.freeze([]),
+        management,
+        deliveryInputs: Object.freeze({
+          scripts: Object.freeze([invocation]),
+          files: Object.freeze([]),
+        }),
+        dependsOn: Object.freeze([]),
+      })]),
+    });
+    const remote = managedTransport({ changed: true });
+    const result = await new DeploymentExecutor(remote.transport).execute(plan);
+    assertEquals(result.steps[0].status, StepStatus.SUCCEEDED, JSON.stringify(result.steps));
+    assert(remote.events.includes("hook"), JSON.stringify(remote.events));
+    assert(remote.events.includes("candidate:file-0"), JSON.stringify(remote.events));
+    assert(remote.events.includes("publish"), JSON.stringify(remote.events));
+    assert(remote.events.includes("commit:1"), JSON.stringify(remote.events));
+    assertEquals(
+      remote.events.some((event) => event.startsWith("run:systemctl")),
+      false,
+      JSON.stringify(remote.events),
+    );
+  });
 });

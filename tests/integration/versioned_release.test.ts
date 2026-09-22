@@ -379,7 +379,11 @@ Deno.test("integration/versioned release: Multipass apps use builtin layout and 
   );
   for (const text of [templateWeb, liveWeb]) {
     assertStringIncludes(text, "kind: versioned");
-    assertStringIncludes(text, "run_as: ubuntu");
+    assertStringIncludes(text, "mode:");
+  }
+  for (const text of [templateApp, liveApp, templateWeb, liveWeb]) {
+    assertEquals(/run_as\s*:/u.test(text), false);
+    assertEquals(/access_group\s*:/u.test(text), false);
   }
   assertStringIncludes(liveWeb, "on_deploy: none");
   assertEquals(/enabled: true/u.test(liveWeb), false);

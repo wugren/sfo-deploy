@@ -387,10 +387,10 @@ Deno.test("unit/history codec: deploy whitelist still rejects unknown managed ac
   });
 });
 
-Deno.test("unit/history codec: versioned stage keeps run_as without management", async () => {
+Deno.test("unit/history codec: versioned stage persists root mode without run_as", async () => {
   await withTempDir(async (root) => {
     const { store, plan } = await setupPlan(root);
-    const [configured, deployed] = plan.steps;
+    const [, deployed] = plan.steps;
     const stage = Object.freeze({
       ...deployed,
       id: "app:node-a/demo:stage",
@@ -398,7 +398,7 @@ Deno.test("unit/history codec: versioned stage keeps run_as without management",
       package: deployed.package,
       deployment: { kind: "versioned" as const },
       installDirectory: "/srv/demo",
-      runAs: "deploy",
+      mode: "0644",
       management: undefined,
       lifecycleSecretValues: undefined,
       lifecycleSecretFiles: undefined,
@@ -416,35 +416,20 @@ Deno.test("unit/history codec: versioned stage keeps run_as without management",
     await pending.archivePlans(phasePlan);
     const snapshot = join(store.root, pending.releaseId, "snapshot");
     const decoded = await store.verifySnapshot(snapshot, pending.releaseId);
-    assertEquals(decoded.steps[0].runAs, "deploy");
+    assertEquals(decoded.steps[0].mode, "0644");
+    assertEquals(decoded.steps[0].runAs, undefined);
     assertEquals(decoded.steps[0].management, undefined);
     const persisted = JSON.parse(
       await Deno.readTextFile(join(snapshot, "actual-plan.json")),
     );
-    assertEquals(persisted.steps[0].run_as, "deploy");
+    assertEquals(persisted.steps[0].run_as, null);
+    assertEquals(persisted.steps[0].mode, "0644");
     assertEquals(persisted.steps[0].management, null);
     assertEquals(persisted.steps[0].lifecycle_secret_values, []);
     assertEquals(persisted.steps[0].lifecycle_secret_files, []);
     await pending.closeIncomplete();
 
-    const invalidRunAsPlan: ExecutionPlan = Object.freeze({
-      ...plan,
-      steps: Object.freeze([
-        Object.freeze({ ...configured, runAs: "deploy" }),
-      ]),
-    });
-    const invalidPending = await store.beginAttempt({
-      operation: "deploy",
-      selection: new ReleaseSelection(),
-    });
-    await assertRejects(
-      () => invalidPending.archivePlans(invalidRunAsPlan),
-      ConfigurationError,
-      "non-managed plan-v4 step must not declare run_as",
-    );
-    await invalidPending.closeIncomplete();
-
-    for (const runAs of [undefined, "root"] as const) {
+    for (const runAs of ["root", "../deploy"] as const) {
       const invalidStagePlan: ExecutionPlan = Object.freeze({
         ...plan,
         steps: Object.freeze([
@@ -458,19 +443,18 @@ Deno.test("unit/history codec: versioned stage keeps run_as without management",
       await assertRejects(
         () => invalidStagePending.archivePlans(invalidStagePlan),
         ConfigurationError,
-        runAs === undefined ? "versioned stage step is missing run_as" : "non-root",
+        "non-root",
       );
       await invalidStagePending.closeIncomplete();
     }
   });
 });
 
-Deno.test("unit/history codec: versioned activate accepts empty management run-as declaration", async () => {
+Deno.test("unit/history codec: empty management declarations are rejected", async () => {
   await withTempDir(async (root) => {
     const { store, plan } = await setupPlan(root);
-    const [configured, deployed] = plan.steps;
+    const [, deployed] = plan.steps;
     const emptyManagement: AppManagementDefinition = Object.freeze({
-      runAs: "deploy",
       configs: Object.freeze([]),
       configScripts: Object.freeze([]),
       manager: undefined,
@@ -482,7 +466,7 @@ Deno.test("unit/history codec: versioned activate accepts empty management run-a
       package: undefined,
       deployment: { kind: "versioned" as const },
       installDirectory: "/srv/demo",
-      runAs: "deploy",
+      mode: "0750",
       management: emptyManagement,
       lifecycleSecretValues: Object.freeze([]),
       lifecycleSecretFiles: Object.freeze([]),
@@ -495,40 +479,12 @@ Deno.test("unit/history codec: versioned activate accepts empty management run-a
       steps: Object.freeze([activate]),
     });
 
-    const pending = await store.beginAttempt({
-      operation: "deploy",
-      selection: new ReleaseSelection(),
-    });
-    await pending.archivePlans(phasePlan);
-    const snapshot = join(store.root, pending.releaseId, "snapshot");
-    const decoded = await store.verifySnapshot(snapshot, pending.releaseId);
-    assertEquals(decoded.steps[0].runAs, "deploy");
-    assertEquals(decoded.steps[0].management?.configs.length, 0);
-    assertEquals(decoded.steps[0].management?.manager, undefined);
-    const persisted = JSON.parse(
-      await Deno.readTextFile(join(snapshot, "actual-plan.json")),
-    );
-    assertEquals(persisted.steps[0].management, {
-      configs: [],
-      config_scripts: [],
-      manager: null,
-    });
-    await pending.closeIncomplete();
-
-    const invalid = Object.freeze({
-      ...configured,
-      runAs: "deploy",
-      management: emptyManagement,
-      lifecycleSecretValues: Object.freeze([]),
-      lifecycleSecretFiles: Object.freeze([]),
-    });
     const invalidPending = await store.beginAttempt({
       operation: "deploy",
       selection: new ReleaseSelection(),
     });
     await assertRejects(
-      () =>
-        invalidPending.archivePlans(Object.freeze({ ...plan, steps: Object.freeze([invalid]) })),
+      () => invalidPending.archivePlans(phasePlan),
       ConfigurationError,
       "management declaration must not be empty",
     );

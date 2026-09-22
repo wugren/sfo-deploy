@@ -1,4 +1,4 @@
-import { assertEquals, assertRejects, assertStringIncludes } from "../_support/assert.ts";
+import { assert, assertEquals, assertRejects, assertStringIncludes } from "../_support/assert.ts";
 import { FakeSession } from "../_support/fake_session.ts";
 import { type CommandResult, commandResult } from "../../src/results.ts";
 import {
@@ -81,17 +81,36 @@ function service(overrides: Partial<AppServiceManagement> = {}): AppServiceManag
 class ServiceOnlySession extends FakeSession {
   readonly serviceCalls: Array<{ argv: readonly string[]; options: RemoteRunOptions }> = [];
   active = true;
+  enabled = false;
+  statusExitCode?: number;
 
   override run(argv: readonly string[], options: RemoteRunOptions = {}): Promise<CommandResult> {
     if (argv[0] === "/bin/sh" && argv[1] === "-c" && argv[2]?.includes("/usr/bin/service")) {
       this.calls.push({ argv: [...argv], options });
       return Promise.resolve(commandResult(0, "/usr/bin/service\n"));
     }
+    if (argv[0].endsWith("/chkconfig")) {
+      if (argv[1] === "--list") {
+        const state = this.enabled ? "on" : "off";
+        return Promise.resolve(
+          commandResult(
+            0,
+            `${argv[2]} 0:off 1:off 2:${state} 3:${state} 4:${state} 5:${state} 6:off\n`,
+          ),
+        );
+      }
+      if (argv[2] === "on") this.enabled = true;
+      if (argv[2] === "off") this.enabled = false;
+      return Promise.resolve(commandResult(0));
+    }
     if (argv[0].endsWith("/service")) {
       this.serviceCalls.push({ argv: [...argv], options });
       if (argv[2] === "status") {
         return Promise.resolve(
-          commandResult(this.active ? 0 : 3, this.active ? "active\n" : "inactive\n"),
+          commandResult(
+            this.statusExitCode ?? (this.active ? 0 : 3),
+            this.active ? "active\n" : "inactive\n",
+          ),
         );
       }
       if (argv[2] === "start" || argv[2] === "restart") this.active = true;
@@ -325,6 +344,34 @@ Deno.test("unit/systemd: restore 按事前 active/enable 状态执行有界补�
   );
 });
 
+Deno.test("unit/systemd: forceRestart 在运行态未变化时仍补偿重启，未强制时不动作", async () => {
+  const before: SystemdState = Object.freeze({
+    enabled: true,
+    enabledState: "enabled",
+    active: true,
+    activeState: "active",
+  });
+  const forced = new SystemdSession();
+  forced.enabled = true;
+  forced.active = true;
+  await restoreSystemd(forced, service(), before, true, undefined, true);
+  assertEquals(
+    forced.systemdCalls.filter((call) => ["start", "restart", "stop"].includes(call.argv[1])).map(
+      (call) => call.argv[1],
+    ),
+    ["restart"],
+  );
+
+  const passive = new SystemdSession();
+  passive.enabled = true;
+  passive.active = true;
+  await restoreSystemd(passive, service(), before, true, undefined, false);
+  assertEquals(
+    passive.systemdCalls.filter((call) => ["start", "restart", "stop"].includes(call.argv[1])),
+    [],
+  );
+});
+
 Deno.test("unit/systemd: auto falls back to service for prepare, action, and restore", async () => {
   const session = new ServiceOnlySession();
   session.active = false;
@@ -357,4 +404,67 @@ Deno.test("unit/systemd: auto falls back to service for prepare, action, and res
   );
   assertEquals(session.serviceCalls.every((call) => call.argv[0].endsWith("/service")), true);
   assertEquals(session.calls.some((call) => call.argv[0] === "systemctl"), false);
+});
+
+Deno.test("unit/systemd: SysV 使用去后缀规范名并按 LSB 退出码判定运行状态", async () => {
+  const definition = service({
+    tool: "auto",
+    enabled: undefined,
+    daemonReload: false,
+    onDeploy: "none",
+  });
+
+  const inactive = new ServiceOnlySession();
+  inactive.active = false;
+  inactive.statusExitCode = 2;
+  const state = await inspectSystemd(inactive, definition);
+  assertEquals(state.active, false);
+  assertEquals(state.activeState, "inactive");
+  assertEquals(inactive.serviceCalls.map((call) => call.argv[1]), ["demo"]);
+  assertEquals(inactive.serviceCalls.some((call) => call.argv[1].includes(".service")), false);
+
+  const running = new ServiceOnlySession();
+  running.active = true;
+  running.statusExitCode = 0;
+  assertEquals((await inspectSystemd(running, definition)).active, true);
+
+  const broken = new ServiceOnlySession();
+  broken.statusExitCode = 5;
+  await assertRejects(
+    () => inspectSystemd(broken, definition),
+    TransportError,
+    "Failed to read service active state: 5",
+  );
+
+  const unknown = new ServiceOnlySession();
+  unknown.statusExitCode = 4;
+  await assertRejects(
+    () => inspectSystemd(unknown, definition),
+    TransportError,
+    "Service status is unknown",
+  );
+});
+
+Deno.test("unit/systemd: SysV 服务动作命令使用去后缀规范名", async () => {
+  const session = new ServiceOnlySession();
+  session.active = false;
+  const definition = service({
+    tool: "auto",
+    enabled: undefined,
+    daemonReload: false,
+    onDeploy: "none",
+  });
+  const before = await inspectSystemd(session, definition);
+  await convergeSystemd(
+    session,
+    definition,
+    { operation: "start", changed: false },
+    before,
+  );
+  const actions = session.serviceCalls.map((call) => ({
+    name: call.argv[1],
+    action: call.argv[2],
+  }));
+  assert(actions.every((entry) => entry.name === "demo"));
+  assert(actions.some((entry) => entry.action === "start"));
 });

@@ -59,7 +59,7 @@ Deno.test("unit/config: app_versions.yaml and install_directory are fail-closed"
       `${directory}/apps/demo/app.yaml`,
       `schema_version: 1\nname: demo\nversion: "1.0.0"\npackage:\n  provider: http\n  source: {url: "https://example.invalid/demo.bin"}\n  hash: {algorithm: sha256, value: "${
         "00".repeat(32)
-      }"}\ndepends_on: [base]\nmanagement:\n  run_as: deploy\n  kind: service\n  name: demo.service\n  tool: systemctl\n`,
+      }"}\ndepends_on: [base]\nmanagement:\n  kind: service\n  name: demo.service\n  tool: systemctl\n`,
     );
     const mixing = await assertRejects(() => loadCluster(directory), ConfigurationError);
     assertStringIncludes(mixing.message, "app[demo] contains unknown fields: package, version");
@@ -118,7 +118,7 @@ async function addPackagelessApp(directory: string) {
   );
   await Deno.writeTextFile(
     join(directory, "apps", appName, "app.yaml"),
-    `schema_version: 1\nname: ${appName}\npackageless: true\nconfigs:\n  - kind: file\n    source: templates/settings.json\n    target: /etc/${appName}/settings.json\n    format: json\nmanagement:\n  run_as: deploy\n  kind: service\n  name: ${appName}.service\n  tool: systemctl\n`,
+    `schema_version: 1\nname: ${appName}\npackageless: true\nconfigs:\n  - kind: file\n    source: templates/settings.json\n    target: /etc/${appName}/settings.json\n    format: json\nmanagement:\n  kind: service\n  name: ${appName}.service\n  tool: systemctl\n`,
   );
   await replaceInFile(
     join(directory, "cluster.yaml"),
@@ -254,5 +254,83 @@ Deno.test("unit/planning: deploy --no-activate stages only and skips activation"
     assertEquals(staged.steps.at(-1)?.dependsOn, []);
     assertEquals(staged.steps[0].machine.machine.name, "node-a");
     assertEquals(staged.steps[0].resource, "demo");
+  });
+});
+
+Deno.test("unit/planning: packageless --no-activate marks the deploy plan non-activating", async () => {
+  await withTempDir(async (root) => {
+    const cluster = await loadCluster(await addPackagelessApp(await writeCluster(root)));
+    const activating = buildPlan(cluster, { action: "deploy", apps: ["config"] });
+    assertEquals(activating.steps.map((step) => step.action), ["configure"]);
+    assertEquals(activating.activate, undefined);
+
+    const staged = buildPlan(cluster, { action: "deploy", apps: ["config"], activate: false });
+    assertEquals(staged.steps.map((step) => step.action), ["configure"]);
+    assertEquals(staged.steps[0].management?.configs.length, 1);
+    assertEquals(staged.activate, false);
+
+    const versioned = buildPlan(cluster, { action: "deploy", apps: ["demo"], activate: false });
+    assertEquals(versioned.steps.map((step) => step.action), ["stage"]);
+    assertEquals(versioned.activate, false);
+
+    const configureOnly = buildPlan(cluster, {
+      action: "configure",
+      apps: ["config"],
+      activate: false,
+    });
+    assertEquals(configureOnly.steps.map((step) => step.action), ["configure"]);
+    assertEquals(configureOnly.activate, undefined);
+  });
+});
+
+Deno.test("unit/planning: start/stop/restart process only apps by default", async () => {
+  await withTempDir(async (root) => {
+    const cluster = await loadCluster(
+      await writeCluster(root, {
+        envActions: ["check", "install", "configure", "start", "stop", "restart"],
+      }),
+    );
+    for (const action of ["start", "stop", "restart"] as const) {
+      const plan = buildPlan(cluster, { action });
+      assertEquals(plan.steps.map((step) => `${step.kind}:${step.action}`), [
+        `app:${action}`,
+      ]);
+      assertEquals(plan.steps[0].id, `app:node-a/demo:${action}`);
+    }
+  });
+});
+
+Deno.test("unit/planning: start/stop/restart include environments when explicitly selected", async () => {
+  await withTempDir(async (root) => {
+    const cluster = await loadCluster(
+      await writeCluster(root, {
+        envActions: ["check", "install", "configure", "start", "stop", "restart"],
+      }),
+    );
+    for (const action of ["start", "stop", "restart"] as const) {
+      const plan = buildPlan(cluster, { action, environments: ["base"] });
+      const kinds = plan.steps.map((step) => `${step.kind}:${step.action}`);
+      assert(
+        kinds.includes(`environment:${action}`),
+        `${action} should include an environment step: ${kinds.join(", ")}`,
+      );
+    }
+  });
+});
+
+Deno.test("unit/planning: one-shot environments iterator is materialized once for stop", async () => {
+  await withTempDir(async (root) => {
+    const cluster = await loadCluster(
+      await writeCluster(root, {
+        envActions: ["check", "install", "configure", "start", "stop", "restart"],
+      }),
+    );
+    function* environments() {
+      yield "base";
+    }
+    const plan = buildPlan(cluster, { action: "stop", environments: environments() });
+    const kinds = plan.steps.map((step) => `${step.kind}:${step.action}`);
+    assertEquals(kinds, ["environment:stop"]);
+    assertEquals(plan.steps[0].id, "env:node-a/base:stop");
   });
 });

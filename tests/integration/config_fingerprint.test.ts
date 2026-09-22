@@ -76,7 +76,6 @@ Deno.test("integration/config-fingerprint: unchanged candidate uses file secret 
       mode: 0o600,
       owner: "root",
       group: "root",
-      runAs: "deploy",
       secretRoot: "~/.sfo-deploy/secrets",
       secretFiles: ["TLS_KEY"],
     }]))[0];
@@ -90,7 +89,6 @@ Deno.test("integration/config-fingerprint: unchanged candidate uses file secret 
       mode: 0o600,
       owner: "root",
       group: "root",
-      runAs: "deploy",
       secretRoot: "~/.sfo-deploy/secrets",
       secretFiles: ["TLS_KEY"],
     }]))[0];
@@ -99,4 +97,72 @@ Deno.test("integration/config-fingerprint: unchanged candidate uses file secret 
     assert(remoteCalls.some((call) => call.includes(".app.conf.sfo-secret-hashes.json")));
     await session.close();
   });
+});
+
+async function publishWithRemoteMetadata(
+  mode: string,
+  owner: string,
+  group: string,
+): Promise<{ changed: boolean; remoteCalls: string[] }> {
+  return await withTempDir(async (root) => {
+    const knownHosts = join(root, "known_hosts");
+    await Deno.writeTextFile(knownHosts, "fixture\n");
+    const remoteCalls: string[] = [];
+    const factory: CommandFactory = (_command, args) => {
+      const remote = String(args.at(-1) ?? "");
+      remoteCalls.push(remote);
+      if (remote === "exec 'true'") return spawned(output());
+      if (remote.includes("printf")) return spawned(output(0, "/home/deploy"));
+      if (remote === "exec 'id' '-u'") return spawned(output(0, "0\n"));
+      if (remote.includes("'stat' '-c' '%F'")) return spawned(output(0, "regular file\n"));
+      if (remote.includes("'stat' '-c' '%s'")) return spawned(output(0, "42\n"));
+      if (remote.includes("'stat' '-c' '%a'")) return spawned(output(0, `${mode}\n`));
+      if (remote.includes("'stat' '-c' '%U'")) return spawned(output(0, `${owner}\n`));
+      if (remote.includes("'stat' '-c' '%G'")) return spawned(output(0, `${group}\n`));
+      return spawned(output());
+    };
+    const transport = new OpenSshTransport({ knownHosts, commandFactory: factory });
+    const session = await transport.connect(resolved("node-a"));
+    const workspace = await session.createWorkspace();
+    const publication = (await session.publishManagedConfigs!([{
+      candidate: { name: "config", workspace, path: `${workspace}/candidate` },
+      target: "/etc/demo/app.conf",
+      mode: 0o600,
+      owner: "root",
+      group: "root",
+      secretRoot: "~/.sfo-deploy/secrets",
+      secretFiles: [],
+    }]))[0];
+    await session.close();
+    return { changed: publication!.changed, remoteCalls };
+  });
+}
+
+Deno.test("integration/config-fingerprint: same content with drifted mode converges instead of skipping", async () => {
+  const { changed, remoteCalls } = await publishWithRemoteMetadata("644", "root", "root");
+  assertEquals(changed, true);
+  assert(
+    remoteCalls.some((call) =>
+      call.includes("'install'") && call.includes("0600") && call.includes("'-o'")
+    ),
+  );
+  assert(remoteCalls.some((call) => call.includes("'mv'")));
+});
+
+Deno.test("integration/config-fingerprint: same content with drifted owner or group converges", async () => {
+  const ownerDrift = await publishWithRemoteMetadata("600", "app", "root");
+  assertEquals(ownerDrift.changed, true);
+  assert(
+    ownerDrift.remoteCalls.some((call) =>
+      call.includes("'install'") && call.includes("'-o'") && call.includes("'root'")
+    ),
+  );
+
+  const groupDrift = await publishWithRemoteMetadata("600", "root", "app");
+  assertEquals(groupDrift.changed, true);
+  assert(
+    groupDrift.remoteCalls.some((call) =>
+      call.includes("'install'") && call.includes("'-g'") && call.includes("'root'")
+    ),
+  );
 });

@@ -162,8 +162,20 @@ function managedOwnsAction(
       (management?.manager?.kind === "service" &&
         management.manager.unitConfig !== undefined);
   }
-  return management !== undefined &&
+  return management?.manager !== undefined &&
     (action === "start" || action === "stop" || action === "restart");
+}
+
+/** start/stop/restart 只管理服务，不发布受管配置，因此不携带 config/config_scripts。 */
+function lifecycleAppManagement(
+  management: AppManagementDefinition | undefined,
+): AppManagementDefinition | undefined {
+  if (management === undefined) return undefined;
+  return Object.freeze({
+    manager: management.manager,
+    configs: freezeArray([]),
+    configScripts: freezeArray([]),
+  });
 }
 
 export function buildPlan(cluster: ClusterConfig, request: PlanRequest): ExecutionPlan;
@@ -194,9 +206,9 @@ export function buildPlan(
   }
 
   const appValues = materialize(request.apps);
+  const environmentValues = materialize(request.environments);
   const selectedApps = new Set<string>();
-  const stopEnvironmentOnly = action === "stop" &&
-    (materialize(request.environments)?.length ?? 0) > 0;
+  const stopEnvironmentOnly = action === "stop" && (environmentValues?.length ?? 0) > 0;
   if (action !== "check" && action !== "install" && action !== "prepare" && !stopEnvironmentOnly) {
     for (const app of appValues && appValues.length > 0 ? appValues : cluster.apps.keys()) {
       selectedApps.add(app);
@@ -206,14 +218,16 @@ export function buildPlan(
   if (unknownApps.length > 0) {
     throw new PlanningError(`Unknown App filter: ${unknownApps.join(", ")}`);
   }
-  const environmentFilter = new Set(materialize(request.environments) ?? []);
+  const environmentFilter = new Set(environmentValues ?? []);
+  const appsOnlyLifecycle = (action === "start" || action === "stop" || action === "restart") &&
+    environmentFilter.size === 0;
 
   let nodes = new Map<string, ResourceNode>();
   let dependencies = new Map<string, readonly string[]>();
   for (const machineName of [...selectedMachines].sort()) {
     const machine = cluster.machines.get(machineName)!;
     for (const environment of machine.environments) {
-      if (deployAppsOnly) continue;
+      if (deployAppsOnly || appsOnlyLifecycle) continue;
       const node = `env:${machineName}/${environment.name}`;
       if (
         environmentFilter.size > 0 && !environmentFilter.has(environment.name) &&
@@ -239,7 +253,7 @@ export function buildPlan(
       dependencies.set(
         node,
         freezeArray(
-          deployAppsOnly
+          deployAppsOnly || appsOnlyLifecycle
             ? []
             : app.dependsOn.map((dependency) =>
               `env:${dependency.includes("/") ? dependency : `${machineName}/${dependency}`}`
@@ -251,7 +265,9 @@ export function buildPlan(
   if (nodes.size === 0) throw new PlanningError("The filter selected no deployment targets");
 
   const checkOnlyEnvironmentNodes = new Set<string>();
-  if (!deployAppsOnly && !request.withDependencies && request.apps !== undefined) {
+  if (
+    !deployAppsOnly && !appsOnlyLifecycle && !request.withDependencies && request.apps !== undefined
+  ) {
     const appNodes = new Set([...nodes.keys()].filter((node) => node.startsWith("app:")));
     const pending = new Set([...appNodes].flatMap((node) => dependencies.get(node) ?? []));
     while (pending.size > 0) {
@@ -272,7 +288,7 @@ export function buildPlan(
       key,
       freezeArray((dependencies.get(key) ?? []).filter((dependency) => retained.has(dependency))),
     ]));
-  } else if (!deployAppsOnly) {
+  } else if (!deployAppsOnly && !appsOnlyLifecycle) {
     const required = new Set([...dependencies.values()].flat());
     const missing = [...required].filter((dependency) => !nodes.has(dependency)).sort();
     if (missing.length > 0) {
@@ -311,9 +327,16 @@ export function buildPlan(
         if (action === "prepare") {
           const preparesService = definition.manager === undefined ||
             definition.manager.kind !== "system" || definition.manager.startAfterInstall;
+          const enablesService = definition.manager !== undefined &&
+            definition.manager.kind === "system" && !definition.manager.startAfterInstall;
+          const beforeStart = definition.init?.beforeStart ?? [];
+          const afterStart = definition.init?.afterStart ?? [];
           actionSequence = [
             "install",
+            ...(beforeStart.length > 0 ? ["before-start"] : []),
+            ...(enablesService ? ["enable"] : []),
             ...(definition.manager && preparesService ? ["start", "restart"] : []),
+            ...(afterStart.length > 0 ? ["after-start"] : []),
           ];
         } else if (action === "deploy" || action === "configure") {
           actionSequence = ["install"];
@@ -366,7 +389,6 @@ export function buildPlan(
     const appScripts = kind === "app" ? appActionScripts(resource) : undefined;
     const environmentScripts = kind === "environment" ? environmentDefinition!.scripts : undefined;
     const management = kind === "app" ? resource.management : undefined;
-    const allAppScripts = kind === "app" ? bundleAppScripts(resource, management) : undefined;
     const nodeStepIds = stepIdsByNode.get(node) ?? [];
     stepIdsByNode.set(node, nodeStepIds);
     for (const currentAction of actionSequence) {
@@ -376,9 +398,20 @@ export function buildPlan(
         : kind === "app"
         ? resource.package
         : environmentDefinition?.package;
-      const stepManagement = management;
+      const lifecycleAppAction = kind === "app" &&
+        ["start", "stop", "restart"].includes(currentAction);
+      const stepManagement = lifecycleAppAction ? lifecycleAppManagement(management) : management;
+      const stepAppScripts = kind === "app"
+        ? bundleAppScripts(resource, stepManagement)
+        : undefined;
       let invocations = appScripts?.get(currentAction) ??
         environmentScripts?.actions.get(currentAction) ?? [];
+      if (kind === "environment" && currentAction === "before-start") {
+        invocations = environmentDefinition?.init?.beforeStart ?? [];
+      }
+      if (kind === "environment" && currentAction === "after-start") {
+        invocations = environmentDefinition?.init?.afterStart ?? [];
+      }
       const environmentInstallValue = kind === "environment" &&
           currentAction === "install" &&
           environmentDefinition?.install !== undefined
@@ -387,6 +420,7 @@ export function buildPlan(
       const environmentManagerValue = kind === "environment" &&
           environmentDefinition?.manager !== undefined &&
           (currentAction === "start" || currentAction === "restart" ||
+            currentAction === "enable" ||
             (currentAction === "stop" && environmentDefinition.manager.kind === "script"))
         ? environmentDefinition.manager
         : undefined;
@@ -475,7 +509,7 @@ export function buildPlan(
           (appDeploy || builtinPhasedStep || managedConfiguring || configScriptRuns ||
             appScriptManagerAction)
         ? Object.freeze({
-          scripts: allAppScripts!,
+          scripts: stepAppScripts!,
           files: freezeArray([]),
         })
         : undefined;
@@ -500,14 +534,14 @@ export function buildPlan(
         installDirectory: kind === "app" && currentAction !== "restart"
           ? resource.installDirectory
           : undefined,
-        runAs: kind === "app" ? resource.management?.runAs : undefined,
+        mode: kind === "app" ? resource.mode : undefined,
         deployment: kind === "app" &&
             ["deploy", "stage", "activate"].includes(currentAction)
           ? resource.deployment
           : undefined,
         management: stepManagement,
         deliveryInputs,
-        bundleScripts: appDeploy || builtinPhasedStep ? allAppScripts : undefined,
+        bundleScripts: appDeploy || builtinPhasedStep ? stepAppScripts : undefined,
         environmentInstall: environmentInstallValue,
         environmentManager: environmentManagerValue,
         dependsOn: freezeArray([...new Set([...prior, ...dependencySteps])].sort()),
@@ -551,6 +585,7 @@ export function buildPlan(
     schemaVersion: 4,
     cluster: cluster.name,
     requestedAction: action,
+    ...(action === "deploy" && !activatePhase ? { activate: false as const } : {}),
     steps: freezeArray(
       topological(
         phasedSteps.map((step) => step.id),

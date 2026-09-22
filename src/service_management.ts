@@ -9,6 +9,7 @@ import type {
   SystemdDeployAction,
 } from "./types.ts";
 import { detectServiceTool } from "./environment_runtime.ts";
+import { chkconfigName, readServiceEnabled, setServiceEnabled } from "./service_enable.ts";
 
 const SYSTEMCTL = "systemctl";
 const UNIT_RE = /^[A-Za-z0-9][A-Za-z0-9_.@:-]*\.service$/;
@@ -267,33 +268,45 @@ async function readState(
   toolInput?: ServiceTool,
 ): Promise<SystemdState> {
   const tool = toolInput ?? await resolveServiceTool(session, service, signal);
-  const enabled = tool.kind === "systemctl"
-    ? await session.run([tool.path, "is-enabled", "--", service.unit], {
-      signal,
-      timeoutMs: service.timeoutMs,
-      privileged: true,
-    })
-    : Object.freeze({ exitCode: 1, stdout: "unknown-enabled", stderr: "" }) as CommandResult;
-  const active = tool.kind === "systemctl"
-    ? await session.run([tool.path, "is-active", "--", service.unit], {
-      signal,
-      timeoutMs: service.timeoutMs,
-      privileged: true,
-    })
-    : await session.run([tool.path, service.unit, "status"], {
+  const enable = await readServiceEnabled(session, {
+    tool: tool.kind,
+    path: tool.path,
+    unit: service.unit,
+    timeoutMs: service.timeoutMs,
+  }, signal);
+  if (tool.kind === "service") {
+    // SysV init 脚本：使用去掉 .service 的规范名，按 LSB 退出码判定运行状态。
+    const status = await session.run([tool.path, chkconfigName(service.unit), "status"], {
       signal,
       timeoutMs: service.timeoutMs,
       privileged: true,
     });
-  const enabledState = stateText(enabled, "unknown-enabled");
+    if (status.exitCode < 0 || status.exitCode > 4) {
+      throw new TransportError(`Failed to read service active state: ${status.exitCode}`);
+    }
+    if (status.exitCode === 4) {
+      throw new TransportError(
+        `Service status is unknown (LSB exit code 4): ${service.unit}`,
+      );
+    }
+    const active = status.exitCode === 0;
+    return Object.freeze({
+      enabled: enable.enabled,
+      enabledState: enable.enabledState,
+      active,
+      activeState: active ? "active" : "inactive",
+    });
+  }
+  const active = await session.run([tool.path, "is-active", "--", service.unit], {
+    signal,
+    timeoutMs: service.timeoutMs,
+    privileged: true,
+  });
   const activeState = stateText(active, "unknown-active");
-  const isMissingUnit = enabled.exitCode === 4 && enabledState === "not-found";
+  const isMissingUnit = enable.enabledState === "not-found";
   const isMissingUnitActive = isMissingUnit && active.exitCode === 4 &&
     (activeState === "inactive" || activeState === "not-found" ||
       activeState === "failed");
-  if (enabled.exitCode !== 0 && enabled.exitCode !== 1 && !isMissingUnit) {
-    throw new TransportError(`Failed to read systemd enable state: ${enabledState}`);
-  }
   // systemctl is-active 对 inactive/failed 的常见退出码为 3；1 也作为非 active 状态接受。
   if (
     active.exitCode !== 0 && active.exitCode !== 1 && active.exitCode !== 3 &&
@@ -302,11 +315,8 @@ async function readState(
     throw new TransportError(`Failed to read systemd active state: ${activeState}`);
   }
   return Object.freeze({
-    enabled: enabled.exitCode === 0 &&
-      (enabledState === "enabled" || enabledState === "enabled-runtime" ||
-        enabledState === "linked" ||
-        enabledState === "linked-runtime" || enabledState === "alias"),
-    enabledState,
+    enabled: enable.enabled,
+    enabledState: enable.enabledState,
     active: active.exitCode === 0 && activeState === "active",
     activeState,
   });
@@ -320,9 +330,23 @@ async function serviceCommand(
   signal: AbortSignal | undefined,
   label: string,
 ): Promise<void> {
+  if (argv[0] === "enable" || argv[0] === "disable") {
+    await setServiceEnabled(
+      session,
+      {
+        tool: tool.kind,
+        path: tool.path,
+        unit: service.unit,
+        timeoutMs: service.timeoutMs,
+      },
+      argv[0] === "enable",
+      signal,
+    );
+    return;
+  }
   const command = tool.kind === "systemctl"
     ? argv[0] === "daemon-reload" ? [tool.path, ...argv] : [tool.path, ...argv, "--", service.unit]
-    : [tool.path, service.unit, ...argv];
+    : [tool.path, chkconfigName(service.unit), ...argv];
   requireSuccess(
     await session.run(command, {
       signal,

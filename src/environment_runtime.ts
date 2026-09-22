@@ -9,13 +9,12 @@ import type {
   EnvironmentServiceTool,
   EnvironmentSystemManager,
 } from "./types.ts";
+import { setServiceEnabled } from "./service_enable.ts";
 
 const PACKAGE_MANAGER_PROBE_SCRIPT =
   'for path in /usr/bin/apt-get /usr/bin/yum /bin/yum; do if test -x "$path"; then printf "%s" "$path"; exit 0; fi; done; exit 1';
 const SERVICE_TOOL_PROBE_SCRIPT =
   'for path in /usr/bin/systemctl /bin/systemctl /usr/bin/service /usr/sbin/service /sbin/service; do if test -x "$path"; then printf "%s" "$path"; exit 0; fi; done; exit 1';
-const CHKCONFIG_PROBE_SCRIPT =
-  'for path in /usr/sbin/chkconfig /sbin/chkconfig /usr/bin/chkconfig; do if test -x "$path"; then printf "%s" "$path"; exit 0; fi; done; exit 1';
 
 interface DetectedTool {
   readonly kind: EnvironmentPackageManagerKind | EnvironmentServiceTool | "chkconfig";
@@ -176,14 +175,6 @@ async function verifySystemdState(
   }
 }
 
-async function chkconfigPath(
-  session: RemoteSession,
-  signal?: AbortSignal,
-): Promise<string> {
-  const tool = await probeTool(session, CHKCONFIG_PROBE_SCRIPT, signal, "chkconfig probe");
-  return tool.path;
-}
-
 async function verifyServiceState(
   session: RemoteSession,
   manager: EnvironmentSystemManager,
@@ -200,14 +191,16 @@ async function verifyServiceState(
     );
   }
   if (manager.enabled !== undefined) {
-    const path = await chkconfigPath(session, signal);
-    requireSuccess(
-      await session.run([path, manager.name, manager.enabled ? "on" : "off"], {
-        signal,
+    await setServiceEnabled(
+      session,
+      {
+        tool: "service",
+        path: "service",
+        unit: manager.name,
         timeoutMs: manager.timeoutMs,
-        privileged: true,
-      }),
-      `set service ${manager.enabled ? "enabled" : "disabled"}`,
+      },
+      manager.enabled,
+      signal,
     );
   }
 }
@@ -222,13 +215,16 @@ export async function convergeEnvironmentService(
   const tool = await detectServiceTool(session, manager.tool, signal);
   if (tool.kind === "systemctl") {
     if (manager.enabled !== undefined) {
-      const unit = systemctlUnit(manager.name);
-      requireSuccess(
-        await session.run(
-          [tool.path, manager.enabled ? "enable" : "disable", "--", unit],
-          { signal, timeoutMs: manager.timeoutMs, privileged: true },
-        ),
-        `set systemd service ${manager.enabled ? "enabled" : "disabled"}`,
+      await setServiceEnabled(
+        session,
+        {
+          tool: "systemctl",
+          path: tool.path,
+          unit: systemctlUnit(manager.name),
+          timeoutMs: manager.timeoutMs,
+        },
+        manager.enabled,
+        signal,
       );
     }
     requireSuccess(
@@ -254,4 +250,27 @@ export async function convergeEnvironmentService(
     `run service ${operation}`,
   );
   await verifyServiceState(session, manager, signal);
+}
+
+/** 仅收敛 Environment 系统服务的开机状态；不启动或重启服务。 */
+export async function enableEnvironmentService(
+  session: RemoteSession,
+  manager: EnvironmentSystemManager,
+  signal?: AbortSignal,
+): Promise<void> {
+  const tool = await detectServiceTool(session, manager.tool, signal);
+  if (tool.kind !== "systemctl" && tool.kind !== "service") {
+    throw new TransportError(`Service manager probe returned an unsupported tool: ${tool.kind}`);
+  }
+  await setServiceEnabled(
+    session,
+    {
+      tool: tool.kind,
+      path: tool.path,
+      unit: systemctlUnit(manager.name),
+      timeoutMs: manager.timeoutMs,
+    },
+    manager.enabled ?? true,
+    signal,
+  );
 }

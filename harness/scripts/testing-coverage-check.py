@@ -11,13 +11,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-from task_manifest import (
-    PIPELINE_STAGES,
-    TaskManifestError,
-    stage_is_automatic as policy_stage_is_automatic,
-    task_policy,
-)
-
 
 TABLE_SEPARATOR_RE = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$")
 GAP_VALUES = {"yes", "manual", "disabled", "deferred", "gap"}
@@ -94,7 +87,7 @@ def require_columns(path: Path, heading: str, rows: list[dict[str, str]], column
 
 
 def packet_path(root: Path, version: str, module: str, submodule: str | None) -> Path:
-    packet = root / "docs" / "versions" / version / "modules" / module
+    packet = root / ".harness" / "tasks" / version / "modules" / module
     if submodule:
         packet = packet / submodule
     return packet
@@ -104,93 +97,30 @@ def has_value(value: str) -> bool:
     return value.strip().strip('"').strip("'").lower() not in EMPTY_VALUES
 
 
-def pipeline_trigger_value(text: str, label: str) -> str | None:
-    match = re.search(rf"(?mi)^\s*-\s*{re.escape(label)}:\s*(.+)$", text)
-    return match.group(1).strip() if match else None
-
-
-def task_pipeline_policy(packet: Path) -> tuple[bool, str | None]:
-    manifest = packet / "task.yaml"
-    if not manifest.is_file():
-        return False, None
-    try:
-        policy = task_policy(manifest)
-    except TaskManifestError as error:
-        fail(str(error))
-    start_value = policy["start"]
-    active = policy["mode"] == "auto-pipeline"
-    if active and start_value not in PIPELINE_STAGES:
-        fail(f"{manifest} auto-pipeline mode requires auto_pipeline_start_stage")
-    return active, start_value
-
-
-def stage_is_automatic(active: bool, start: str | None, stage: str) -> bool:
-    return policy_stage_is_automatic(
-        {
-            "stage": None,
-            "mode": "auto-pipeline" if active else "manual",
-            "start": start,
-        },
-        stage,
-    )
-
-
-def pipeline_plan_path(root: Path, version: str, module: str, task_name: str) -> Path:
-    plan = root / "docs" / "versions" / version / "modules" / module / task_name / "pipeline" / "plan.md"
-    if not plan.exists():
-        fail(f"auto-pipeline no-doc testing coverage requires task-local plan: {plan}")
-    return plan
-
-
-def change_ids_from_docs(packet: Path, plan: Path | None = None) -> set[str]:
+def change_ids_from_docs(packet: Path) -> set[str]:
     proposal = packet / "proposal.md"
     proposal_rows = table_rows_after_heading(read_text(proposal), "Proposal Items", proposal)
     require_columns(proposal, "Proposal Items", proposal_rows, ("proposal_id", "change_id", "requirement", "success_evidence"))
     proposal_ids = {row["change_id"] for row in proposal_rows if row.get("change_id")}
-    if plan is not None:
-        design_rows = table_rows_after_heading(read_text(plan), "Implementation Scope Bindings", plan)
-        require_columns(plan, "Implementation Scope Bindings", design_rows, ("change_id", "target_module", "proposal_id", "design_coverage", "scope_paths"))
-        design_ids = {row["change_id"] for row in design_rows if row.get("change_id")}
-    else:
-        design = packet / "design.md"
-        design_rows = table_rows_after_heading(read_text(design), "Directly Mapped Change Items", design)
-        require_columns(design, "Directly Mapped Change Items", design_rows, ("change_id", "target_module", "proposal_id", "design_coverage", "scope_paths"))
-        design_ids = {row["change_id"] for row in design_rows if row.get("change_id")}
+    design = packet / "design.md"
+    design_rows = table_rows_after_heading(read_text(design), "Directly Mapped Change Items", design)
+    require_columns(design, "Directly Mapped Change Items", design_rows, ("change_id", "target_module", "proposal_id", "design_coverage", "scope_paths"))
+    design_ids = {row["change_id"] for row in design_rows if row.get("change_id")}
     missing_design = proposal_ids - design_ids
     if missing_design:
         fail(f"change_ids missing from design mapping: {', '.join(sorted(missing_design))}")
     return proposal_ids & design_ids
 
 
-def pipeline_state_rows(state_path: Path, key: str) -> list[dict[str, str]]:
-    try:
-        state = json.loads(state_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
-        fail(f"invalid pipeline state {state_path}: {error}")
-    if not isinstance(state, dict) or state.get("schema_version") != 1:
-        fail(f"{state_path} schema_version must be 1")
-    raw_rows = state.get(key) if isinstance(state, dict) else None
-    if not isinstance(raw_rows, list) or any(not isinstance(row, dict) for row in raw_rows):
-        fail(f"{state_path} {key} must be an array of objects")
-    return [{str(column): str(value) for column, value in row.items()} for row in raw_rows]
-
-
-def direct_coverage_rows(packet: Path, state_path: Path | None = None) -> dict[str, dict[str, str]]:
-    testing = state_path or (packet / "testing.md")
-    if state_path is not None:
-        rows = pipeline_state_rows(state_path, "testing_evidence")
-        columns = ("change_id", "validation_id", "testplan_level", "testplan_step_id", "evidence", "gap", "gap_manual_reason")
-        missing = sorted(set(columns) - (set(rows[0]) if rows else set()))
-        if missing:
-            fail(f"{state_path} testing_evidence missing fields: {', '.join(missing)}")
-    else:
-        rows = table_rows_after_heading(read_text(testing), "Direct Change Coverage", testing)
-        require_columns(
-            testing,
-            "Direct Change Coverage",
-            rows,
-            ("change_id", "design_source", "validation_id", "testplan_level", "testplan_step_id", "gap", "gap_manual_reason"),
-        )
+def direct_coverage_rows(packet: Path) -> dict[str, dict[str, str]]:
+    testing = packet / "testing.md"
+    rows = table_rows_after_heading(read_text(testing), "Direct Change Coverage", testing)
+    require_columns(
+        testing,
+        "Direct Change Coverage",
+        rows,
+        ("change_id", "design_source", "validation_id", "testplan_level", "testplan_step_id", "gap", "gap_manual_reason"),
+    )
     coverage: dict[str, dict[str, str]] = {}
     for row in rows:
         change_id = row.get("change_id", "")
@@ -223,8 +153,8 @@ def impact_value(text: str, label: str, path: Path) -> str:
     return value
 
 
-def design_api_contract(packet: Path, plan: Path | None) -> tuple[dict[str, object], list[dict[str, str]]]:
-    source = plan or (packet / "design.md")
+def design_api_contract(packet: Path) -> tuple[dict[str, object], list[dict[str, str]]]:
+    source = packet / "design.md"
     text = read_text(source)
     public_api = impact_value(text, "Public API impact", source)
     if public_api not in PUBLIC_API_IMPACTS:
@@ -239,14 +169,10 @@ def design_api_contract(packet: Path, plan: Path | None) -> tuple[dict[str, obje
         if value not in {"yes", "no"}:
             fail(f"{source} {label} must be yes or no")
         flags[key] = value == "yes"
-    if plan is not None:
-        interfaces = table_rows_after_heading(text, "Exported Interfaces", source)
-        compatibilities = {row.get("compatibility", "").strip().lower() for row in interfaces}
-    else:
-        compatibilities = {
-            value.strip().lower()
-            for value in re.findall(r"(?im)^\s*-\s*Compatibility:\s*([^\n]+)$", text)
-        }
+    compatibilities = {
+        value.strip().lower()
+        for value in re.findall(r"(?im)^\s*-\s*Compatibility:\s*([^\n]+)$", text)
+    }
     breaking = public_api == "breaking" or "breaking" in compatibilities
     migration = public_api == "migration-required" or "migration-required" in compatibilities
     risky = breaking or migration or any(flags.values())
@@ -317,9 +243,9 @@ def path_covered_by_inputs(path: str, inputs: list[str]) -> bool:
     return any(target == Path(item) or Path(item) in target.parents for item in inputs)
 
 
-def design_scope_paths(packet: Path, plan: Path | None, requested: set[str]) -> set[str]:
-    source = plan or (packet / "design.md")
-    heading = "Implementation Scope Bindings" if plan is not None else "Directly Mapped Change Items"
+def design_scope_paths(packet: Path, requested: set[str]) -> set[str]:
+    source = packet / "design.md"
+    heading = "Directly Mapped Change Items"
     rows = table_rows_after_heading(read_text(source), heading, source)
     result: set[str] = set()
     for row in rows:
@@ -333,8 +259,8 @@ def design_scope_paths(packet: Path, plan: Path | None, requested: set[str]) -> 
     return result
 
 
-def check_api_contract_closure(root: Path, packet: Path, plan: Path | None, requested: set[str]) -> None:
-    impact, consumers = design_api_contract(packet, plan)
+def check_api_contract_closure(root: Path, packet: Path, requested: set[str]) -> None:
+    impact, consumers = design_api_contract(packet)
     required = set(impact["required"])
     testplan = packet / "testplan.yaml"
     if not testplan.is_file():
@@ -348,14 +274,14 @@ def check_api_contract_closure(root: Path, packet: Path, plan: Path | None, requ
     recorded = testplan_api_impact(text, testplan)
     for key in ("public_api", "crate_root_export_change", "build_surface_change", "documentation_examples_affected"):
         if recorded.get(key) != impact.get(key):
-            fail(f"{testplan} api_impact.{key} does not match design/pipeline evidence")
+            fail(f"{testplan} api_impact.{key} does not match design evidence")
     if not required:
         return
     inputs_match = re.search(r"(?m)^evidence_inputs:\s*(\[[^\n]*\])\s*$", text)
     inputs = parse_inline_list(inputs_match.group(1)) if inputs_match else []
     if not inputs:
         fail(f"{testplan} risk-triggered contract checks require evidence_inputs")
-    for scope_path in sorted(design_scope_paths(packet, plan, requested)):
+    for scope_path in sorted(design_scope_paths(packet, requested)):
         if not path_covered_by_inputs(scope_path, inputs):
             fail(f"design Scope Paths entry is not bound by testplan evidence_inputs: {scope_path}")
     for index, row in enumerate(consumers, start=1):
@@ -466,22 +392,15 @@ def check_testplan_mapping(packet: Path, change_id: str, row: dict[str, str]) ->
         fail(f"{change_id} testplan step {level}/{step_id} missing run command")
 
 
-def check_case_type_coverage(packet: Path, requested: set[str], state_path: Path | None = None) -> None:
-    testing = state_path or (packet / "testing.md")
-    if state_path is not None:
-        rows = pipeline_state_rows(state_path, "testing_case_type_coverage")
-        columns = ("change_id", "case_type", "required", "validation_id", "level", "status", "gap_manual_reason")
-        missing = sorted(set(columns) - (set(rows[0]) if rows else set()))
-        if missing:
-            fail(f"{state_path} testing_case_type_coverage missing fields: {', '.join(missing)}")
-    else:
-        rows = table_rows_after_heading(read_text(testing), "Case-Type Coverage", testing)
-        require_columns(
-            testing,
-            "Case-Type Coverage",
-            rows,
-            ("change_id", "case_type", "required", "validation_id", "level", "status", "gap_manual_reason"),
-        )
+def check_case_type_coverage(packet: Path, requested: set[str]) -> None:
+    testing = packet / "testing.md"
+    rows = table_rows_after_heading(read_text(testing), "Case-Type Coverage", testing)
+    require_columns(
+        testing,
+        "Case-Type Coverage",
+        rows,
+        ("change_id", "case_type", "required", "validation_id", "level", "status", "gap_manual_reason"),
+    )
     coverage: dict[str, set[str]] = {change_id: set() for change_id in requested}
     for index, row in enumerate(rows, start=1):
         change_id = row.get("change_id", "").strip()
@@ -542,40 +461,15 @@ def run_test_runner_dry_run(root: Path, module_key: str) -> None:
         fail(f"unified test runner cannot reach {module_key} all: {detail}")
 
 
-def task_scope_from_test_runner(root: Path, task_name: str) -> str:
-    test_runner = root / "harness" / "scripts" / "test-run.py"
-    if not test_runner.exists():
-        fail(f"missing unified test runner: {test_runner}")
-    completed = subprocess.run(
-        [
-            sys.executable,
-            str(test_runner),
-            "all",
-            "all",
-            "--root",
-            str(root),
-            "--list",
-        ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    if completed.returncode != 0:
-        detail = completed.stderr.strip() or completed.stdout.strip()
-        fail(f"unified test runner could not list registered scopes: {detail}")
-    candidates = [
-        scope
-        for line in completed.stdout.splitlines()
-        if (scope := line.strip()).count("/") == 1
-        and scope.split("/", 1)[1] == task_name
-    ]
-    if len(candidates) != 1:
-        rendered = ", ".join(candidates) or "none"
-        fail(
-            f"expected exactly one unified test runner scope for task {task_name}; "
-            f"found: {rendered}"
-        )
-    return candidates[0]
+def task_scope_from_testplan(packet: Path, module: str) -> str:
+    testplan = packet / "testplan.yaml"
+    if not testplan.exists():
+        return module
+    if not re.search(r"(?m)^task_manifest:\s*task\.yaml\s*$", read_text(testplan)):
+        fail(f"testplan must use task_manifest: task.yaml: {testplan}")
+    if not (packet / "task.yaml").is_file():
+        fail(f"testplan references missing task manifest: {packet / 'task.yaml'}")
+    return f"{module}/{packet.name}"
 
 
 def main() -> int:
@@ -595,35 +489,15 @@ def main() -> int:
 
     root = Path(args.root)
     packet = packet_path(root, args.version, args.module, args.submodule)
-    pipeline_active, pipeline_start = task_pipeline_policy(packet)
-    automatic_design = stage_is_automatic(pipeline_active, pipeline_start, "design")
-    automatic_testing = stage_is_automatic(pipeline_active, pipeline_start, "testing")
-    plan = (
-        pipeline_plan_path(root, args.version, args.module, args.submodule)
-        if automatic_design
-        else None
-    )
-    state_path = (
-        root / ".harness" / "pipelines" / args.version / args.module / args.submodule / "state.json"
-        if automatic_testing and args.submodule is not None
-        else None
-    )
-    if automatic_testing:
-        forbidden = ["testing.md"]
-        present = [name for name in forbidden if (packet / name).exists()]
-        if present or (packet / "testing").exists():
-            fail("auto-pipeline document policy forbids generated testing Markdown docs in this packet")
-        if not (packet / "testplan.yaml").exists():
-            fail(f"missing required auto-pipeline test metadata: {packet / 'testplan.yaml'}")
-    elif args.allow_missing_testplan and not (packet / "testplan.yaml").exists():
+    if args.allow_missing_testplan and not (packet / "testplan.yaml").exists():
         print("testing-coverage-check: warning: testplan.yaml missing by explicit local exception", file=sys.stderr)
-    doc_change_ids = change_ids_from_docs(packet, plan)
+    doc_change_ids = change_ids_from_docs(packet)
     requested = set(args.change_ids or doc_change_ids)
     unknown = requested - doc_change_ids
     if unknown:
         fail(f"requested change_ids are not directly mapped by proposal/design: {', '.join(sorted(unknown))}")
 
-    coverage = direct_coverage_rows(packet, state_path)
+    coverage = direct_coverage_rows(packet)
     missing = requested - set(coverage)
     if missing:
         fail(f"change_ids missing from testing coverage evidence: {', '.join(sorted(missing))}")
@@ -631,13 +505,17 @@ def main() -> int:
     for change_id in sorted(requested):
         row = coverage[change_id]
         check_row(change_id, row)
-        if automatic_testing or (packet / "testplan.yaml").exists() or not args.allow_missing_testplan:
+        if (packet / "testplan.yaml").exists() or not args.allow_missing_testplan:
             check_testplan_mapping(packet, change_id, row)
-    check_case_type_coverage(packet, requested, state_path)
-    check_api_contract_closure(root, packet, plan, requested)
+    check_case_type_coverage(packet, requested)
+    check_api_contract_closure(root, packet, requested)
 
     if not args.skip_test_run_check:
-        module_key = task_scope_from_test_runner(root, packet.name)
+        module_key = (
+            f"{args.module}/{args.submodule}"
+            if args.submodule
+            else task_scope_from_testplan(packet, args.module)
+        )
         run_test_runner_dry_run(root, module_key)
 
     print("testing-coverage-check: passed")

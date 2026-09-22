@@ -21,6 +21,7 @@ import type {
   ConfigTemplate as _ConfigTemplate,
   DeploymentDefinition,
   EnvironmentDefinition,
+  EnvironmentInitializationDefinition,
   EnvironmentInstallDefinition,
   EnvironmentInstallKind,
   EnvironmentInstance,
@@ -147,6 +148,7 @@ interface LoadedEnvironment {
   readonly dependsOn: readonly string[];
   readonly install?: EnvironmentInstallDefinition;
   readonly manager?: EnvironmentManagerDefinition;
+  readonly init?: EnvironmentInitializationDefinition;
 }
 
 function repr(value: unknown): string {
@@ -377,7 +379,21 @@ function accountName(value: unknown, label: string): string {
   return text;
 }
 
-function appRunAs(value: unknown, label: string): string {
+const APP_MODE_RE = /^0?[0-7]{3}$/;
+
+/** App 根级发布权限位；只接受普通 r/w/x 位，拒绝 setuid/setgid/sticky。 */
+function appMode(value: unknown, label: string): string {
+  const text = stringValue(value, label);
+  if (!APP_MODE_RE.test(text)) {
+    throw new ConfigurationError(
+      `${label} must be a three- or four-digit octal mode without special bits`,
+    );
+  }
+  return text.padStart(4, "0");
+}
+
+/** 框架生成 unit 的 User=；缺省由执行器取 SSH 用户，显式值必须是规范非 root 账号。 */
+function systemdUnitUser(value: unknown, label: string): string {
   const text = accountName(value, label);
   if (text === "root") {
     throw new ConfigurationError(`${label} must be a non-root Linux user`);
@@ -1026,7 +1042,7 @@ function environmentSystemManager(
       new Set(["auto", "systemctl", "service"]),
       `${label}.tool`,
     ),
-    enabled: value.enabled === undefined ? undefined : value.enabled === true,
+    enabled: value.enabled === undefined ? true : value.enabled === true,
     startAfterInstall: value.start_after_install === undefined
       ? true
       : value.start_after_install === true,
@@ -1053,6 +1069,34 @@ async function environmentScriptManager(
   const stop = await scriptInvocation(item.stop, directory, `${label}.stop`);
   const restart = await scriptInvocation(item.restart, directory, `${label}.restart`);
   return Object.freeze({ kind: "script", start, stop, restart });
+}
+
+async function scriptInvocationList(
+  value: unknown,
+  directory: string,
+  label: string,
+): Promise<readonly ScriptInvocation[]> {
+  const result: ScriptInvocation[] = [];
+  for (const [index, rawEntry] of list(value, label).entries()) {
+    result.push(await scriptInvocation(rawEntry, directory, `${label}[${index}]`));
+  }
+  return freezeArray(result);
+}
+
+async function environmentInitialization(
+  value: unknown,
+  directory: string,
+  label: string,
+): Promise<EnvironmentInitializationDefinition> {
+  const item = mapping(value, label);
+  fields(item, ["before_start", "after_start"], [], label);
+  const beforeStart = item.before_start === undefined || item.before_start === null
+    ? freezeArray<ScriptInvocation>([])
+    : await scriptInvocationList(item.before_start, directory, `${label}.before_start`);
+  const afterStart = item.after_start === undefined || item.after_start === null
+    ? freezeArray<ScriptInvocation>([])
+    : await scriptInvocationList(item.after_start, directory, `${label}.after_start`);
+  return Object.freeze({ beforeStart, afterStart });
 }
 
 /** 顶层 secret_values/secret_files 已移除：cluster.yaml.secrets 是秘密唯一声明点。 */
@@ -1308,19 +1352,15 @@ function appServiceManagement(
     new Set(["auto", "systemctl", "service"]),
     `${label}.tool`,
   );
-  if (tool === "service") {
-    if (item.daemon_reload === true) {
-      throw new ConfigurationError(`${label}.daemon_reload is incompatible with tool: service`);
-    }
-    if (item.enabled !== undefined) {
-      throw new ConfigurationError(`${label}.enabled is incompatible with tool: service`);
-    }
+  if (tool === "service" && item.daemon_reload === true) {
+    throw new ConfigurationError(`${label}.daemon_reload is incompatible with tool: service`);
   }
   const service: AppServiceManagement = Object.freeze({
     kind: "service",
     unit,
     tool,
-    enabled: item.enabled as boolean | undefined,
+    enabled: item.enabled === undefined ? true : item.enabled === true,
+    enabledExplicit: item.enabled !== undefined,
     daemonReload: item.daemon_reload === true,
     onDeploy: enumValue<SystemdDeployAction>(
       item.on_deploy ?? "none",
@@ -1377,13 +1417,17 @@ async function appManagement(
         `${label.replace(".management", ".configs")}.on_change requires management.kind: service`,
       );
     }
-    return undefined;
+    if (fileConfigs.length === 0 && configScripts.length === 0) return undefined;
+    return Object.freeze({
+      configs: fileConfigs,
+      configScripts,
+      manager: undefined,
+    });
   }
   const item = mapping(value, label);
   fields(
     item,
     [
-      "run_as",
       "kind",
       "start",
       "stop",
@@ -1396,17 +1440,15 @@ async function appManagement(
       "timeout_ms",
       "unit_config",
     ],
-    ["run_as", "kind"],
+    ["kind"],
     label,
   );
-  const runAs = appRunAs(item.run_as, `${label}.run_as`);
   const kind = enumValue<AppManagerDefinition["kind"]>(
     item.kind,
     new Set(["script", "service"]),
     `${label}.kind`,
   );
   const managerInput: StringRecord = { ...item };
-  delete managerInput.run_as;
   const manager = kind === "script"
     ? await appScriptManagement(managerInput, directory, label)
     : await appServiceManagement(managerInput, directory, installDirectory, label);
@@ -1428,7 +1470,6 @@ async function appManagement(
     }
   }
   return Object.freeze({
-    runAs,
     configs: fileConfigs,
     configScripts,
     manager,
@@ -1499,6 +1540,7 @@ function systemdUnitConfig(
     item,
     [
       "target",
+      "user",
       "working_directory",
       "command",
       "args",
@@ -1531,6 +1573,7 @@ function systemdUnitConfig(
   );
   return Object.freeze({
     target,
+    user: item.user === undefined ? undefined : systemdUnitUser(item.user, `${label}.user`),
     workingDirectory,
     command,
     args: freezeArray(args),
@@ -1771,6 +1814,7 @@ async function loadEnvironment(
       "scripts",
       "install",
       "manager",
+      "init",
     ],
     ["schema_version", "name", "version"],
     label,
@@ -1786,7 +1830,8 @@ async function loadEnvironment(
     throw new ConfigurationError(`${label}.requires_privilege must be a boolean`);
   }
   const hasScripts = data.scripts !== undefined && data.scripts !== null;
-  const hasLifecycle = data.install !== undefined || data.manager !== undefined;
+  const hasLifecycle = data.install !== undefined || data.manager !== undefined ||
+    (data.init !== undefined && data.init !== null);
   if (hasScripts === hasLifecycle) {
     throw new ConfigurationError(
       `${label} must choose exactly one of the legacy top-level scripts or the new install/manager lifecycle`,
@@ -1804,6 +1849,9 @@ async function loadEnvironment(
   const manager = data.manager === undefined || data.manager === null
     ? undefined
     : await environmentManager(data.manager, directory, `${label}.manager`);
+  const init = data.init === undefined || data.init === null
+    ? undefined
+    : await environmentInitialization(data.init, directory, `${label}.init`);
   return Object.freeze({
     name: environmentName,
     directory: await Deno.realPath(directory),
@@ -1815,6 +1863,7 @@ async function loadEnvironment(
     requiresPrivilege: privilege === true,
     install,
     manager,
+    init,
     version: stringValue(data.version, `${label}.version`),
     parameters: deepFreezeRecord(mapping(data.parameters ?? {}, `${label}.parameters`)),
     dependsOn: stringList(data.depends_on ?? [], `${label}.depends_on`),
@@ -1834,6 +1883,7 @@ function placedEnvironmentDefinition(
     requiresPrivilege: environment.requiresPrivilege,
     install: environment.install,
     manager: environment.manager,
+    init: environment.init,
   });
 }
 
@@ -1955,6 +2005,7 @@ const APP_FIELDS = [
   "schema_version",
   "name",
   "install_directory",
+  "mode",
   "packageless",
   "depends_on",
   "deployment",
@@ -2063,6 +2114,7 @@ async function loadApps(
     const installDirectory = data.install_directory === undefined
       ? undefined
       : remoteAbsolutePath(data.install_directory, `${label}.install_directory`);
+    const mode = data.mode === undefined ? undefined : appMode(data.mode, `${label}.mode`);
     let deployment: DeploymentDefinition | undefined;
     if (data.deployment !== undefined) {
       deployment = deploymentDefinition(data.deployment, `${label}.deployment`);
@@ -2073,6 +2125,9 @@ async function loadApps(
       }
     } else if (!packageless) {
       deployment = Object.freeze({ kind: "versioned" as const });
+    }
+    if (mode !== undefined && deployment === undefined) {
+      throw new ConfigurationError(`${label}.mode requires a versioned deployment`);
     }
     const appConfig = await appConfigs(
       data.configs,
@@ -2089,14 +2144,6 @@ async function loadApps(
       appConfig.configs,
       appConfig.configScripts,
     );
-    if (appConfig.configs.length > 0 && management?.runAs === undefined) {
-      throw new ConfigurationError(`${label}.configs.file requires management.run_as`);
-    }
-    if (deployment !== undefined && management?.runAs === undefined) {
-      throw new ConfigurationError(
-        `${label}.deployment.versioned requires management.run_as`,
-      );
-    }
     apps.set(
       appName,
       Object.freeze({
@@ -2105,6 +2152,7 @@ async function loadApps(
         installDirectory: data.install_directory === undefined
           ? undefined
           : remoteAbsolutePath(data.install_directory, `${label}.install_directory`),
+        mode,
         version: entry?.version,
         package: entry?.package,
         packageless,

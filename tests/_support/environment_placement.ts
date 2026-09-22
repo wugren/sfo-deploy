@@ -80,7 +80,6 @@ async function writeApp(directory: string, app: AppFixture): Promise<void> {
       "deployment:",
       "  kind: versioned",
       "management:",
-      "  run_as: deploy",
       "  kind: service",
       "  name: demo.service",
       "  tool: systemctl",

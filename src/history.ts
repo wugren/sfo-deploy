@@ -68,6 +68,7 @@ const RELEASE_ID_RE = /^r\d{8}T\d{12}Z-[0-9a-f]{16}$/;
 const SOURCE_SCHEMA_RE = /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/;
 const SHA256_RE = /^[0-9a-f]{64}$/;
 const APP_RUN_AS_RE = /^[a-z_][a-z0-9_-]{0,31}\$?$/;
+const APP_ACCESS_GROUP_RE = /^[a-z_][a-z0-9_-]{0,31}\$?$/;
 const SYSTEMD_RESTART_POLICIES = new Set([
   "no",
   "on-success",
@@ -113,6 +114,9 @@ const STEP_ACTIONS = new Set([
   "restart",
   "stage",
   "activate",
+  "before-start",
+  "after-start",
+  "enable",
 ]);
 const STEP_STATUSES = new Set(["succeeded", "failed", "skipped", "blocked", "cancelled"]);
 const PLAN_STEP_ACTIONS: Readonly<Record<string, Readonly<Record<string, ReadonlySet<string>>>>> =
@@ -120,7 +124,16 @@ const PLAN_STEP_ACTIONS: Readonly<Record<string, Readonly<Record<string, Readonl
     check: { environment: new Set(["check"]), app: new Set<string>() },
     install: { environment: new Set(["install"]), app: new Set<string>() },
     prepare: {
-      environment: new Set(["check", "install", "configure", "start", "restart"]),
+      environment: new Set([
+        "check",
+        "install",
+        "configure",
+        "start",
+        "restart",
+        "before-start",
+        "after-start",
+        "enable",
+      ]),
       app: new Set([]),
     },
     configure: {
@@ -136,7 +149,7 @@ const PLAN_STEP_ACTIONS: Readonly<Record<string, Readonly<Record<string, Readonl
     restart: { environment: new Set(["restart"]), app: new Set(["restart"]) },
     rollback: {
       environment: new Set(["check"]),
-      app: new Set(["check", "configure", "deploy", "stage", "activate"]),
+      app: new Set(["check", "configure", "deploy", "stage", "activate", "restart"]),
     },
   });
 
@@ -1048,11 +1061,18 @@ export function deriveRollbackPlan(plan: ExecutionPlan): ExecutionPlan {
         )
       ),
   );
+  const versionedResources = new Set(
+    plan.steps.filter((step) =>
+      step.kind === "app" && (step.action === "stage" || step.action === "activate")
+    ).map((step) => step.resource),
+  );
   const appIds = new Set<string>(
     plan.steps.filter((step) =>
       step.kind === "app" &&
       (step.action === "configure" || step.action === "deploy" ||
         step.action === "stage" || step.action === "activate" ||
+        (step.action === "restart" && step.management?.manager?.kind === "script" &&
+          versionedResources.has(step.resource)) ||
         (step.action === "check" && packagelessResources.has(step.resource)))
     ).map((step) => step.id),
   );
@@ -1118,6 +1138,7 @@ async function encodePlan(
     schema_version: PLAN_SCHEMA_VERSION,
     cluster: requiredString(plan.cluster, "cluster"),
     requested_action: requiredString(plan.requestedAction, "requested_action"),
+    ...(plan.activate === false ? { activate: false } : {}),
     steps: await Promise.all(
       plan.steps.map((step) => encodeStep(step, archive, sourceExporter)),
     ),
@@ -1135,27 +1156,23 @@ async function encodeStep(
   if (runtime.kind !== "deno") {
     throw new ConfigurationError("execution-plan v4 accepts only the Deno runtime");
   }
-  const declaredRunAs = step.management?.runAs;
-  const runAs = step.runAs ?? declaredRunAs;
+  const legacyRunAs = step.runAs ?? step.management?.runAs;
+  const legacyAccessGroup = step.management?.accessGroup;
+  const mode = step.mode;
   const isVersionedStage = step.kind === "app" &&
     (step.action === "stage" || step.action === "activate") &&
     step.deployment?.kind === "versioned";
+  if (legacyRunAs !== undefined) validateAppRunAs(legacyRunAs);
+  if (legacyAccessGroup !== undefined) validateAppAccessGroup(legacyAccessGroup);
+  if (mode !== undefined) validateAppMode(mode);
   if (step.management !== undefined) {
-    if (runAs === undefined) throw new ConfigurationError("managed plan-v4 step is missing run_as");
-    validateAppRunAs(runAs);
-    if (declaredRunAs !== undefined && declaredRunAs !== runAs) {
-      throw new ConfigurationError("managed plan-v4 step contains an inconsistent run_as");
-    }
     if (
       step.lifecycleSecretValues === undefined ||
       step.lifecycleSecretFiles === undefined
     ) {
       throw new ConfigurationError("managed plan-v4 step is missing lifecycle secret declarations");
     }
-  } else if (isVersionedStage) {
-    if (runAs === undefined) throw new ConfigurationError("versioned stage step is missing run_as");
-    validateAppRunAs(runAs);
-  } else if (runAs !== undefined) {
+  } else if (!isVersionedStage && legacyRunAs !== undefined) {
     throw new ConfigurationError("non-managed plan-v4 step must not declare run_as");
   }
   let sshKey: string | null = null;
@@ -1226,7 +1243,9 @@ async function encodeStep(
     package: packageData,
     secret_values: step.secretValues,
     secret_files: step.secretFiles,
-    run_as: runAs ?? null,
+    run_as: legacyRunAs ?? null,
+    access_group: legacyAccessGroup ?? null,
+    mode: mode ?? null,
     lifecycle_secret_values: step.lifecycleSecretValues ?? [],
     lifecycle_secret_files: step.lifecycleSecretFiles ?? [],
     install_directory: step.installDirectory ?? null,
@@ -1332,6 +1351,8 @@ async function encodeManagement(
       unit: management.manager.unit,
       tool: management.manager.tool,
       enabled: management.manager.enabled ?? null,
+      enabled_explicit: management.manager.enabledExplicit ??
+        (management.manager.enabled !== undefined),
       daemon_reload: management.manager.daemonReload,
       on_deploy: management.manager.onDeploy,
       timeout_ms: management.manager.timeoutMs,
@@ -1341,6 +1362,9 @@ async function encodeManagement(
           working_directory: management.manager.unitConfig.workingDirectory,
           command: management.manager.unitConfig.command,
           args: management.manager.unitConfig.args,
+          ...(management.manager.unitConfig.user === undefined
+            ? {}
+            : { user: management.manager.unitConfig.user }),
           ...(management.manager.unitConfig.restartPolicy === undefined
             ? {}
             : { restart_policy: management.manager.unitConfig.restartPolicy }),
@@ -1417,6 +1441,7 @@ async function decodeManagement(
   snapshot: string,
   runAs?: string,
   deployment?: DeploymentDefinition,
+  accessGroup?: string,
 ): Promise<AppManagementDefinition | undefined> {
   if (raw === null || raw === undefined) return undefined;
   const value = objectValue(raw, "management");
@@ -1555,13 +1580,24 @@ async function decodeManagement(
       if (rawManager.kind !== "service") throw new ConfigurationError("Invalid manager.kind");
       expectKeysOptional(
         rawManager,
-        ["kind", "unit", "tool", "enabled", "daemon_reload", "on_deploy", "timeout_ms"],
-        ["unit_config"],
+        [
+          "kind",
+          "unit",
+          "tool",
+          "enabled",
+          "daemon_reload",
+          "on_deploy",
+          "timeout_ms",
+        ],
+        ["enabled_explicit", "unit_config"],
         "management.manager",
       );
       const enabled = rawManager.enabled === null
         ? undefined
         : booleanValue(rawManager.enabled, "manager.enabled");
+      const enabledExplicit = rawManager.enabled_explicit === undefined
+        ? enabled !== undefined
+        : booleanValue(rawManager.enabled_explicit, "manager.enabled_explicit");
       const onDeploy = requiredString(rawManager.on_deploy, "manager.on_deploy");
       const tool = requiredString(rawManager.tool, "manager.tool");
       if (!["none", "start", "reload", "restart"].includes(onDeploy)) {
@@ -1575,6 +1611,7 @@ async function decodeManagement(
         unit: requiredString(rawManager.unit, "manager.unit"),
         tool: tool as "auto" | "systemctl" | "service",
         enabled,
+        enabledExplicit,
         daemonReload: booleanValue(rawManager.daemon_reload, "manager.daemon_reload"),
         onDeploy: onDeploy as "none" | "start" | "reload" | "restart",
         timeoutMs: boundedInteger(rawManager.timeout_ms, "manager.timeout_ms", 1, 86_400_000),
@@ -1597,6 +1634,7 @@ async function decodeManagement(
   }
   return Object.freeze({
     runAs,
+    accessGroup,
     configs,
     configScripts,
     manager,
@@ -1612,7 +1650,13 @@ function decodeSystemdUnitConfig(
   expectKeysOptional(
     value,
     ["target", "working_directory", "command", "args"],
-    ["restart_policy", "restart_sec", "start_limit_interval_sec", "start_limit_burst"],
+    [
+      "user",
+      "restart_policy",
+      "restart_sec",
+      "start_limit_interval_sec",
+      "start_limit_burst",
+    ],
     label,
   );
   const target = safeAbsoluteRemotePath(value.target, `${label}.target`);
@@ -1621,6 +1665,9 @@ function decodeSystemdUnitConfig(
   }
   return Object.freeze({
     target,
+    ...(value.user === null || value.user === undefined
+      ? {}
+      : { user: validateUnitUser(requiredString(value.user, `${label}.user`)) }),
     workingDirectory: safeAbsoluteRemotePath(
       value.working_directory,
       `${label}.working_directory`,
@@ -1778,7 +1825,12 @@ async function decodePlan(
   sourceImporter: SourceImporter,
 ): Promise<ExecutionPlan> {
   const plan = objectValue(value, "execution plan");
-  expectKeys(plan, ["schema_version", "cluster", "requested_action", "steps"], "execution plan");
+  expectKeysOptional(
+    plan,
+    ["schema_version", "cluster", "requested_action", "steps"],
+    ["activate"],
+    "execution plan",
+  );
   const schema = plan.schema_version;
   if (schema === 1) {
     throw new ConfigurationError(
@@ -1793,6 +1845,9 @@ async function decodePlan(
   if (!PLAN_ACTIONS.has(requestedAction)) {
     throw new ConfigurationError(`Invalid execution plan requested_action: ${requestedAction}`);
   }
+  const activate = plan.activate === undefined
+    ? undefined
+    : booleanValue(plan.activate, "activate");
   const steps = await Promise.all(
     plan.steps.map((item) => decodeStep(item, snapshot, clusterDirectory, sourceImporter, schema)),
   );
@@ -1802,6 +1857,7 @@ async function decodePlan(
     schemaVersion: schema === 4 ? 4 : 3,
     cluster: requiredString(plan.cluster, "cluster"),
     requestedAction,
+    ...(activate === false ? { activate: false as const } : {}),
     steps: freezeArray(steps),
   });
 }
@@ -1831,7 +1887,14 @@ async function decodeStep(
     [
       ...(schema < 4 ? ["config_secrets", "file_secrets", "secret_values", "secret_files"] : []),
       ...(schema === 4
-        ? ["run_as", "lifecycle_secret_values", "lifecycle_secret_files", "deployment"]
+        ? [
+          "run_as",
+          "access_group",
+          "mode",
+          "lifecycle_secret_values",
+          "lifecycle_secret_files",
+          "deployment",
+        ]
         : []),
       ...(schema === 4 ? ["environment_install", "environment_manager"] : []),
       "templates",
@@ -2015,19 +2078,24 @@ async function decodeStep(
   const secretFiles = value.secret_files === undefined
     ? freezeArray([])
     : uniqueStrings(value.secret_files, "secret_files");
-  const hasRunAs = Object.hasOwn(value, "run_as");
   const hasLifecycleValues = Object.hasOwn(value, "lifecycle_secret_values");
   const hasLifecycleFiles = Object.hasOwn(value, "lifecycle_secret_files");
-  const currentV4 = hasRunAs || hasLifecycleValues || hasLifecycleFiles;
+  const currentV4 = hasLifecycleValues || hasLifecycleFiles;
   if (
     schema === 4 && currentV4 &&
-    (!hasRunAs || !hasLifecycleValues || !hasLifecycleFiles)
+    (!hasLifecycleValues || !hasLifecycleFiles)
   ) {
     throw new ConfigurationError("plan-v4 new field group is incomplete");
   }
-  const runAs = !currentV4 || value.run_as === null
+  const runAs = value.run_as === null || value.run_as === undefined
     ? undefined
     : validateAppRunAs(requiredString(value.run_as, "run_as"));
+  const accessGroup = value.access_group === null || value.access_group === undefined
+    ? undefined
+    : validateAppAccessGroup(requiredString(value.access_group, "access_group"));
+  const mode = value.mode === null || value.mode === undefined
+    ? undefined
+    : validateAppMode(requiredString(value.mode, "mode"));
   const lifecycleSecretValues = currentV4
     ? uniqueStrings(value.lifecycle_secret_values, "lifecycle_secret_values")
     : undefined;
@@ -2049,7 +2117,7 @@ async function decodeStep(
     ? decodeDeployment(value.deployment)
     : undefined;
   const management = schema === 4
-    ? await decodeManagement(value.management, snapshot, runAs, deployment)
+    ? await decodeManagement(value.management, snapshot, runAs, deployment, accessGroup)
     : undefined;
   const deliveryInputs = schema === 4
     ? await decodeDeliveryInputs(value.delivery_inputs, snapshot)
@@ -2072,19 +2140,13 @@ async function decodeStep(
         "Only App deploy/stage/activate steps can declare a versioned deployment",
       );
     }
-    if (runAs === undefined) {
-      throw new ConfigurationError("versioned deployment step is missing run_as");
-    }
     if (installDirectory === undefined) {
       throw new ConfigurationError("versioned deployment step is missing install_directory");
     }
   }
-  if (currentV4 && management !== undefined && runAs === undefined) {
-    throw new ConfigurationError("managed plan-v4 step is missing run_as");
-  }
   const isVersionedStage = kind === "app" && (action === "stage" || action === "activate") &&
     deployment?.kind === "versioned";
-  if (currentV4 && management === undefined && runAs !== undefined && !isVersionedStage) {
+  if (management === undefined && runAs !== undefined && !isVersionedStage) {
     throw new ConfigurationError("non-managed plan-v4 step must not declare run_as");
   }
   if (schema === 4) {
@@ -2116,6 +2178,7 @@ async function decodeStep(
     dependsOn: uniqueStrings(value.depends_on, "depends_on"),
     installDirectory,
     runAs,
+    mode,
     deployment,
     management,
     deliveryInputs,
@@ -2293,13 +2356,17 @@ function validatePersistedManagementStep(
     }
   }
   const requiredScripts: ScriptInvocation[] = [];
-  for (const config of management.configs) {
-    for (const [name, reference] of config.secretReferences) {
-      const declared = reference.kind === "value" ? values : files;
-      if (!declared.has(name)) {
-        throw new ConfigurationError(
-          `managed secret did not enter the step minimal secret set: ${name}`,
-        );
+  const publishingConfigAction = action === "configure" ||
+    action === "deploy" || action === "stage" || action === "activate";
+  if (publishingConfigAction) {
+    for (const config of management.configs) {
+      for (const [name, reference] of config.secretReferences) {
+        const declared = reference.kind === "value" ? values : files;
+        if (!declared.has(name)) {
+          throw new ConfigurationError(
+            `managed secret did not enter the step minimal secret set: ${name}`,
+          );
+        }
       }
     }
   }
@@ -3364,6 +3431,26 @@ function requiredString(value: unknown, label: string): string {
 function validateAppRunAs(value: string): string {
   if (value === "root" || !APP_RUN_AS_RE.test(value)) {
     throw new ConfigurationError("run_as must be a canonical non-root Linux user");
+  }
+  return value;
+}
+function validateAppAccessGroup(value: string): string {
+  if (value === "root" || !APP_ACCESS_GROUP_RE.test(value)) {
+    throw new ConfigurationError("access_group must be a canonical non-root Linux group");
+  }
+  return value;
+}
+function validateAppMode(value: string): string {
+  if (!/^0?[0-7]{3}$/.test(value)) {
+    throw new ConfigurationError(
+      "mode must be a three- or four-digit octal mode without special bits",
+    );
+  }
+  return value.padStart(4, "0");
+}
+function validateUnitUser(value: string): string {
+  if (value === "root" || !APP_RUN_AS_RE.test(value)) {
+    throw new ConfigurationError("unit_config.user must be a canonical non-root Linux user");
   }
   return value;
 }
