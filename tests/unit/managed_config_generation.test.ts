@@ -33,6 +33,36 @@ function config(
   });
 }
 
+function versionConfig(
+  source: string,
+  format: ManagedConfigFormat,
+  withSecret = false,
+): ManagedConfigFile {
+  return Object.freeze({
+    name: `app-version-${format}`,
+    relativePath: `version.${format}.tpl`,
+    source,
+    target: `/etc/demo/version.${format}`,
+    targetRoot: "absolute",
+    mode: 0o600,
+    variables: Object.freeze([]),
+    format,
+    secretReferences: Object.freeze(
+      new Map(
+        withSecret
+          ? [
+            [
+              "APP_VERSION",
+              Object.freeze({ kind: "value" as const, valueType: "string" as const }),
+            ],
+          ]
+          : [],
+      ),
+    ),
+    onChange: "restart" as const,
+  });
+}
+
 const sources: Readonly<Record<ManagedConfigFormat, string>> = Object.freeze({
   yaml: `database:\n  password: \${DB_PASSWORD}\nserver:\n  port: ${
     configVariableMarker("PORT")
@@ -75,6 +105,68 @@ function assertStringIncludes(value: string, expected: string): void {
     throw new Error(`expected ${JSON.stringify(expected)} in ${value}`);
   }
 }
+
+Deno.test("unit/config-generation: APP_VERSION replaces whole and embedded values", async () => {
+  const sources: Readonly<Record<"yaml" | "json" | "toml" | "ini", string>> = Object.freeze({
+    yaml: `version: "${"$"}{APP_VERSION}"\nrelease: "demo-${"$"}{APP_VERSION}"\n`,
+    json: `{"version":"${"$"}{APP_VERSION}","release":"demo-${"$"}{APP_VERSION}"}`,
+    toml: `version = "${"$"}{APP_VERSION}"\nrelease = "demo-${"$"}{APP_VERSION}"\n`,
+    ini: `version=${"$"}{APP_VERSION}\nrelease=demo-${"$"}{APP_VERSION}\n`,
+  });
+  for (const format of ["yaml", "json", "toml", "ini"] as const) {
+    await withTempDir(async (root) => {
+      const source = join(root, `version.${format}`);
+      await Deno.writeTextFile(source, sources[format]);
+      const skeleton = await generateConfigSkeleton(
+        versionConfig(source, format),
+        { version: "1.2.3" },
+      );
+      const text = new TextDecoder().decode(skeleton.content);
+      assertEquals((text.match(/1\.2\.3/g) ?? []).length, 2);
+      assert(!text.includes("${APP_VERSION}"));
+      assertEquals(skeleton.secretBindings, []);
+    });
+  }
+});
+
+Deno.test("unit/config-generation: APP_VERSION without a version fails closed", async () => {
+  await withTempDir(async (root) => {
+    const source = join(root, "version.yaml");
+    await Deno.writeTextFile(source, `version: "${"$"}{APP_VERSION}"\n`);
+    const error = await assertRejects(
+      () => generateConfigSkeleton(versionConfig(source, "yaml"), {}),
+      PreflightError,
+    );
+    assertStringIncludes(error.message, "has no valid version");
+  });
+});
+
+Deno.test("unit/config-generation: APP_VERSION secret takes precedence", async () => {
+  await withTempDir(async (root) => {
+    const source = join(root, "secret.yaml");
+    await Deno.writeTextFile(source, `token: "${"$"}{APP_VERSION}"\n`);
+    const skeleton = await generateConfigSkeleton(
+      versionConfig(source, "yaml", true),
+      { version: "1.2.3" },
+    );
+    const text = new TextDecoder().decode(skeleton.content);
+    assert(!text.includes("1.2.3"));
+    assertStringIncludes(text, "__SFO_SECRET_V1_");
+    assertEquals(skeleton.secretBindings[0]?.secret, "APP_VERSION");
+  });
+});
+
+Deno.test("unit/config-generation: APP_VERSION is not supported by nginx", async () => {
+  await withTempDir(async (root) => {
+    const source = join(root, "version.conf");
+    await Deno.writeTextFile(source, "server { version ${APP_VERSION}; }\n");
+    const error = await assertRejects(
+      () => generateConfigSkeleton(versionConfig(source, "nginx"), { version: "1.2.3" }),
+      PreflightError,
+    );
+    assertStringIncludes(error.message, "does not support the placeholder");
+  });
+});
 
 Deno.test("unit/config-generation: 整值与嵌入字符串使用不同 marker", async () => {
   await withTempDir(async (root) => {

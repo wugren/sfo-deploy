@@ -24,9 +24,10 @@
   声明 `run_as`/`access_group`：部署、解包、内置发布与脚本统一以 SSH 登录身份执行并拥有发布根。
   根级可选 `mode`（八进制）在提交前收敛发布根与版本树，声明值作为文件模式、目录与可执行文件按 `X`
   语义补执行位；未声明时发布根保持 0750。框架生成的 unit 使用 `unit_config.user`，缺省取 SSH 用户。
-- `deploy`/`plan` 支持 `--no-activate`：不切换 `latest`、不写 `<app>.version` 标记、不执行任何受管服务
-  收敛（不 daemon-reload、不 enable、不 reload/restart/start）。versioned App 只执行 stage（新版本目录
-  与配置/unit 落地）；packageless App 仍发布受管配置与配置脚本，但配置只在目标机落地，未被服务加载。
+- `deploy`/`plan` 支持 `--no-activate`：不切换 `latest`、不写 `<app>.version`
+  标记、不执行任何受管服务 收敛（不 daemon-reload、不 enable、不 reload/restart/start）。versioned
+  App 只执行 stage（新版本目录 与配置/unit 落地）；packageless App
+  仍发布受管配置与配置脚本，但配置只在目标机落地，未被服务加载。
   非激活执行视为已提交：命令完成后服务与 `latest` 保持原状，产物保留在目标机，供后续普通 `deploy`
   （`on_deploy`/文件变化）或 `restart` 动作激活复用。
 - `plan` 的人可读预览为每个步骤输出序号、目标机解析地址与地址类型、依赖、包提供方、发布方式、
@@ -40,6 +41,10 @@
   `${CURRENT_VERSION_DIRECTORY}/` 表示当前动作的版本目录，`${LATEST_DIRECTORY}/` 表示
   `<install_directory>/latest`。deploy 重定位 current 变量和旧绝对 latest 前缀，deploy/rollback 的
   configure 步骤中 current 与 latest 都写当前版本。`${INSTALL_DIRECTORY}` 不做版本重定位。
+- `${APP_VERSION}` 是当前 versioned App 部署版本的字符串占位符；managed config `target`、 service
+  `unit_config.working_directory` 和 structured managed config 内容都可用它替换。 structured
+  内容只支持 yaml/json/toml/ini。`nginx`、无包 App 和 Environment 配置不支持该变量。 若
+  `APP_VERSION` 已声明为秘密，则内容中的占位符继续按秘密引用处理。
 - versioned 部署会在已验证候选版本内创建缺失的受管配置父目录；无发布根的 configure 步骤仍要求
   父目录已存在。符号链接逃逸和越界路径始终拒绝。
 - 绝对 `target` 保持既有含义，不因版本化部署自动重映射，除非精确命中 `<install_directory>/latest/`

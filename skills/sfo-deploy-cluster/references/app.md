@@ -63,10 +63,17 @@ updater。模板文件本身仍可放在 `templates/`。
 - config entry：`kind: file`，不声明 name，包含 App 内 source、远端绝对 target、format 必填；可选
   owner/group/mode、variables、validator、on_change。versioned App 的 target 可用
   `'${CURRENT_VERSION_DIRECTORY}/resources/application.yml'` 表示版本内路径；`${INSTALL_DIRECTORY}`
-  是安装根，`${LATEST_DIRECTORY}` 是 latest 软链。变量必须在开头，路径不含 `..`，且 App 已声明
-  install_directory。框架会在候选版本内创建缺失父目录，但不允许越界或符号链接逃逸。支持
-  yaml/json/toml/ini，源文件应能按对应格式解析；`format: nginx` 发布 UTF-8 原生 Nginx 片段， 不解析
-  Nginx DSL，也不支持 variables 或秘密占位符。模板 mode 要用字符串，如 `"0600"`。
+  是安装根，`${LATEST_DIRECTORY}` 是 latest 软链。目录变量必须在开头，路径不含 `..`，且 App 已声明
+  install_directory。框架会在候选版本内创建缺失父目录，但不允许越界或符号链接逃逸。
+- versioned App 的 target 可嵌入 `${APP_VERSION}`；它替换为 `app_versions.yaml` 中当前部署动作
+  选中的版本字符串，随后仍执行 canonical path、越界和符号链接检查。例如
+  `'${INSTALL_DIRECTORY}/${APP_VERSION}/config/application.yml'`。无包 App 不提供内置版本占位符； 若
+  `APP_VERSION` 已声明为秘密，target 不适用秘密替换，但 structured config 内容仍可按秘密引用。
+- structured managed config 的 yaml/json/toml/ini 内容可直接使用 `${APP_VERSION}`，无需为它声明
+  `variables`。若 cluster 已声明名为 `APP_VERSION` 的秘密，内容中的占位符继续按秘密引用处理。
+  `format: nginx` 不支持该占位符。它也不是远端脚本进程环境变量。
+- 支持 yaml/json/toml/ini，源文件应能按对应格式解析；`format: nginx` 发布 UTF-8 原生 Nginx 片段，
+  不解析 Nginx DSL，也不支持 variables 或秘密占位符。模板 mode 要用字符串，如 `"0600"`。
 - config entry 也可以是 `kind: script`，包含 `path` 与 `permissions`；`permissions` 除 `run/net`
   外可分别声明 `read/write` 绝对路径。配置脚本在 `configure` 生命周期执行，必须幂等。
 - `on_change: reload|restart` 要有 `management.kind: service`；纯文件配置使用 `none`。可选 validator
@@ -83,8 +90,10 @@ updater。模板文件本身仍可放在 `templates/`。
 - unit_config 的 working_directory 相对 install_directory 解析；也支持与 config target
   相同的目录变量 （`${INSTALL_DIRECTORY}`
   安装根、`${LATEST_DIRECTORY}`/`${CURRENT_VERSION_DIRECTORY}` latest 软链），
-  变量必须在开头、只出现一次并已声明 install_directory。command 相对该工作目录解析，必须包含 `/`（如
-  `bin/server`），或为绝对路径。args 是字面值列表，不是 shell 命令。
+  变量必须在开头、只出现一次并已声明 install_directory。versioned App 还可嵌入
+  `${APP_VERSION}`；它替换为当前部署版本字符串，随后执行既有目录路径校验。command
+  相对该工作目录解析，必须包含 `/`（如 `bin/server`），或为绝对路径。args 是字面值列表，不是 shell
+  命令。
 - unit_config 可选声明崩溃拉起：`restart_policy`、`restart_sec`、`start_limit_interval_sec` 和
   `start_limit_burst`。它们分别映射为 systemd 的 `Restart`、`RestartSec`、 `StartLimitIntervalSec`
   和 `StartLimitBurst`；未声明时不写入新指令。这些字段只在框架生成 unit 时生效，不修改已有外部

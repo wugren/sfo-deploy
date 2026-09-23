@@ -6,7 +6,9 @@ import * as posix from "jsr:@std/path@1.1.6/posix";
 import { ConfigurationError } from "./errors.ts";
 import deployerPkg from "../deno.json" with { type: "json" };
 import {
+  APP_VERSION_PLACEHOLDER,
   collectManagedSecretPlaceholders,
+  isValidAppVersion,
   parseManagedStructured,
   validateManagedPlainText,
 } from "./config_generation.ts";
@@ -1190,6 +1192,7 @@ async function managedSecretReferences(
   source: string,
   secrets: ReadonlyMap<string, SecretDeclaration>,
   label: string,
+  appVersion: string | undefined,
 ): Promise<ReadonlyMap<string, ManagedSecretReference>> {
   let text: string;
   try {
@@ -1204,6 +1207,12 @@ async function managedSecretReferences(
   const parsed = parseManagedStructured(format, text, configName);
   const references = new Map<string, ManagedSecretReference>();
   for (const secretName of collectManagedSecretPlaceholders(parsed, configName)) {
+    if (secretName === "APP_VERSION" && !secrets.has(secretName)) {
+      if (appVersion !== undefined) continue;
+      throw new ConfigurationError(
+        `${label}.source uses the built-in \${APP_VERSION} variable, but the App is packageless`,
+      );
+    }
     const declaration = secrets.get(secretName);
     if (declaration === undefined) {
       throw new ConfigurationError(
@@ -1224,6 +1233,7 @@ async function managedConfigFiles(
   installDirectory: string | undefined,
   label: string,
   secrets: ReadonlyMap<string, SecretDeclaration>,
+  appVersion: string | undefined,
 ): Promise<readonly ManagedConfigFile[]> {
   const result: ManagedConfigFile[] = [];
   const names = new Set<string>();
@@ -1261,8 +1271,13 @@ async function managedConfigFiles(
       throw new ConfigurationError(`${label} contains an internal duplicate name: ${configName}`);
     }
     names.add(configName);
-    const parsedTarget = managedConfigTarget(
+    const targetText = replaceAppVersion(
       item.target,
+      appVersion,
+      `${itemLabel}.target`,
+    );
+    const parsedTarget = managedConfigTarget(
+      targetText,
       installDirectory,
       `${itemLabel}.target`,
     );
@@ -1289,6 +1304,7 @@ async function managedConfigFiles(
       source,
       secrets,
       `${itemLabel}`,
+      appVersion,
     );
     result.push(Object.freeze({
       name: configName,
@@ -1318,6 +1334,7 @@ function appServiceManagement(
   _directory: string,
   installDirectory: string | undefined,
   label: string,
+  appVersion: string | undefined,
 ): Promise<AppServiceManagement> {
   fields(
     item,
@@ -1380,6 +1397,7 @@ function appServiceManagement(
       service.unit,
       installDirectory,
       `${label}.unit_config`,
+      appVersion,
     ),
   }));
 }
@@ -1408,6 +1426,7 @@ async function appManagement(
   directory: string,
   installDirectory: string | undefined,
   label: string,
+  appVersion: string | undefined,
   fileConfigs: readonly ManagedConfigFile[],
   configScripts: readonly ScriptInvocation[],
 ): Promise<AppManagementDefinition | undefined> {
@@ -1451,7 +1470,13 @@ async function appManagement(
   const managerInput: StringRecord = { ...item };
   const manager = kind === "script"
     ? await appScriptManagement(managerInput, directory, label)
-    : await appServiceManagement(managerInput, directory, installDirectory, label);
+    : await appServiceManagement(
+      managerInput,
+      directory,
+      installDirectory,
+      label,
+      appVersion,
+    );
   const systemService = manager.kind === "service" ? manager : undefined;
   if (systemService === undefined && fileConfigs.some((config) => config.onChange !== "none")) {
     throw new ConfigurationError(
@@ -1481,6 +1506,7 @@ async function appConfigs(
   installDirectory: string | undefined,
   label: string,
   secrets: ReadonlyMap<string, SecretDeclaration>,
+  appVersion: string | undefined,
 ): Promise<
   {
     readonly configs: readonly ManagedConfigFile[];
@@ -1522,6 +1548,7 @@ async function appConfigs(
     installDirectory,
     `${label}.file`,
     secrets,
+    appVersion,
   );
   return Object.freeze({
     configs,
@@ -1534,6 +1561,7 @@ function systemdUnitConfig(
   unit: string,
   installDirectory: string | undefined,
   label: string,
+  appVersion: string | undefined,
 ): SystemdUnitConfig {
   const item = mapping(value, label);
   fields(
@@ -1559,7 +1587,7 @@ function systemdUnitConfig(
     throw new ConfigurationError(`${label}.target file name must match service.unit`);
   }
   const workingDirectory = systemdWorkingDirectory(
-    item.working_directory,
+    replaceAppVersion(item.working_directory, appVersion, `${label}.working_directory`),
     installDirectory,
     `${label}.working_directory`,
   );
@@ -1595,6 +1623,21 @@ function systemdUnitConfig(
       ? undefined
       : boundedInteger(item.start_limit_burst, `${label}.start_limit_burst`, 0, 10_000),
   });
+}
+
+function replaceAppVersion(
+  value: unknown,
+  appVersion: string | undefined,
+  label: string,
+): string {
+  const text = stringValue(value, label);
+  if (!text.includes(APP_VERSION_PLACEHOLDER)) return text;
+  if (!isValidAppVersion(appVersion)) {
+    throw new ConfigurationError(
+      `${label} uses ${APP_VERSION_PLACEHOLDER}, but the App has no valid version`,
+    );
+  }
+  return text.replaceAll(APP_VERSION_PLACEHOLDER, appVersion);
 }
 
 function systemdWorkingDirectory(
@@ -2135,12 +2178,14 @@ async function loadApps(
       installDirectory,
       `${label}.configs`,
       secrets,
+      entry?.version,
     );
     const management = await appManagement(
       data.management,
       directory,
       installDirectory,
       `${label}.management`,
+      entry?.version,
       appConfig.configs,
       appConfig.configScripts,
     );

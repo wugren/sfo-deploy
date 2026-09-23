@@ -28,6 +28,12 @@ marker。普通参数变量为 `__SFO_CONFIG_VAR_V1_<NAME>__`，独占完整值�
 `variables: [{name: NAME, path: [version]}]` 等声明绑定。无包 App 没有可任意新增的
 parameters，不凭空引用参数。
 
+`${APP_VERSION}` 例外：versioned App 的 managed config `target`、service
+`unit_config.working_directory` 和 structured managed config 内容可直接使用它；框架替换为当前
+部署动作选中的版本字符串，不需要通过 `variables` 声明。structured config 内容只支持
+yaml/json/toml/ini。若 cluster 已声明名为 `APP_VERSION` 的秘密，内容中的占位符继续按秘密引用
+处理；无包 App 不提供内置版本替换，但可以像其他秘密一样引用该同名秘密。它不是远端脚本进程 环境变量。
+
 脚本需要秘密时使用框架随步骤上传的 `./sfo-secret-loader.ts` 和
 `DEPLOYMENT_SECRETS_DIR`，按目标实现的 loadSecrets
 接口读取，不导入本机仓库绝对路径或把秘密写入日志、脚本、版本记录。仅在该脚本实际需要秘密且

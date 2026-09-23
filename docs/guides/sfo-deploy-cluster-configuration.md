@@ -484,10 +484,6 @@ configs:
     owner: deploy
     group: deploy
     mode: "0600"
-    variables:
-      - name: APP_VERSION
-        path: [version]
-        type: string
     format: ini
     on_change: restart
 management:
@@ -512,9 +508,15 @@ management:
 
 ```ini
 [application]
-version = __SFO_CONFIG_VAR_V1_APP_VERSION__
+version = ${APP_VERSION}
 listen = 0.0.0.0:8080
 ```
+
+`${APP_VERSION}` 是 versioned App 的统一上下文占位符，其值来自当前部署动作选中的 `app_versions.yaml`
+版本。managed config `target`、service `unit_config.working_directory` 和 structured managed config
+内容都可用它替换。structured 内容只支持 yaml/json/toml/ini； `nginx`、无包 App 和 Environment
+配置不支持。若 cluster 已声明名为 `APP_VERSION` 的秘密， 内容中的 `${APP_VERSION}`
+继续按秘密引用处理，不作为内置版本变量。
 
 普通部署将包发布到 `<install_directory>/<version>/`，在候选版本中生成配置，再切换 `latest`。
 因此上例配置目标、unit 工作目录和启动参数指向同一版本。框架会在候选版本内创建缺失的配置父目录；
@@ -584,6 +586,9 @@ install_directory。
 旧绝对 `<install_directory>/latest/` 前缀仍会重定位；其他绝对 target 保持原位置。框架校验真实路径，
 拒绝符号链接逃逸或越界，不能靠变量绕过发布根检查。
 
+`${APP_VERSION}` 可嵌入 target 的任意路径位置；装载阶段先替换为当前版本字符串，再执行 canonical
+path、越界和 symlink 检查。例如 `${INSTALL_DIRECTORY}/${APP_VERSION}/config/application.yml`。
+
 format 支持 yaml/json/toml/ini/nginx。结构化源配置会生成无秘密骨架，由框架携带的离线渲染器在目标机
 注入当前秘密并重新解析后发布；`format: nginx` 按 UTF-8 原文发布，不解析 Nginx DSL，不支持 variables
 或秘密占位符，语法需通过实际 Nginx validator 检查。
@@ -623,10 +628,11 @@ systemctl、service，显式工具缺失即失败。省略 unit_config 时控制
 unit_config 时生成 root/root/0644 的 unit，必须 daemon_reload: true，tool 不能是 service。 unit
 target 缺省 `/etc/systemd/system/<name>`，文件名必须与 name 一致。
 
-unit 的 working_directory 相对 install_directory 解析，也支持三个目录变量；在 unit 中 current 和
-latest 都解析为静态 latest 软链路径。command 必须包含 `/`，可以是相对该工作目录的路径或绝对路径；
-args 为字面值数组，不是 shell 命令。restart_policy、restart_sec、start_limit_interval_sec 和
-start_limit_burst 只影响框架生成的 unit，分别对应 systemd 的崩溃重启和启动频率限制指令。
+unit 的 working_directory 相对 install_directory 解析，也支持三个目录变量和 `${APP_VERSION}`
+字符串占位符；在 unit 中 current 和 latest 都解析为静态 latest 软链路径。command 必须包含 `/`，
+可以是相对该工作目录的路径或绝对路径； args 为字面值数组，不是 shell
+命令。restart_policy、restart_sec、start_limit_interval_sec 和 start_limit_burst 只影响框架生成的
+unit，分别对应 systemd 的崩溃重启和启动频率限制指令。
 
 enabled 缺省 true，systemd 用 enable/disable，SysV 用 chkconfig on/off 收敛开机状态。 on_deploy 可选
 none/start/reload/restart，缺省 none；缺省 enabled 不覆盖 on_deploy/on_change。 versioned App 显式
@@ -980,8 +986,9 @@ sfo-deploy stop --config-root ./clusters --cluster production --env nginx
 ### 并发与失败边界
 
 start/stop/restart/deploy/rollback 进入控制端 release attempt。每个 App/目标键上的受管状态转换
-还使用远端 flock 租约，覆盖包、配置、脚本和服务动作；控制端以心跳续租，断连或孤儿进程会在有界 TTL
-内释放。租约丢失后后续受保护操作失败关闭，仅内部清理使用无守卫命令。框架不会自动重试有副作用动作。
+还使用远端 flock 租约，覆盖包、配置、脚本和服务动作；控制端以心跳续租。 断连或孤儿进程会在
+`有界租约 TTL` 内自动释放。
+租约丢失后后续受保护操作失败关闭，仅内部清理使用无守卫命令。框架不会自动重试有副作用动作。
 
 ## 12. 发布历史与回退边界
 

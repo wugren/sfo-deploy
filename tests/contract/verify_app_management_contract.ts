@@ -22,7 +22,7 @@ for (const term of ["systemd", "tar.gz", "秘密"]) {
   assertStringIncludes(readme.toLowerCase(), term.toLowerCase());
   assertStringIncludes(guide.toLowerCase(), term.toLowerCase());
 }
-for (const term of ["${CURRENT_VERSION_DIRECTORY}", "${LATEST_DIRECTORY}"]) {
+for (const term of ["${CURRENT_VERSION_DIRECTORY}", "${LATEST_DIRECTORY}", "${APP_VERSION}"]) {
   assertStringIncludes(readme, term);
   assertStringIncludes(guide, term);
 }

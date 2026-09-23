@@ -203,10 +203,6 @@ configs:
     owner: deploy
     group: deploy
     mode: "0600"
-    variables:
-      - name: APP_VERSION
-        path: [version]
-        type: string
     format: ini
     on_change: restart
 management:
@@ -232,15 +228,21 @@ management:
 `StartLimitBurst`。这些字段可选；未声明时不写入新指令，unit 保持 systemd 缺省行为。字段只在框架生成
 unit 时生效，不修改已有外部 unit。
 
-对应 INI 源文件必须已经包含 selector 指向的完整值；普通变量 marker 也必须独占一个值：
+versioned App 的 managed config `target`、service `unit_config.working_directory` 和 structured
+managed config 内容都可以使用内置 `${APP_VERSION}`；框架会替换为当前部署动作选中的 App 版本：
 
 ```ini
 [application]
-version = __SFO_CONFIG_VAR_V1_APP_VERSION__
+version = ${APP_VERSION}
 
 [database]
 password = replace-on-target
 ```
+
+`${APP_VERSION}` 仅提供给 versioned App；无包 App 和 Environment 配置不支持它。structured managed
+config 内容只支持 yaml/json/toml/ini，`nginx` 不支持占位符。若 cluster 已声明名为 `APP_VERSION`
+的秘密，内容中的 `${APP_VERSION}` 继续按秘密引用处理。其他普通变量仍可声明并使用
+`__SFO_CONFIG_VAR_V1_<NAME>__` marker。
 
 秘密引用直接写在配置值中：
 
@@ -531,7 +533,8 @@ project-deploy prepare --cluster production --env app-01/postgresql
 按步骤输出英文人可读的进度行（步骤、机器、资源、动作与状态/跳过原因），结束时给出 简洁汇总；`plan`
 的人可读预览更详细，为每个步骤补充步骤序号、目标机解析地址与地址类型、依赖、
 包提供方、发布方式、脚本相对路径与运行时、声明密钥的逻辑名称以及受管服务/配置信息，缺省字段
-不输出空行且永不打印密钥值或脚本绝对路径。需要机器可解析结果时追加 `--json`，输出保持稳定 JSON 契约（结构与键名与既有版本一致）。计划只包含敏感输入的逻辑名称，不包含配置密钥值或文件
+不输出空行且永不打印密钥值或脚本绝对路径。需要机器可解析结果时追加 `--json`。 输出使用
+`稳定 JSON 契约`（结构与键名与既有版本一致）。计划只包含敏感输入的逻辑名称，不包含配置密钥值或文件
 私钥内容。执行器在 stdout、 stderr、错误和 cleanup
 信息离开执行边界前使用本次操作解析出的全部秘密脱敏；无法安全建立或应用 redactor 时 stdout/stderr
 置空，只返回固定错误类别和结构化状态。
@@ -566,7 +569,9 @@ attempt 并真正连接远端执行；拒绝、EOF 或非交互终端未显式�
 当前版本），`${LATEST_DIRECTORY}` 是 `<install_directory>/latest`。因此版本内配置推荐声明
 `'${CURRENT_VERSION_DIRECTORY}/resources/application.yml'`；内置部署准备时解析到本次
 `<version>/resources/`，不写入旧 `latest` 指向的目录。`${LATEST_DIRECTORY}` 不做候选版本
-重定位。`<install_directory>/latest/resources/...` 绝对路径写法继续兼容。
+重定位。`<install_directory>/latest/resources/...` 绝对路径写法继续兼容。 target 也可嵌入
+`${APP_VERSION}`；它作为当前版本字符串替换，替换后的路径仍必须通过 canonical path、越界和 symlink
+检查。例如 `${INSTALL_DIRECTORY}/${APP_VERSION}/config/application.yml`。
 发布前框架会先校验发布根，再在候选版本内逐级创建缺失的目标父目录；目录 mode 为 `0750`，owner 为 SSH
 登录用户。中间目录必须是普通目录，真实路径越界或符号链接逃逸会在写入前拒绝。单独 `configure`
 仍使用原 target，不激活版本。 同版本部署跳过制品暂存，但仍处理配置和服务，不代表远端零修改。 执行

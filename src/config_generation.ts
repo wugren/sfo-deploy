@@ -19,8 +19,18 @@ const TEXT_ENCODER = new TextEncoder();
 const RESERVED_MARKER_PREFIX = "__SFO_";
 const SECRET_MARKER_PREFIX = "__SFO_SECRET_";
 const MAX_CONFIG_BYTES = 16 * 1024 * 1024;
+export const APP_VERSION_PLACEHOLDER = "${APP_VERSION}";
 const SECRET_PLACEHOLDER_RE = /\$\{([A-Z][A-Z0-9_]*)\}/g;
 const SECRET_PLACEHOLDER_CANDIDATE_RE = /\$\{([^{}]*)\}/g;
+
+/** version 字符串既是版本目录名，也是配置上下文值；统一 fail-closed 校验。 */
+export function isValidAppVersion(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    /^[A-Za-z0-9][A-Za-z0-9._+-]*$/.test(value) &&
+    !value.includes(RESERVED_MARKER_PREFIX)
+  );
+}
 
 export interface ConfigSkeletonSecretBinding {
   readonly secret: string;
@@ -83,8 +93,8 @@ export function validateManagedPlainText(text: string, name: string): void {
       `Config ${name} source file contains a framework-reserved placeholder`,
     );
   }
-  const invalid = SECRET_PLACEHOLDER_CANDIDATE_RE.exec(text);
-  if (invalid !== null) {
+  const invalid = [...text.matchAll(SECRET_PLACEHOLDER_CANDIDATE_RE)][0];
+  if (invalid !== undefined) {
     throw new PreflightError(
       `Config ${name} does not support the placeholder: \${${invalid?.[1] ?? ""}}`,
     );
@@ -183,11 +193,15 @@ export async function generateConfigSkeleton(
   }
 
   const parsed = parseManagedStructured(format, text, config.name);
+  if (!config.secretReferences.has("APP_VERSION")) {
+    replaceBuiltInAppVersion(parsed, config, parameters);
+  }
   replaceStructuredVariables(parsed, config, parameters);
   const bindings = secretBindings(config.name, config.secretReferences);
   const markers = new Map(bindings.map((binding) => [binding.secret, binding]));
   const wholeCounts = new Map<string, number>();
   const textCounts = new Map<string, number>();
+  rejectInvalidPlaceholders(parsed, config.name);
   replaceSecretPlaceholders(parsed, config.name, markers, wholeCounts, textCounts);
   for (const binding of bindings) {
     if (
@@ -241,6 +255,30 @@ function secretBindings(
         textMarker: `__SFO_SECRET_TEXT_V1_${suffix}__`,
       });
     });
+}
+
+function replaceBuiltInAppVersion(
+  root: unknown,
+  config: ManagedConfigFile,
+  parameters: Readonly<Record<string, unknown>>,
+): void {
+  walkMutable(root, config.name, (value, assign) => {
+    if (typeof value !== "string" || !value.includes(APP_VERSION_PLACEHOLDER)) return;
+    assign(value.replaceAll(APP_VERSION_PLACEHOLDER, requiredAppVersion(config, parameters)));
+  });
+}
+
+function requiredAppVersion(
+  config: ManagedConfigFile,
+  parameters: Readonly<Record<string, unknown>>,
+): string {
+  const value = parameters.version;
+  if (!isValidAppVersion(value)) {
+    throw new PreflightError(
+      `Config ${config.name} uses ${APP_VERSION_PLACEHOLDER}, but the App step has no valid version`,
+    );
+  }
+  return value;
 }
 
 function replaceSecretPlaceholders(

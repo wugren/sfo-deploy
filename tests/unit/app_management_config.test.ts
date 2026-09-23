@@ -438,6 +438,67 @@ management:
   });
 });
 
+Deno.test("unit/app schema 1: APP_VERSION resolves managed config targets", async () => {
+  await withTempDir(async (root) => {
+    const body = `schema_version: 1
+name: demo
+install_directory: /srv/demo
+deployment:
+  kind: versioned
+configs:
+  - kind: file
+    source: templates/application.json
+    target: ${"${INSTALL_DIRECTORY}/${APP_VERSION}/application.json"}
+    format: json
+  - kind: file
+    source: templates/version.json
+    target: /etc/demo/${"${APP_VERSION}"}/application.json
+    format: json
+`;
+    const directory = await schemaApp(root, body, [{
+      path: "templates/application.json",
+      content: "{}\n",
+    }, {
+      path: "templates/version.json",
+      content: "{}\n",
+    }]);
+    const cluster = await loadCluster(directory);
+    const configs = cluster.apps.get("demo")!.management?.configs ?? [];
+    assertEquals(configs.map((config) => [config.target, config.targetRoot]), [
+      ["/srv/demo/1.0.0/application.json", "install"],
+      ["/etc/demo/1.0.0/application.json", "absolute"],
+    ]);
+  });
+});
+
+Deno.test("unit/app schema 1: APP_VERSION target without a valid version fails closed", async () => {
+  await withTempDir(async (root) => {
+    const directory = await schemaApp(
+      root,
+      `schema_version: 1
+name: demo
+install_directory: /srv/demo
+packageless: true
+configs:
+  - kind: file
+    source: templates/application.json
+    target: /etc/demo/${"${APP_VERSION}"}/application.json
+    format: json
+`,
+      [{
+        path: "templates/application.json",
+        content: "{}\n",
+      }],
+    );
+    await Deno.writeTextFile(
+      join(directory, "app_versions.yaml"),
+      "schema_version: 1\napps: {}\n",
+    );
+    const error = await assertRejects(() => loadCluster(directory), ConfigurationError);
+    assertStringIncludes(error.message, "has no valid version");
+  });
+});
+
 Deno.test("unit/app schema 1: install directory variable requires install_directory", async () => {
   await withTempDir(async (root) => {
     const body = `schema_version: 1
@@ -567,6 +628,43 @@ Deno.test("unit/app schema 1: unit_config resolves directory variables in workin
     [`working_directory: ${"${INSTALL_DIRECTORY}"}`, "/srv/demo"],
     [`working_directory: ${"${LATEST_DIRECTORY}/resources"}`, "/srv/demo/latest/resources"],
     [`working_directory: ${"${INSTALL_DIRECTORY}/lib"}`, "/srv/demo/lib"],
+  ];
+  for (const [workingDirectory, expected] of cases) {
+    await withTempDir(async (root) => {
+      const body = `schema_version: 1
+name: demo
+install_directory: /srv/demo
+deployment:
+  kind: versioned
+management:
+  kind: service
+  name: demo.service
+  tool: systemctl
+  daemon_reload: true
+  unit_config:
+    ${workingDirectory}
+    command: bin/server
+    args: []
+`;
+      const directory = await schemaApp(root, body);
+      const cluster = await loadCluster(directory);
+      const manager = cluster.apps.get("demo")!.management?.manager;
+      assertEquals(
+        manager?.kind === "service" ? manager.unitConfig?.workingDirectory : "",
+        expected,
+      );
+    });
+  }
+});
+
+Deno.test("unit/app schema 1: unit_config resolves APP_VERSION in working_directory", async () => {
+  const cases: readonly [string, string][] = [
+    [`working_directory: ${"${APP_VERSION}"}`, "/srv/demo/1.0.0"],
+    [
+      `working_directory: ${"${CURRENT_VERSION_DIRECTORY}/${APP_VERSION}"}`,
+      "/srv/demo/latest/1.0.0",
+    ],
+    [`working_directory: /srv/demo/${"${APP_VERSION}"}`, "/srv/demo/1.0.0"],
   ];
   for (const [workingDirectory, expected] of cases) {
     await withTempDir(async (root) => {
@@ -1049,6 +1147,53 @@ configs:
     assertEquals(plan.steps.map((step) => step.action), ["configure"]);
     assertEquals(plan.steps[0].management?.configs.length, 1);
     assertEquals(plan.steps[0].management?.manager, undefined);
+  });
+});
+
+Deno.test("unit/app schema 1: APP_VERSION is built in for versioned file configs", async () => {
+  await withTempDir(async (root) => {
+    const body = `schema_version: 1
+name: demo
+install_directory: /srv/demo
+deployment:
+  kind: versioned
+configs:
+  - kind: file
+    source: templates/application.json
+    target: /etc/demo/application.json
+    format: json
+`;
+    const directory = await schemaApp(root, body, [{
+      path: "templates/application.json",
+      content: `{"version":"${"$"}{APP_VERSION}"}\n`,
+    }]);
+    const cluster = await loadCluster(directory);
+    const config = cluster.apps.get("demo")!.management?.configs[0];
+    assertEquals(config?.secretReferences.has("APP_VERSION"), false);
+  });
+});
+
+Deno.test("unit/app schema 1: packageless APP_VERSION without a secret fails closed", async () => {
+  await withTempDir(async (root) => {
+    const body = `schema_version: 1
+name: demo
+packageless: true
+configs:
+  - kind: file
+    source: templates/application.json
+    target: /etc/demo/application.json
+    format: json
+`;
+    const directory = await schemaApp(root, body, [{
+      path: "templates/application.json",
+      content: `{"version":"${"$"}{APP_VERSION}"}\n`,
+    }]);
+    await Deno.writeTextFile(
+      join(directory, "app_versions.yaml"),
+      "schema_version: 1\napps: {}\n",
+    );
+    const error = await assertRejects(() => loadCluster(directory), ConfigurationError);
+    assertStringIncludes(error.message, "App is packageless");
   });
 });
 
