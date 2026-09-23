@@ -38,3 +38,4 @@ __pycache__/
 .state/multipass-verify.60zRqS/multipass/environments/redis/scripts/stop.ts
 .state/multipass-verify.60zRqS/multipass/secrets/id_ed25519
 .state/multipass-verify.60zRqS/multipass/secrets/id_ed25519.pub
+examples/
