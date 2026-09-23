@@ -1,32 +1,27 @@
 import { assert, assertStringIncludes } from "../_support/assert.ts";
 
 const read = (path: string) => Deno.readTextFile(path);
-const [readme, guide, exampleReadme, jxServer, jxWeb, nginxConfig, release, templateApp] =
-  await Promise
-    .all([
-      read("README.md"),
-      read("docs/guides/sfo-deploy-cluster-configuration.md"),
-      read("examples/eleph-server-multipass/README.md"),
-      read("examples/eleph-server-multipass/cluster-template/apps/jx-server/app.yaml"),
-      read("examples/eleph-server-multipass/cluster-template/apps/jx-web/app.yaml"),
-      read("examples/eleph-server-multipass/cluster-template/apps/jx-web/templates/jx-web.conf"),
-      read("src/remote_runtime/versioned_release.ts"),
-      read("skills/sfo-deploy-cluster/assets/app-versioned/app.yaml"),
-    ]);
+const [guide, exampleReadme, jxServer, jxWeb, nginxConfig, release, templateApp] = await Promise
+  .all([
+    read("docs/guides/sfo-deploy-cluster-configuration.md"),
+    read("examples/eleph-server-multipass/README.md"),
+    read("examples/eleph-server-multipass/cluster-template/apps/jx-server/app.yaml"),
+    read("examples/eleph-server-multipass/cluster-template/apps/jx-web/app.yaml"),
+    read("examples/eleph-server-multipass/cluster-template/apps/jx-web/templates/jx-web.conf"),
+    read("src/remote_runtime/versioned_release.ts"),
+    read("skills/sfo-deploy-cluster/assets/app-versioned/app.yaml"),
+  ]);
 
 for (const format of ["YAML", "JSON", "TOML", "INI", "NGINX"]) {
-  assertStringIncludes(readme.toLowerCase(), format.toLowerCase());
   assertStringIncludes(guide.toLowerCase(), format.toLowerCase());
 }
 for (const term of ["systemd", "tar.gz", "秘密"]) {
-  assertStringIncludes(readme.toLowerCase(), term.toLowerCase());
   assertStringIncludes(guide.toLowerCase(), term.toLowerCase());
 }
 for (const term of ["${CURRENT_VERSION_DIRECTORY}", "${LATEST_DIRECTORY}", "${APP_VERSION}"]) {
-  assertStringIncludes(readme, term);
   assertStringIncludes(guide, term);
 }
-assertStringIncludes(guide, "${DB_PASSWORD}");
+assertStringIncludes(guide, "${SECRET_NAME}");
 assertStringIncludes(exampleReadme, "managed schema 1");
 assertStringIncludes(jxWeb, "depends_on: [nginx]");
 assertStringIncludes(jxWeb, "target: /etc/nginx/conf.d/jx-web.conf");

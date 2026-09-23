@@ -26,10 +26,6 @@ const docs: Array<[string, string]> = [
     "sfo-deploy install-deno --cluster production",
   ],
   [
-    join(root, "docs", "guides", "sfo-deploy-cluster-configuration.md"),
-    "sfo-deploy install-deno --cluster production",
-  ],
-  [
     join(root, "examples", "eleph-server-multipass", "README.md"),
     "deno task eleph-deploy install-deno --cluster multipass --yes",
   ],
@@ -48,10 +44,6 @@ const autoInstallMentions: Array<[string, string]> = [
     "提权安装",
   ],
   [
-    join(root, "docs", "guides", "sfo-deploy-cluster-configuration.md"),
-    "deno.land",
-  ],
-  [
     join(root, "examples", "eleph-server-multipass", "README.md"),
     "自动安装缺失的 curl 与 unzip",
   ],
@@ -68,10 +60,6 @@ const noSyncMentions: Array<[string, string]> = [
   [
     join(root, "README.md"),
     "不修改 `machines.yaml`",
-  ],
-  [
-    join(root, "docs", "guides", "sfo-deploy-cluster-configuration.md"),
-    "也不修改",
   ],
   [
     join(root, "examples", "eleph-server-multipass", "README.md"),

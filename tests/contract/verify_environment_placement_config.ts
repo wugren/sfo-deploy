@@ -99,6 +99,7 @@ async function documentationExamples(): Promise<void> {
       JSON.stringify({
         jre: ["eleph-server"],
         mysql: ["eleph-server"],
+        nginx: ["eleph-server"],
         redis: ["eleph-server"],
       }),
     "multipass template must declare the complete environment placement mapping",
@@ -141,49 +142,47 @@ async function documentationExamples(): Promise<void> {
     "Set-HostsEntry -Address $address",
   ]);
 
-  const documents = [
-    "README.md",
-    "docs/guides/sfo-deploy-cluster-configuration.md",
-    "examples/eleph-server-multipass/README.md",
-  ];
-  for (const document of documents) {
-    const text = await Deno.readTextFile(join(root, document));
-    check(
-      text.includes("schema_version: 2") || text.includes("schema v2"),
-      `${document}: v2 missing`,
-    );
-    check(text.includes("cluster.yaml.environments"), `${document}: placement mapping missing`);
-    check(
-      text.includes("environments/<") && text.includes("/environment.yaml"),
-      `${document}: shared definition path missing`,
-    );
-    check(
-      text.includes("逐机器") || text.includes("overrides"),
-      `${document}: override boundary missing`,
-    );
-    check(
-      text.includes("schema v1") || text.includes("schema_version: 1") ||
-        text.includes("cluster v1"),
-      `${document}: v1 removal guidance missing`,
-    );
-    check(
-      text.includes("已移除") || text.includes("不再支持") ||
-        text.includes("不再接受") || text.includes("不再被当前框架读取"),
-      `${document}: v1 removal statement missing`,
-    );
-    check(
-      !text.includes("仍只读兼容") && !text.includes("仍可由当前框架读取"),
-      `${document}: v1 read compatibility must not be claimed`,
-    );
-    check(
-      text.includes("不会自动") || text.includes("不自动"),
-      `${document}: manual migration boundary missing`,
-    );
-    check(
-      text.includes("无法回退") || text.includes("不能只把版本号") || text.includes("不支持降级"),
-      `${document}: no-downgrade boundary missing`,
-    );
-  }
+  const text = await Deno.readTextFile(
+    join(root, "docs", "guides", "sfo-deploy-cluster-configuration.md"),
+  );
+  check(
+    text.includes("schema_version: 2") || text.includes("schema v2"),
+    "configuration guide: v2 missing",
+  );
+  check(
+    text.includes("cluster.yaml.environments"),
+    "configuration guide: placement mapping missing",
+  );
+  check(
+    text.includes("environments/<") && text.includes("/environment.yaml"),
+    "configuration guide: shared definition path missing",
+  );
+  check(
+    text.includes("逐机器") || text.includes("overrides"),
+    "configuration guide: override boundary missing",
+  );
+  check(
+    text.includes("schema v1") || text.includes("schema_version: 1") ||
+      text.includes("cluster v1"),
+    "configuration guide: v1 removal guidance missing",
+  );
+  check(
+    text.includes("已移除") || text.includes("不再支持") ||
+      text.includes("不再接受") || text.includes("不再被当前框架读取"),
+    "configuration guide: v1 removal statement missing",
+  );
+  check(
+    !text.includes("仍只读兼容") && !text.includes("仍可由当前框架读取"),
+    "configuration guide: v1 read compatibility must not be claimed",
+  );
+  check(
+    text.includes("不会自动") || text.includes("不自动"),
+    "configuration guide: manual migration boundary missing",
+  );
+  check(
+    text.includes("无法回退") || text.includes("不能只把版本号") || text.includes("不支持降级"),
+    "configuration guide: no-downgrade boundary missing",
+  );
 }
 
 async function v1Rejection(): Promise<void> {

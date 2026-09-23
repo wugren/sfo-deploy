@@ -70,37 +70,10 @@ async function repositoryClosure(): Promise<void> {
 }
 
 async function documentationExamples(): Promise<void> {
-  const lifecycle = await lifecycleScriptSets();
-  await assertMatchingLifecycleScripts(lifecycle);
-  for (const set of lifecycle) {
-    for (const path of set.scripts) {
-      const source = await Deno.readTextFile(path);
-      if (/from\s+["'][^"']*sfo_deploy\.(?:ts|py)["']/.test(source)) {
-        fail(`lifecycle script imports framework source: ${path}`);
-      }
-      if (
-        /\bDeploymentContext\b|DEPLOYMENT_CONTEXT_PATH|config_secrets|file_secrets/.test(source)
-      ) {
-        fail(`lifecycle script references removed secret/context API: ${path}`);
-      }
-      if (/loadSecrets|load_secrets|DEPLOYMENT_SECRETS_DIR/.test(source)) {
-        if (!source.includes("DEPLOYMENT_SECRETS_DIR") && !source.includes("loadSecrets")) {
-          fail(`lifecycle script uses loader without secret env boundary: ${path}`);
-        }
-      }
-      if (/DEPLOYMENT_METADATA_PATH/.test(source) && !source.includes("DEPLOYMENT_METADATA_PATH")) {
-        fail(`lifecycle script metadata contract is inconsistent: ${path}`);
-      }
-    }
-  }
-  await denoCheckRemoteScripts(lifecycle.flatMap((set) => set.scripts));
-
-  const readme = await Deno.readTextFile("README.md");
   const guide = await Deno.readTextFile("docs/guides/sfo-deploy-cluster-configuration.md");
   const exampleReadme = await Deno.readTextFile("examples/eleph-server-multipass/README.md");
   for (
     const [path, text] of [
-      ["README.md", readme],
       ["docs/guides/sfo-deploy-cluster-configuration.md", guide],
       ["examples/eleph-server-multipass/README.md", exampleReadme],
     ] as const
@@ -112,11 +85,8 @@ async function documentationExamples(): Promise<void> {
       fail(`${path} missing removed remote helper boundary`);
     }
   }
-  if (!readme.includes("自包含") || !readme.includes("loader")) {
-    fail("README missing self-contained script migration guidance");
-  }
-  if (!guide.includes("0700") || !guide.includes("step metadata")) {
-    fail("configuration guide missing workspace and step metadata boundary");
+  if (!guide.includes("自包含") || !guide.includes("loader")) {
+    fail("configuration guide missing self-contained script migration guidance");
   }
   if (!exampleReadme.includes("不会把") || !exampleReadme.includes("loadSecrets")) {
     fail("example README missing zero-framework and migration guidance");

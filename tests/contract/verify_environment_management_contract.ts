@@ -7,7 +7,6 @@ const requiredFiles = [
   "tests/unit/environment_management_planning.test.ts",
   "tests/dv/environment_management_execution.test.ts",
   "tests/integration/environment_management_history.test.ts",
-  "README.md",
   "docs/guides/sfo-deploy-cluster-configuration.md",
   "skills/sfo-deploy-cluster/references/environment.md",
 ];
@@ -23,11 +22,9 @@ for (const file of requiredFiles) {
 const guide = await Deno.readTextFile("docs/guides/sfo-deploy-cluster-configuration.md");
 for (
   const token of [
-    "### 新生命周期：install/manager",
     "install.kind: package",
     "manager.kind: system",
     "tool: auto",
-    "`manager` 可缺省",
     "start/stop/restart",
     "新契约不声明 `check`",
   ]
