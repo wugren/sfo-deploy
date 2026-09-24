@@ -9,14 +9,14 @@
 或已配置凭据的 `filehub` 客户端。在本仓库根目录执行：
 
 ```bash
-deno install --global --force --name sfo-deploy --allow-read --allow-write --allow-env --allow-net --allow-run=ssh,scp,filehub ./src/cli.ts
+deno install --global --force --name sfo-deploy --allow-read --allow-write --allow-env --allow-net --allow-run=ssh,scp,filehub,ps ./src/cli.ts
 sfo-deploy --help
 ```
 
 正式环境应固定到已审核的 tag，不要从变化中的分支安装：
 
 ```bash
-deno install --global --force --name sfo-deploy --allow-read --allow-write --allow-env --allow-net --allow-run=ssh,scp,filehub https://gitlab.mynode.site:8443/wugren/sfo-deploy/-/raw/v0.1.0/src/cli.ts
+deno install --global --force --name sfo-deploy --allow-read --allow-write --allow-env --allow-net --allow-run=ssh,scp,filehub,ps https://gitlab.mynode.site:8443/wugren/sfo-deploy/-/raw/v0.1.0/src/cli.ts
 ```
 
 升级时替换 URL 中的版本并重新执行带 `--force` 的命令；卸载使用

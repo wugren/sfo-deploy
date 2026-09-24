@@ -345,6 +345,41 @@ Deno.test("unit/transport: executeDeno merges workspace and configured file path
   });
 });
 
+Deno.test("unit/transport: successful remote commands are quiet and failures stay logged", async () => {
+  await withTempDir(async (root) => {
+    const knownHosts = join(root, "known_hosts");
+    await Deno.writeTextFile(knownHosts, "example ssh-ed25519 AAAA\n");
+    const events: string[] = [];
+    const factory = (_command: string, args: readonly string[]): SpawnedCommand => {
+      const rendered = String(args.at(-1) ?? "");
+      if (rendered === "exec 'true'") {
+        return { output: () => Promise.resolve(output()), kill: () => undefined };
+      }
+      throw new Error("remote process failed");
+    };
+    const transport = new OpenSshTransport({
+      knownHosts,
+      commandFactory: factory,
+      onInfo: (message) => {
+        events.push(message);
+      },
+    });
+    const session = await transport.connect(resolved("node-a"));
+    const result = await session.run(["true"]);
+    assertEquals(result.exitCode, 0);
+    assert(!events.includes("remote command started"));
+    assert(!events.includes("remote command completed"));
+
+    await assertRejects(
+      () => session.run(["false"]),
+      TransportError,
+      "Failed to start the remote command process",
+    );
+    assert(events.includes("remote command failed"));
+    await session.close();
+  });
+});
+
 Deno.test("unit/cli: help, argument errors, stable JSON and exit codes", async () => {
   const stdout = new BufferWriter();
   const stderr = new BufferWriter();

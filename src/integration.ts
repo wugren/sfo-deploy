@@ -29,6 +29,7 @@ import {
   ReleaseStore,
 } from "./history.ts";
 import { PackageCache } from "./package_cache.ts";
+import { type InfoLogger, type SafeInfoLogger, safeInfoLogger } from "./logging.ts";
 import { DEFAULT_KEEP_VERSIONS, MAX_KEEP_VERSIONS } from "./user_config.ts";
 import { buildPlan, resolveMachine } from "./planning.ts";
 import {
@@ -41,6 +42,7 @@ import {
   SecretsDeployResult,
   type SecretsMachineOutcome,
   type StepResult,
+  StepStatus,
 } from "./results.ts";
 import {
   DEFAULT_DENO_INSTALL_ROOT,
@@ -383,6 +385,8 @@ export interface RunDependencies {
   readonly signal?: AbortSignal;
   /** 可选进度事件监听；缺省时不产生任何进度输出。 */
   readonly onProgress?: ProgressListener;
+  /** 可选 info 过程日志；缺省时不产生任何输出。 */
+  readonly onInfo?: InfoLogger;
 }
 
 function stepListener(
@@ -398,33 +402,62 @@ export async function run(
   dependencies: RunDependencies = {},
 ): Promise<RunResult> {
   const request = options instanceof RunOptions ? options : new RunOptions(options);
+  const info = safeInfoLogger(dependencies.onInfo);
+  await info("command started", {
+    action: request.action,
+    cluster: request.cluster,
+    machines: request.machines.length,
+    apps: request.apps.length,
+    environments: request.environments.length,
+    activate: request.activate,
+  });
+  await info("checking config directories", {
+    action: request.action,
+    configRoot: request.configRoot,
+    clusterDirectory: request.clusterDirectory,
+  });
   await requireDirectory(request.configRoot, "config root");
   await requireDirectory(request.clusterDirectory, "No cluster exists under the config root");
   throwIfAborted(dependencies.signal);
+  await info("config directories verified", { action: request.action });
 
   const discoveredKnownHosts = dependencies.knownHosts ??
     await discoverClusterKnownHosts(request.clusterDirectory);
   const bindings = dependencies.bindings ?? new ProjectBindings();
   const providers = providerRegistry(dependencies.downloadProviders);
   const transport = dependencies.transport ??
-    new OpenSshTransport({ knownHosts: discoveredKnownHosts });
-  const cache = dependencies.packagesDir === undefined
-    ? undefined
-    : new PackageCache({ packagesDir: dependencies.packagesDir, registry: providers });
+    new OpenSshTransport({ knownHosts: discoveredKnownHosts, onInfo: dependencies.onInfo });
+  const cache = dependencies.packagesDir === undefined ? undefined : new PackageCache({
+    packagesDir: dependencies.packagesDir,
+    registry: providers,
+    onInfo: dependencies.onInfo,
+  });
   const keepVersions = dependencies.keepVersions ?? DEFAULT_KEEP_VERSIONS;
   if (!Number.isInteger(keepVersions) || keepVersions < 1 || keepVersions > MAX_KEEP_VERSIONS) {
     throw new ConfigurationError(
       `keep_versions must be an integer between 1 and ${MAX_KEEP_VERSIONS}`,
     );
   }
+  await info("execution dependencies initialized", {
+    action: request.action,
+    knownHosts: discoveredKnownHosts === undefined,
+    packageCache: cache !== undefined,
+    keepVersions,
+  });
 
   if (HISTORY_ACTIONS.has(request.action)) {
     const store = releaseStore(request, providers);
     if (request.action === "history") {
+      await info("release history started", {
+        cluster: request.cluster,
+        releaseId: request.releaseId,
+      });
       const releases = request.releaseId === undefined
         ? await store.list()
         : [await store.get(request.releaseId)];
-      return new ReleaseHistoryResult(store.cluster, releases);
+      const result = new ReleaseHistoryResult(store.cluster, releases);
+      await info("release history completed", { releases: releases.length });
+      return result;
     }
     return await runRollback(
       request,
@@ -436,11 +469,12 @@ export async function run(
       keepVersions,
       dependencies.onProgress,
       dependencies.signal,
+      info,
     );
   }
 
   if (request.action === "fetch") {
-    return await runFetch(request, cache, dependencies.onProgress, dependencies.signal);
+    return await runFetch(request, cache, dependencies.onProgress, dependencies.signal, info);
   }
 
   if (request.action === "deploy") {
@@ -454,6 +488,7 @@ export async function run(
       dependencies.confirmPlan,
       dependencies.onProgress,
       dependencies.signal,
+      info,
     );
   }
 
@@ -464,6 +499,7 @@ export async function run(
       dependencies.confirmMachines,
       dependencies.onProgress,
       dependencies.signal,
+      info,
     );
   }
 
@@ -473,16 +509,39 @@ export async function run(
       transport,
       dependencies.confirmMachines,
       dependencies.signal,
+      info,
     );
   }
 
   const cluster = await loadCluster(request.clusterDirectory);
   assertDeployerVersion(cluster);
-  if (request.action === "validate") return validationResult(cluster);
+  await info("cluster configuration loaded", {
+    action: request.action,
+    machines: cluster.machines.size,
+    apps: cluster.apps.size,
+    environments: cluster.environments.size,
+  });
+  if (request.action === "validate") {
+    const result = validationResult(cluster);
+    await info("configuration validation completed", { cluster: result.cluster });
+    return result;
+  }
 
   const requestedAction = request.action === "plan" ? "deploy" : request.action;
   const plan = buildRequestedPlan(cluster, request, requestedAction);
-  if (request.action === "plan") return plan;
+  await info("execution plan built", {
+    action: plan.requestedAction,
+    steps: plan.steps.length,
+    machines: new Set(plan.steps.map((step) => step.machine.machine.name)).size,
+  });
+  if (request.action === "plan") {
+    await info("plan completed", {
+      action: plan.requestedAction,
+      steps: plan.steps.length,
+      machines: new Set(plan.steps.map((step) => step.machine.machine.name)).size,
+    });
+    return plan;
+  }
 
   if (
     request.action === "prepare" &&
@@ -493,6 +552,7 @@ export async function run(
       downloadProviders: providers,
       packageCache: cache,
       signal: dependencies.signal,
+      onInfo: info,
     });
     let primary: unknown;
     try {
@@ -501,12 +561,18 @@ export async function run(
           "Cancelled: default full environment preparation was not confirmed",
         );
       }
-      return await executePrepared(
+      const result = await executePrepared(
         prepared,
         transport,
         dependencies.signal,
         stepListener(dependencies.onProgress),
+        info,
       );
+      await info("environment preparation completed", {
+        steps: result.steps.length,
+        failed: result.steps.filter((step) => step.status === StepStatus.FAILED).length,
+      });
+      return result;
     } catch (cause) {
       primary = cause;
       throw cause;
@@ -526,6 +592,7 @@ export async function run(
       keepVersions,
       dependencies.onProgress,
       dependencies.signal,
+      info,
     );
   }
 
@@ -538,6 +605,7 @@ export async function run(
     keepVersions,
     onStep: stepListener(dependencies.onProgress),
     signal: dependencies.signal,
+    onInfo: info,
   });
 }
 
@@ -551,6 +619,7 @@ async function runLifecycleAttempt(
   keepVersions: number,
   onProgress?: ProgressListener,
   signal?: AbortSignal,
+  info: SafeInfoLogger = safeInfoLogger(),
 ): Promise<DeploymentResult> {
   const operation = options.action as string;
   if (!(RECORDED_LIFECYCLE_ACTIONS as ReadonlySet<string>).has(operation)) {
@@ -560,8 +629,18 @@ async function runLifecycleAttempt(
     operation: operation as ReleaseOperation,
     selection: releaseSelection(options),
   });
+  await info("lifecycle release attempt created", {
+    operation,
+    cluster: options.cluster,
+    releaseId: pending.releaseId,
+  });
   try {
     const archived = await pending.archiveAttemptPlan(plan);
+    await info("lifecycle plan archived", {
+      operation,
+      releaseId: pending.releaseId,
+      steps: archived.steps.length,
+    });
     const result = await executePlan(archived, {
       bindings,
       downloadProviders: providers,
@@ -570,8 +649,14 @@ async function runLifecycleAttempt(
       keepVersions,
       onStep: stepListener(onProgress),
       signal,
+      onInfo: info,
     });
     const record = await finishAttemptResult(pending, result);
+    await info("lifecycle release completed", {
+      operation,
+      releaseId: record.releaseId,
+      steps: result.steps.length,
+    });
     return withRelease(result, record.releaseId);
   } catch (cause) {
     await finishAttemptError(pending, cause);
@@ -587,6 +672,7 @@ async function runSecretsDeploy(
   transport: Transport,
   confirmMachines?: (machines: readonly string[]) => boolean | Promise<boolean>,
   signal?: AbortSignal,
+  info: SafeInfoLogger = safeInfoLogger(),
 ): Promise<SecretsDeployResult> {
   const cluster = await loadCluster(options.clusterDirectory);
   const declaredMachines = new Set<string>();
@@ -603,6 +689,12 @@ async function runSecretsDeploy(
     throw new PlanningError("Cluster declares no machines for secret placement");
   }
   const operation = options.check ? "check" : options.removeNames.length > 0 ? "remove" : "deploy";
+  await info("secret deployment prepared", {
+    operation,
+    cluster: options.cluster,
+    targets: targets.length,
+    secrets: operation === "remove" ? options.removeNames.length : undefined,
+  });
   const deploymentBindings = operation === "deploy"
     ? await loadClusterSecretSource(cluster, options.clusterDirectory)
     : undefined;
@@ -626,7 +718,9 @@ async function runSecretsDeploy(
           executorRegion: options.executorRegion,
           addressKind: options.addressKind,
         });
+        await info("secret machine connect started", { machine: machineName, operation });
         session = await transport.connect(resolved, signal);
+        await info("secret machine connected", { machine: machineName, operation });
         if (operation === "check") {
           const state = await session.checkSecrets(secretsDir, signal);
           const issues = buildSecretCheckIssues(cluster, machineName, state);
@@ -638,11 +732,16 @@ async function runSecretsDeploy(
             errorCategory: issues.length > 0 ? "preflight" : undefined,
             cleanupErrors: Object.freeze([]),
           }));
+          await info("secret machine checked", {
+            machine: machineName,
+            issues: issues.length,
+          });
           continue;
         }
         if (operation === "remove") {
           for (const name of options.removeNames) {
             await session.removeSecret(name, secretsDir, signal);
+            await info("secret removed", { machine: machineName, secret: name });
           }
           outcomes.push(Object.freeze({
             machine: machineName,
@@ -662,6 +761,10 @@ async function runSecretsDeploy(
           directory,
           { prefix: `machine-${index}` },
         );
+        await info("secret deployment files prepared", {
+          machine: machineName,
+          files: files.length,
+        });
         const results = await session.deploySecrets(files, secretsDir, signal);
         outcomes.push(Object.freeze({
           machine: machineName,
@@ -678,8 +781,18 @@ async function runSecretsDeploy(
           ),
           cleanupErrors: Object.freeze([]),
         }));
+        await info("secret machine deployed", {
+          machine: machineName,
+          written: results.filter((result) => result.status === "written").length,
+          unchanged: results.filter((result) => result.status === "unchanged").length,
+        });
       } catch (cause) {
         const message = cause instanceof Error ? cause.message : String(cause);
+        await info("secret machine failed", {
+          machine: machineName,
+          operation,
+          errorCategory: errorCategory(cause),
+        });
         outcomes.push(Object.freeze({
           machine: machineName,
           status: "failed",
@@ -690,9 +803,16 @@ async function runSecretsDeploy(
         }));
       } finally {
         if (session !== undefined) {
+          await info("secret session close started", { machine: machineName, operation });
           try {
             await session.close();
+            await info("secret session closed", { machine: machineName, operation });
           } catch (closeCause) {
+            await info("secret session close failed", {
+              machine: machineName,
+              operation,
+              errorCategory: errorCategory(closeCause),
+            });
             const previous = outcomes.pop();
             if (previous !== undefined) {
               const message = closeCause instanceof Error ? closeCause.message : String(closeCause);
@@ -709,7 +829,13 @@ async function runSecretsDeploy(
   } finally {
     await Deno.remove(directory, { recursive: true }).catch(() => undefined);
   }
-  return new SecretsDeployResult({ cluster: cluster.name, operation, machines: outcomes });
+  const result = new SecretsDeployResult({ cluster: cluster.name, operation, machines: outcomes });
+  await info("secret deployment completed", {
+    operation,
+    machines: outcomes.length,
+    failed: outcomes.filter((outcome) => outcome.status === "failed").length,
+  });
+  return result;
 }
 
 function buildSecretCheckIssues(
@@ -771,13 +897,20 @@ async function runDeploy(
   confirmPlan?: (plan: ExecutionPlan) => boolean | Promise<boolean>,
   onProgress?: ProgressListener,
   signal?: AbortSignal,
+  info: SafeInfoLogger = safeInfoLogger(),
 ): Promise<DeploymentResult> {
   const cluster = await loadCluster(options.clusterDirectory);
   assertDeployerVersion(cluster);
   const plan = buildRequestedPlan(cluster, options, "deploy");
+  await info("deployment plan built", {
+    cluster: plan.cluster,
+    steps: plan.steps.length,
+    machines: new Set(plan.steps.map((step) => step.machine.machine.name)).size,
+  });
   if (confirmPlan !== undefined && !(await confirmPlan(plan))) {
     throw new CancelledError("Cancelled: deployment was not confirmed");
   }
+  await info("deployment plan confirmed", { cluster: plan.cluster, steps: plan.steps.length });
   if (cache) {
     for (const step of plan.steps) {
       if (!needsPackage(step)) continue;
@@ -787,6 +920,10 @@ async function runDeploy(
         version: packageVersion(step.parameters),
         cluster: plan.cluster,
       }, signal);
+      await info("deployment package cache verified", {
+        kind: step.kind,
+        resource: step.resource,
+      });
     }
   }
   const store = releaseStore(options, providers);
@@ -794,8 +931,13 @@ async function runDeploy(
     operation: "deploy",
     selection: releaseSelection(options),
   });
+  await info("deployment release attempt created", { releaseId: pending.releaseId });
   try {
     const archived = await pending.archivePlans(plan, deriveRollbackPlan(plan));
+    await info("deployment and rollback plans archived", {
+      releaseId: pending.releaseId,
+      steps: archived.steps.length,
+    });
     const result = await executePlan(archived, {
       bindings,
       downloadProviders: providers,
@@ -804,11 +946,20 @@ async function runDeploy(
       keepVersions,
       onStep: stepListener(onProgress),
       signal,
+      onInfo: info,
     });
     const record = await finishAttemptResult(pending, result);
+    await info("deployment release completed", {
+      releaseId: record.releaseId,
+      steps: result.steps.length,
+    });
     return withRelease(result, record.releaseId);
   } catch (cause) {
     await finishAttemptError(pending, cause);
+    await info("deployment release failed", {
+      releaseId: pending.releaseId,
+      errorCategory: errorCategory(cause),
+    });
     throw cause;
   }
 }
@@ -818,6 +969,7 @@ async function runFetch(
   cache: PackageCache | undefined,
   onProgress?: ProgressListener,
   signal?: AbortSignal,
+  info: SafeInfoLogger = safeInfoLogger(),
 ): Promise<FetchResult> {
   throwIfAborted(signal);
   if (!cache) {
@@ -832,12 +984,17 @@ async function runFetch(
     : [...cluster.apps.keys()].sort();
   const packages: FetchPackageResult[] = [];
   const appsWithoutPackage: string[] = [];
+  await info("package fetch started", {
+    cluster: cluster.name,
+    apps: appNames.length,
+  });
   for (const [index, appName] of appNames.entries()) {
     throwIfAborted(signal);
     const app = cluster.apps.get(appName);
     if (!app) throw new PlanningError(`Unknown App: ${appName}`);
     if (!app.package) {
       appsWithoutPackage.push(appName);
+      await info("package fetch skipped", { app: appName, reason: "no-package" });
       continue;
     }
     const version = app.version;
@@ -849,6 +1006,13 @@ async function runFetch(
       cluster: cluster.name,
     }, signal);
     await assertGzipTar(fetched.path, `installer package for App ${app.name}`);
+    await info("package fetch completed", {
+      app: app.name,
+      version,
+      provider: app.package.provider,
+      status: fetched.status,
+      size: fetched.size,
+    });
     packages.push(Object.freeze({
       app: app.name,
       version,
@@ -882,6 +1046,7 @@ async function runInstallDeno(
   confirmMachines?: (machines: readonly string[]) => boolean | Promise<boolean>,
   onProgress?: ProgressListener,
   signal?: AbortSignal,
+  info: SafeInfoLogger = safeInfoLogger(),
 ): Promise<InstallDenoResult> {
   if (options.denoVersion !== undefined) {
     normalizeDenoVersion(options.denoVersion);
@@ -892,6 +1057,11 @@ async function runInstallDeno(
     ? Object.freeze([...options.machines])
     : Object.freeze([...cluster.machines.keys()].sort());
   if (names.length === 0) throw new PlanningError("Cluster has no usable machines");
+  await info("Deno installation started", {
+    cluster: options.cluster,
+    machines: names.length,
+    version: options.denoVersion,
+  });
   if (options.machines.length === 0 && confirmMachines) {
     if (!(await confirmMachines(names))) {
       throw new CancelledError("Cancelled: default full Deno install was not confirmed");
@@ -909,7 +1079,9 @@ async function runInstallDeno(
         executorRegion: options.executorRegion,
         addressKind: options.addressKind,
       });
+      await info("Deno machine connect started", { machine: name });
       session = await transport.connect(resolved, signal);
+      await info("Deno machine connected", { machine: name });
       outcomes.push(
         await installDenoOnMachine(session, name, {
           version: options.denoVersion,
@@ -917,6 +1089,12 @@ async function runInstallDeno(
           signal,
         }),
       );
+      await info("Deno machine completed", {
+        machine: name,
+        status: outcomes.at(-1)?.status,
+        denoPath: outcomes.at(-1)?.denoPath,
+        version: outcomes.at(-1)?.version,
+      });
     } catch (cause) {
       if (
         cause instanceof CancelledError ||
@@ -925,11 +1103,18 @@ async function runInstallDeno(
         throw cause;
       }
       outcomes.push(failedDenoOutcome(name, options.installTo, cause));
+      await info("Deno machine failed", { machine: name });
     } finally {
       if (session !== undefined) {
+        await info("Deno session close started", { machine: name });
         try {
           await session.close();
+          await info("Deno session closed", { machine: name });
         } catch (closeCause) {
+          await info("Deno session close failed", {
+            machine: name,
+            errorCategory: errorCategory(closeCause),
+          });
           const previous = outcomes.pop();
           if (previous !== undefined) {
             const message = closeCause instanceof Error ? closeCause.message : String(closeCause);
@@ -953,7 +1138,12 @@ async function runInstallDeno(
       });
     }
   }
-  return new InstallDenoResult({ cluster: cluster.name, machines: outcomes });
+  const result = new InstallDenoResult({ cluster: cluster.name, machines: outcomes });
+  await info("Deno installation completed", {
+    machines: outcomes.length,
+    failed: outcomes.filter((outcome) => outcome.status === "failed").length,
+  });
+  return result;
 }
 
 function failedDenoOutcome(
@@ -982,16 +1172,27 @@ async function runRollback(
   keepVersions: number,
   onProgress?: ProgressListener,
   signal?: AbortSignal,
+  info: SafeInfoLogger = safeInfoLogger(),
 ): Promise<DeploymentResult> {
   const sourceReleaseId = options.releaseId!;
   await store.loadRollbackPlan(sourceReleaseId);
+  await info("rollback plan loaded", { cluster: options.cluster, sourceReleaseId });
   const pending = await store.beginAttempt({
     operation: "rollback",
     selection: new ReleaseSelection(),
     sourceReleaseId,
   });
+  await info("rollback release attempt created", {
+    releaseId: pending.releaseId,
+    sourceReleaseId,
+  });
   try {
     const archived = await pending.inheritRollbackSnapshot(sourceReleaseId);
+    await info("rollback snapshot inherited", {
+      releaseId: pending.releaseId,
+      sourceReleaseId,
+      steps: archived.steps.length,
+    });
     const result = await executePlan(archived, {
       bindings,
       downloadProviders: providers,
@@ -1000,11 +1201,21 @@ async function runRollback(
       keepVersions,
       onStep: stepListener(onProgress),
       signal,
+      onInfo: info,
     });
     const record = await finishAttemptResult(pending, result);
+    await info("rollback release completed", {
+      releaseId: record.releaseId,
+      sourceReleaseId,
+      steps: result.steps.length,
+    });
     return withRelease(result, record.releaseId, sourceReleaseId);
   } catch (cause) {
     await finishAttemptError(pending, cause);
+    await info("rollback release failed", {
+      releaseId: pending.releaseId,
+      errorCategory: errorCategory(cause),
+    });
     throw cause;
   }
 }

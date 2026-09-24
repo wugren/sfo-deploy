@@ -55,6 +55,7 @@ import {
   serviceUnitManagedConfig,
 } from "./systemd_unit.ts";
 import { OpenSshTransport, type RemoteSession, type Transport } from "./transport.ts";
+import { type InfoLogger, type SafeInfoLogger, safeInfoLogger } from "./logging.ts";
 import type {
   ExecutionPlan,
   ManagedConfigChangeAction,
@@ -166,6 +167,8 @@ export interface PrepareOptions {
   readonly downloadProviders?: DownloadProviderRegistry;
   readonly packageCache?: PackageCache;
   readonly signal?: AbortSignal;
+  /** 可选 info 过程日志；未提供时保持静默。 */
+  readonly onInfo?: InfoLogger;
 }
 
 /** 在首次 SSH 连接前解析并固定脚本、模板、私钥、秘密和下载工件。 */
@@ -173,6 +176,7 @@ export async function prepareExecution(
   plan: ExecutionPlan,
   options: PrepareOptions = {},
 ): Promise<PreparedExecution> {
+  const info = safeInfoLogger(options.onInfo);
   validatePlanShape(plan);
   throwIfAborted(options.signal);
   if (plan.steps.some(legacySingleVersionedDeploy)) {
@@ -194,6 +198,12 @@ export async function prepareExecution(
   const artifacts: VerifiedArtifact[] = [];
   const planSteps: PlanStep[] = [];
   const redactor = await operationRedactor(plan.steps, bindings);
+  await info("local preparation started", {
+    cluster: plan.cluster,
+    action: plan.requestedAction,
+    steps: plan.steps.length,
+  });
+  let preparationFailed = false;
   try {
     for (const [index, original] of normalizeVersionedSteps(plan.steps).entries()) {
       throwIfAborted(options.signal);
@@ -209,18 +219,27 @@ export async function prepareExecution(
           await copyStableLocalInput(key, stagedKey, "SSH private key");
           privateKeys.set(key, stagedKey);
         }
+        await info("local SSH key staged", { step: original.id });
       }
       const scripts: ScriptInvocation[] = [];
       for (const [scriptIndex, invocation] of original.scripts.entries()) {
         const path = join(directory, `step-${index}-script-${scriptIndex}`);
         await copyStableLocalInput(invocation.source, path, `script for step ${original.id}`);
         scripts.push(Object.freeze({ ...invocation, source: path }));
+        await info("local script staged", {
+          step: original.id,
+          script: invocation.relativePath,
+        });
       }
       const templates = [];
       for (const [templateIndex, template] of original.templates.entries()) {
         const path = join(directory, `step-${index}-template-${templateIndex}`);
         await copyStableLocalInput(template.source, path, `template for step ${original.id}`);
         templates.push(Object.freeze({ ...template, source: path }));
+        await info("local template staged", {
+          step: original.id,
+          template: template.relativePath,
+        });
       }
       const deliveryScripts: ScriptInvocation[] = [];
       const rawDeliveryScripts = original.deliveryInputs?.scripts ?? original.bundleScripts ?? [];
@@ -232,6 +251,10 @@ export async function prepareExecution(
           `deployment bundle script for step ${original.id}`,
         );
         deliveryScripts.push(Object.freeze({ ...invocation, source: path }));
+        await info("local delivery script staged", {
+          step: original.id,
+          script: invocation.relativePath,
+        });
       }
       const deliveryFiles = [];
       const rawDeliveryFiles = original.deliveryInputs?.files ??
@@ -244,6 +267,10 @@ export async function prepareExecution(
           `deployment bundle plain file for step ${original.id}`,
         );
         deliveryFiles.push(Object.freeze({ ...file, source: path }));
+        await info("local delivery file staged", {
+          step: original.id,
+          file: file.relativePath,
+        });
       }
       const machine = Object.freeze({ ...original.machine.machine, sshPrivateKey: stagedKey });
       const target = Object.freeze({ ...original.machine, machine });
@@ -285,6 +312,11 @@ export async function prepareExecution(
             metadata,
             options.signal,
           );
+          await info("local package prepared", {
+            step: original.id,
+            kind: step.kind,
+            resource: step.resource,
+          });
         } else {
           artifact = await downloads.fetchPackage(packageValue, packagePath, {}, options.signal);
         }
@@ -349,6 +381,11 @@ export async function prepareExecution(
           ),
           signal: options.signal,
         });
+        await info("deployment bundle built", {
+          step: step.id,
+          size: deliveryBundle.size,
+          sha256: deliveryBundle.sha256,
+        });
       }
       const runtime = step.machine.machine.scriptRuntime;
       if (runtime.kind !== "deno") {
@@ -365,14 +402,27 @@ export async function prepareExecution(
           redactor,
         }),
       );
+      await info("local step prepared", {
+        step: step.id,
+        machine: step.machine.machine.name,
+        kind: step.kind,
+        resource: step.resource,
+        action: step.action,
+      });
       planSteps.push(step);
     }
     const preparedPlan = Object.freeze({ ...plan, steps: Object.freeze(planSteps) });
     return new PreparedExecution(preparedPlan, prepared, directory);
   } catch (cause) {
+    preparationFailed = true;
     for (const artifact of artifacts) await artifact.cleanup().catch(() => undefined);
     await Deno.remove(directory, { recursive: true }).catch(() => undefined);
     throw cause;
+  } finally {
+    await info(preparationFailed ? "local preparation failed" : "local preparation completed", {
+      cluster: plan.cluster,
+      action: plan.requestedAction,
+    });
   }
 }
 
@@ -403,6 +453,7 @@ export class DeploymentExecutor {
   readonly packageCache?: PackageCache;
   readonly keepVersions: number;
   readonly onStep?: StepProgressListener;
+  readonly #info: SafeInfoLogger;
 
   constructor(
     transport: Transport,
@@ -423,17 +474,29 @@ export class DeploymentExecutor {
     }
     this.keepVersions = keepVersions;
     this.onStep = options.onStep;
+    this.#info = safeInfoLogger(options.onInfo);
   }
 
   async execute(plan: ExecutionPlan, signal?: AbortSignal): Promise<DeploymentResult> {
+    await this.#info("deployment execution started", {
+      cluster: plan.cluster,
+      action: plan.requestedAction,
+      steps: plan.steps.length,
+    });
     const prepared = await prepareExecution(plan, {
       bindings: this.bindings,
       downloadProviders: this.downloadProviders,
       packageCache: this.packageCache,
       signal,
+      onInfo: this.#info,
     });
     try {
       const result = await this.executePrepared(prepared, signal);
+      await this.#info("deployment execution completed", {
+        cluster: plan.cluster,
+        action: plan.requestedAction,
+        steps: result.steps.length,
+      });
       try {
         await prepared.close();
         return result;
@@ -452,6 +515,11 @@ export class DeploymentExecutor {
         });
       }
     } catch (cause) {
+      await this.#info("deployment execution failed", {
+        cluster: plan.cluster,
+        action: plan.requestedAction,
+        errorCategory: cause instanceof Error ? cause.name : "error",
+      });
       await prepared.close(cause);
       throw cause;
     }
@@ -491,6 +559,11 @@ export class DeploymentExecutor {
       });
     }
     let cancelled = signal?.aborted ?? false;
+    await this.#info("prepared execution started", {
+      cluster: plan.cluster,
+      action: plan.requestedAction,
+      steps: plan.steps.length,
+    });
 
     try {
       for (const [index, step] of plan.steps.entries()) {
@@ -502,6 +575,15 @@ export class DeploymentExecutor {
           : undefined;
         const deployment = deployments.get(prepareKey);
         let result: StepResult | undefined;
+        await this.#info("plan step started", {
+          step: step.id,
+          machine: machineName,
+          kind: step.kind,
+          resource: step.resource,
+          action: step.action,
+          index: index + 1,
+          total: plan.steps.length,
+        });
         if (cancelled || signal?.aborted) {
           cancelled = true;
           result = skipped(step, "cancelled", StepStatus.CANCELLED, "User cancelled");
@@ -593,7 +675,17 @@ export class DeploymentExecutor {
                       : 300_000,
                   }, signal);
                 }
+                await this.#info("remote operation lock acquired", {
+                  step: step.id,
+                  machine: machineName,
+                  resource: step.resource,
+                });
                 const workspace = await session.createWorkspace(signal);
+                await this.#info("remote workspace created", {
+                  step: step.id,
+                  machine: machineName,
+                  workspace,
+                });
                 let stagedDeployment: PreparedDeployment | undefined;
                 if (isVersionedPhase(step, "stage")) {
                   const terminalStage = !plan.steps.some((candidate) =>
@@ -684,6 +776,11 @@ export class DeploymentExecutor {
                   try {
                     await finalizeVersionedRelease(deployment.session, deployment.release, signal);
                     deployment.committed = true;
+                    await this.#info("versioned release finalized", {
+                      step: step.id,
+                      machine: machineName,
+                      resource: step.resource,
+                    });
                   } catch (cause) {
                     executionError = cause;
                   }
@@ -694,6 +791,11 @@ export class DeploymentExecutor {
                   } else {
                     stagedDeployment.ready = result?.status === StepStatus.SUCCEEDED;
                   }
+                  await this.#info("remote workspace handled", {
+                    step: step.id,
+                    machine: machineName,
+                    workspace,
+                  });
                 } catch (cause) {
                   const cleanup = safeRedact(
                     prepared.steps.get(step.id)!.redactor,
@@ -719,6 +821,10 @@ export class DeploymentExecutor {
               } finally {
                 if (operationLease !== undefined) {
                   await releaseLock!.call(session, operationLease);
+                  await this.#info("remote operation lock released", {
+                    step: step.id,
+                    machine: machineName,
+                  });
                 }
               }
             } catch (cause) {
@@ -777,6 +883,19 @@ export class DeploymentExecutor {
         if (this.onStep !== undefined) {
           await this.onStep({ step: result, index, total: plan.steps.length });
         }
+        await this.#info("plan step finished", {
+          step: result.stepId,
+          machine: result.machine,
+          kind: result.kind,
+          resource: result.resource,
+          action: result.action,
+          status: result.status,
+          exitCode: result.exitCode,
+          skipReason: result.skipReason,
+          errorCategory: result.errorCategory,
+          index: index + 1,
+          total: plan.steps.length,
+        });
       }
     } finally {
       for (const deployment of deployments.values()) {
@@ -846,6 +965,7 @@ export class DeploymentExecutor {
         if (sessionsWithRecoveryData.has(session)) continue;
         try {
           await session.close();
+          await this.#info("remote session closed", { machine: machineName });
         } catch (cause) {
           appendCleanupError(results, byStep, machineName, errorText(cause));
         }
@@ -1796,8 +1916,12 @@ export async function executePrepared(
   transport: Transport,
   signal?: AbortSignal,
   onStep?: StepProgressListener,
+  onInfo?: InfoLogger,
 ): Promise<DeploymentResult> {
-  return await new DeploymentExecutor(transport, { onStep }).executePrepared(prepared, signal);
+  return await new DeploymentExecutor(transport, { onStep, onInfo }).executePrepared(
+    prepared,
+    signal,
+  );
 }
 
 export function needsPackage(step: PlanStep): boolean {

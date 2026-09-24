@@ -23,6 +23,7 @@ import {
 } from "./remote_deployment.ts";
 import { SECRET_NAME_RE } from "./secrets.ts";
 import type { BuiltDeploymentBundle } from "./deployment_bundle.ts";
+import { type InfoLogger, type SafeInfoLogger, safeInfoLogger } from "./logging.ts";
 import type { ResolvedMachine, ScriptPermissions, SecretKind } from "./types.ts";
 import { type CommandResult, commandResult } from "./results.ts";
 
@@ -184,6 +185,8 @@ interface OpenSshTransportOptions {
   readonly commandTimeoutMs?: number;
   readonly terminateTimeoutMs?: number;
   readonly commandFactory?: CommandFactory;
+  /** 可选 info 过程日志；未提供时保持静默。 */
+  readonly onInfo?: InfoLogger;
 }
 
 /** 系统 OpenSSH 传输；每次本地进程都直接使用 Deno.Command argv 启动。 */
@@ -195,6 +198,7 @@ export class OpenSshTransport implements Transport {
   readonly commandTimeoutMs: number;
   readonly terminateTimeoutMs: number;
   readonly #commandFactory: CommandFactory;
+  readonly #info: SafeInfoLogger;
 
   constructor(options: OpenSshTransportOptions = {}) {
     this.knownHosts = options.knownHosts;
@@ -213,6 +217,7 @@ export class OpenSshTransport implements Transport {
       "SSH process termination",
     );
     this.#commandFactory = options.commandFactory ?? defaultCommandFactory;
+    this.#info = safeInfoLogger(options.onInfo);
   }
 
   async connect(target: ResolvedMachine, signal?: AbortSignal): Promise<OpenSshRemoteSession> {
@@ -226,6 +231,11 @@ export class OpenSshTransport implements Transport {
       : await regularLocalFile(machine.sshPrivateKey, "SSH private key");
     const addresses = target.addresses.length > 0 ? target.addresses : [target.address];
     const failures: string[] = [];
+    await this.#info("SSH connection started", {
+      machine: machine.name,
+      user,
+      addresses: addresses.length,
+    });
     for (const rawAddress of addresses) {
       const address = sshAddress(rawAddress);
       const session = new OpenSshRemoteSession({
@@ -240,13 +250,20 @@ export class OpenSshTransport implements Transport {
         commandTimeoutMs: this.commandTimeoutMs,
         terminateTimeoutMs: this.terminateTimeoutMs,
         commandFactory: this.#commandFactory,
+        onInfo: this.#info,
       });
       try {
         const result = await session.run(["true"], {
           signal,
           timeoutMs: this.connectTimeoutMs,
         });
-        if (result.exitCode === 0) return session;
+        if (result.exitCode === 0) {
+          await this.#info("SSH connection completed", {
+            machine: machine.name,
+            address,
+          });
+          return session;
+        }
         failures.push(`${address}: ${diagnostic(result)}`);
       } catch (cause) {
         if (cause instanceof CancelledError) throw cause;
@@ -254,6 +271,10 @@ export class OpenSshTransport implements Transport {
       }
     }
     if (failures.length === 1) {
+      await this.#info("SSH connection failed", {
+        machine: machine.name,
+        addresses: addresses.length,
+      });
       throw new TransportError(
         `SSH connection failed ${machine.name}@${addresses[0]}: ${
           failures[0].split(": ").slice(1).join(": ")
@@ -298,6 +319,7 @@ interface SessionOptions {
   readonly commandTimeoutMs: number;
   readonly terminateTimeoutMs: number;
   readonly commandFactory: CommandFactory;
+  readonly onInfo?: InfoLogger;
 }
 
 interface HeldOperationLease {
@@ -328,9 +350,11 @@ export class OpenSshRemoteSession implements RemoteSession {
   #privilegePrefix?: readonly string[];
   #home?: string;
   #closed = false;
+  readonly #info: SafeInfoLogger;
 
   constructor(options: SessionOptions) {
     this.#options = options;
+    this.#info = safeInfoLogger(options.onInfo);
   }
 
   async run(argv: readonly string[], options: RemoteRunOptions = {}): Promise<CommandResult> {
@@ -357,6 +381,7 @@ export class OpenSshRemoteSession implements RemoteSession {
   ): Promise<CommandResult> {
     this.#ensureOpen();
     const arguments_ = validateArgv(argv);
+    const startedAt = Date.now();
     const command: string[] = [];
     if (options.privileged) {
       await this.preflightPrivilege(options.signal);
@@ -371,17 +396,29 @@ export class OpenSshRemoteSession implements RemoteSession {
     const rendered = options.cwd === undefined
       ? renderedCommand
       : `cd ${quotePosix(this.#registeredWorkspace(options.cwd))} && ${renderedCommand}`;
-    return await this.#runLocal(
-      this.#options.sshExecutable,
-      [...this.#sshOptions(false), this.#sshDestination(), rendered],
-      options.signal,
-      options.timeoutMs ?? this.#options.commandTimeoutMs,
-      "remote command",
-    );
+    try {
+      const result = await this.#runLocal(
+        this.#options.sshExecutable,
+        [...this.#sshOptions(false), this.#sshDestination(), rendered],
+        options.signal,
+        options.timeoutMs ?? this.#options.commandTimeoutMs,
+        "remote command",
+      );
+      return result;
+    } catch (cause) {
+      await this.#info("remote command failed", {
+        address: this.#options.address,
+        command: arguments_[0],
+        durationMs: Date.now() - startedAt,
+      });
+      throw cause;
+    }
   }
 
   async createWorkspace(signal?: AbortSignal): Promise<string> {
     this.#ensureOpen();
+    const startedAt = Date.now();
+    await this.#info("remote workspace creation started", { address: this.#options.address });
     for (let attempt = 0; attempt < 8; attempt++) {
       const workspace = `${WORKSPACE_PREFIX}${crypto.randomUUID().replaceAll("-", "")}`;
       const result = await this.run(["mkdir", "-m", "0700", "--", workspace], { signal });
@@ -392,6 +429,11 @@ export class OpenSshRemoteSession implements RemoteSession {
         continue;
       }
       this.#workspaces.add(workspace);
+      await this.#info("remote workspace created", {
+        address: this.#options.address,
+        workspace,
+        durationMs: Date.now() - startedAt,
+      });
       return workspace;
     }
     throw new TransportError("Failed to create a unique remote temporary workspace");
@@ -1042,8 +1084,17 @@ export class OpenSshRemoteSession implements RemoteSession {
     this.#ensureOpen();
     this.#ensureLeaseUsable();
     const source = await regularLocalFile(localPath, "upload source");
+    const sourceSize = (await Deno.stat(source)).size;
     const remote = safeRemotePath(remotePath);
     const mode = fileMode(options.mode ?? 0o600);
+    const startedAt = Date.now();
+    await this.#info("file upload started", {
+      address: this.#options.address,
+      source,
+      remote,
+      mode,
+      size: sourceSize,
+    });
     let result: CommandResult;
     try {
       result = await this.#runLocal(
@@ -1054,6 +1105,11 @@ export class OpenSshRemoteSession implements RemoteSession {
         "upload file",
       );
     } catch (cause) {
+      await this.#info("file upload failed", {
+        address: this.#options.address,
+        remote,
+        durationMs: Date.now() - startedAt,
+      });
       if (cause instanceof CancelledError && this.#leaseLostReason !== undefined) {
         throw this.#leaseLostReason;
       }
@@ -1061,6 +1117,13 @@ export class OpenSshRemoteSession implements RemoteSession {
     }
     this.#ensureLeaseUsable();
     requireSuccess(result, `Failed to upload file ${source} -> ${remote}`);
+    await this.#info("file upload completed", {
+      address: this.#options.address,
+      remote,
+      mode,
+      size: sourceSize,
+      durationMs: Date.now() - startedAt,
+    });
     requireSuccess(
       await this.run(["chmod", mode.toString(8).padStart(4, "0"), "--", remote], {
         signal: options.signal,

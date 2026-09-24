@@ -13,12 +13,13 @@
 先安装并配置 `filehub`。在本仓库根目录执行：
 
 ```bash
-deno install --global --force --name sfo-deploy --allow-read --allow-write --allow-env --allow-net --allow-run=ssh,scp,filehub ./src/cli.ts
+deno install --global --force --name sfo-deploy --allow-read --allow-write --allow-env --allow-net --allow-run=ssh,scp,filehub,ps ./src/cli.ts
 sfo-deploy --help
 ```
 
 这是通用 CLI 的最小权限类别：读取集群、密钥和快照，写入临时文件与发布历史，读取项目绑定所需的
-环境变量，通过 HTTP/HTTPS 下载制品，并且只启动 `ssh`、`scp` 和可选 `filehub`。它不使用
+环境变量，通过 HTTP/HTTPS 下载制品，并且只启动 `ssh`、`scp`、可选 `filehub` 和用于进程树
+清理的只读 `ps`。它不使用
 `--allow-all`。固定项目可以进一步把 read、write、env 和 net 限制为已知路径、变量和下载主机。 保留
 `filehub` 的 run 授权不会安装该程序；不用 filehub 时可移除它。
 
@@ -28,7 +29,7 @@ Deno 把命令安装到 `$DENO_INSTALL_ROOT/bin`；未设置时通常是 `$HOME/
 正式环境应固定到已审核的 tag：
 
 ```bash
-deno install --global --force --name sfo-deploy --allow-read --allow-write --allow-env --allow-net --allow-run=ssh,scp,filehub https://gitlab.mynode.site:8443/wugren/sfo-deploy/-/raw/v0.1.0/src/cli.ts
+deno install --global --force --name sfo-deploy --allow-read --allow-write --allow-env --allow-net --allow-run=ssh,scp,filehub,ps https://github.com/wugren/sfo-deploy/-/raw/v0.1.0/src/cli.ts
 ```
 
 升级时把 URL 中的版本换成目标固定版本并重新执行带 `--force` 的命令；卸载使用
@@ -59,9 +60,7 @@ cp -a "$SKILL_SRC" "$SKILL_DEST"
 可以直接复制以下提示词给 AI：
 
 ```text
-请安装本仓库中的 sfo-deploy-cluster skill，并用它创建或维护 sfo-deploy 集群配置。先生成或修改
-cluster/machines/environment/app/secret 配置，运行 validate 和 plan 验证；未经我明确确认，不要执行
-SSH、fetch、prepare、secrets-deploy、deploy 或其他远端动作。
+请安装 https://github.com/wugren/sfo-deploy.git 中的 sfo-deploy-cluster skill。
 ```
 
 ## 命令行
@@ -86,10 +85,13 @@ sfo-deploy secrets-deploy --cluster production --machine app-01
 发现。可重复 `--machine`、`--app`、`--environment`/`--env`；`--executor-region` 覆盖执行器区域，
 `--address-kind private|public` 显式覆盖地址类型。每个动作只接受其 `--help` 列出的筛选器。
 
-默认按步骤输出英文人可读的进度行（步骤、机器、资源、动作与状态/跳过原因），结束时给简洁汇总； `plan`
+默认按步骤输出英文人可读的进度行（步骤、机器、资源、动作与状态/跳过原因）、`[info]` 过程日志
+（命令、本地准备、远端命令失败、上传、workspace、缓存、服务与发布操作），结束时给简洁汇总； `plan`
 的详细预览包含序号、地址、依赖、包提供方、发布方式、脚本相对路径、秘密逻辑名称和受管服务/
-配置信息。需要机器可解析结果时加 `--json`，使用稳定 JSON 契约。计划只包含敏感输入逻辑名称；执行器
-在输出离开边界前脱敏已知秘密，无法安全脱敏时丢弃输出。
+配置信息。需要机器可解析结果时加 `--json`，使用稳定 JSON 契约；此时 stdout 不输出过程日志。
+计划只包含敏感输入逻辑名称；执行器在输出离开边界前脱敏已知秘密，无法安全脱敏时丢弃输出。
+过程日志只记录状态、路径、大小、hash、耗时和安全摘要，不记录 secret 值、private key 内容、 provider
+凭据或未脱敏 stdout/stderr。
 
 ### 校验、准备和部署
 

@@ -12,13 +12,7 @@ rules:
     activation: trigger
     tiers: [standard, high-risk]
     stages: [general, proposal, design, implementation, testing, acceptance]
-    triggers: [
-      create-github-issue,
-      file-github-issue,
-      github-issue-creation,
-      open-github-issue,
-      submit-github-issue,
-    ]
+    triggers: [create-github-issue, file-github-issue, github-issue-creation, open-github-issue, submit-github-issue]
     path_patterns: []
   - id: proposal-document
     file: harness/rules/proposal-doc-rules.md
@@ -102,166 +96,43 @@ rules:
     activation: trigger
     tiers: [standard, high-risk]
     stages: [general, proposal, design, implementation, testing, acceptance]
-    triggers: [
-      api,
-      cli,
-      contract,
-      contract-protocol,
-      event,
-      interface,
-      message,
-      protocol,
-      rpc,
-      wire-format,
-    ]
-    path_patterns: [
-      "**/api/**",
-      "**/cli/**",
-      "**/proto/**",
-      "**/protocol/**",
-      "**/*api*",
-      "**/*proto*",
-    ]
+    triggers: [api, cli, contract, contract-protocol, event, interface, message, protocol, rpc, wire-format]
+    path_patterns: ["**/api/**", "**/cli/**", "**/proto/**", "**/protocol/**", "**/*api*", "**/*proto*"]
   - id: trigger-data-schema
     file: harness/rules/triggers/data-schema.md
     activation: trigger
     tiers: [standard, high-risk]
     stages: [general, proposal, design, implementation, testing, acceptance]
-    triggers: [
-      cache-key,
-      data,
-      data-schema,
-      database,
-      migration,
-      persistence,
-      schema,
-      serialization,
-      storage,
-    ]
-    path_patterns: [
-      "**/db/**",
-      "**/database/**",
-      "**/migration/**",
-      "**/migrations/**",
-      "**/schema/**",
-      "**/storage/**",
-      "**/*migration*",
-      "**/*schema*",
-    ]
+    triggers: [cache-key, data, data-schema, database, migration, persistence, schema, serialization, storage]
+    path_patterns: ["**/db/**", "**/database/**", "**/migration/**", "**/migrations/**", "**/schema/**", "**/storage/**", "**/*migration*", "**/*schema*"]
   - id: trigger-security
     file: harness/rules/triggers/security.md
     activation: trigger
     tiers: [standard, high-risk]
     stages: [general, proposal, design, implementation, testing, acceptance]
-    triggers: [
-      auth,
-      authentication,
-      authorization,
-      encryption,
-      identity,
-      permission,
-      privacy,
-      secret,
-      security,
-      token,
-    ]
-    path_patterns: [
-      "**/auth/**",
-      "**/identity/**",
-      "**/permission/**",
-      "**/permissions/**",
-      "**/security/**",
-      "**/secrets/**",
-      "**/*auth*",
-      "**/*permission*",
-      "**/*secret*",
-      "**/*token*",
-    ]
+    triggers: [auth, authentication, authorization, encryption, identity, permission, privacy, secret, security, token]
+    path_patterns: ["**/auth/**", "**/identity/**", "**/permission/**", "**/permissions/**", "**/security/**", "**/secrets/**", "**/*auth*", "**/*permission*", "**/*secret*", "**/*token*"]
   - id: trigger-runtime-integration
     file: harness/rules/triggers/runtime-integration.md
     activation: trigger
     tiers: [standard, high-risk]
     stages: [general, proposal, design, implementation, testing, acceptance]
-    triggers: [
-      background-job,
-      concurrency,
-      distributed,
-      integration,
-      lifecycle,
-      network,
-      retry,
-      runtime,
-      runtime-integration,
-      scheduler,
-      timeout,
-    ]
-    path_patterns: [
-      "**/integration/**",
-      "**/runtime/**",
-      "**/scheduler/**",
-      "**/worker/**",
-      "**/*integration*",
-      "**/*runtime*",
-      "**/*scheduler*",
-    ]
+    triggers: [background-job, concurrency, distributed, integration, lifecycle, network, retry, runtime, runtime-integration, scheduler, timeout]
+    path_patterns: ["**/integration/**", "**/runtime/**", "**/scheduler/**", "**/worker/**", "**/*integration*", "**/*runtime*", "**/*scheduler*"]
   - id: trigger-build-config-deployment
     file: harness/rules/triggers/build-config-deployment.md
     activation: trigger
     tiers: [standard, high-risk]
     stages: [general, proposal, design, implementation, testing, acceptance]
-    triggers: [
-      build,
-      build-config-deployment,
-      config,
-      dependency,
-      deployment,
-      environment,
-      feature-flag,
-      packaging,
-      release,
-    ]
-    path_patterns: [
-      ".github/workflows/**",
-      "**/.github/workflows/**",
-      "**/config/**",
-      "**/deploy/**",
-      "**/deployment/**",
-      "**/scripts/**",
-      "Cargo.toml",
-      "Cargo.lock",
-      "package.json",
-      "pyproject.toml",
-      "**/Cargo.toml",
-      "**/Cargo.lock",
-      "**/package.json",
-      "**/pyproject.toml",
-      "**/*config*",
-      "**/*deploy*",
-    ]
+    triggers: [build, build-config-deployment, config, dependency, deployment, environment, feature-flag, packaging, release]
+    path_patterns: [".github/workflows/**", "**/.github/workflows/**", "**/config/**", "**/deploy/**", "**/deployment/**", "**/scripts/**", "Cargo.toml", "Cargo.lock", "package.json", "pyproject.toml", "**/Cargo.toml", "**/Cargo.lock", "**/package.json", "**/pyproject.toml", "**/*config*", "**/*deploy*"]
   - id: trigger-ui-workflow
     file: harness/rules/triggers/ui-workflow.md
     activation: trigger
     tiers: [standard, high-risk]
     stages: [general, proposal, design, implementation, testing, acceptance]
-    triggers: [
-      accessibility,
-      frontend,
-      localization,
-      navigation,
-      presentation,
-      ui,
-      ui-workflow,
-      user-workflow,
-    ]
-    path_patterns: [
-      "**/frontend/**",
-      "**/ui/**",
-      "**/views/**",
-      "**/web/**",
-      "**/*component*",
-      "**/*page*",
-      "**/*view*",
-    ]
+    triggers: [accessibility, frontend, localization, navigation, presentation, ui, ui-workflow, user-workflow]
+    path_patterns: ["**/frontend/**", "**/ui/**", "**/views/**", "**/web/**", "**/*component*", "**/*page*", "**/*view*"]
   - id: trigger-harness-process
     file: harness/rules/triggers/harness-process.md
     activation: trigger

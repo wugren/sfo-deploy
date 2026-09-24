@@ -4,6 +4,7 @@ import { basename, dirname, join, resolve } from "jsr:@std/path@1.1.6";
 import { createHash, randomBytes } from "node:crypto";
 import { type DownloadProviderRegistry, DownloadRequest, VerifiedArtifact } from "./downloads.ts";
 import { ConfigurationError, DownloadError, PreflightError } from "./errors.ts";
+import { type InfoLogger, type SafeInfoLogger, safeInfoLogger } from "./logging.ts";
 import type { PackageSpec } from "./types.ts";
 
 const PROVIDER_NAME_RE = /^[A-Za-z][A-Za-z0-9_.-]*$/;
@@ -32,6 +33,8 @@ export interface FetchedPackage {
 export interface PackageCacheOptions {
   readonly packagesDir: string;
   readonly registry: DownloadProviderRegistry;
+  /** 可选 info 过程日志；未提供时保持静默。 */
+  readonly onInfo?: InfoLogger;
 }
 
 interface VerifiedEntry {
@@ -44,6 +47,7 @@ interface VerifiedEntry {
 export class PackageCache {
   readonly packagesDir: string;
   readonly registry: DownloadProviderRegistry;
+  readonly #info: SafeInfoLogger;
   /** 按元数据路径串行化审计记录的读-改-写，避免并发丢更新。 */
   readonly #recordQueues = new Map<string, Promise<void>>();
 
@@ -62,6 +66,7 @@ export class PackageCache {
     }
     this.packagesDir = resolve(options.packagesDir);
     this.registry = options.registry;
+    this.#info = safeInfoLogger(options.onInfo);
   }
 
   /** fetch 动作入口：命中且校验通过则跳过远端下载。 */
@@ -76,10 +81,28 @@ export class PackageCache {
     const existing = await this.#verified(target, request);
     if (existing !== undefined) {
       await this.#record(provider, target, request, metadata);
+      await this.#info("deployment package cache hit", {
+        kind: metadata.kind,
+        resource: metadata.name,
+        version: metadata.version,
+        size: existing.size,
+      });
       return Object.freeze({ status: "cached", path: target, ...existing });
     }
+    await this.#info("deployment package download started", {
+      kind: metadata.kind,
+      resource: metadata.name,
+      version: metadata.version,
+      provider,
+    });
     const published = await this.#download(provider, request, target, signal);
     await this.#record(provider, target, request, metadata);
+    await this.#info("deployment package download completed", {
+      kind: metadata.kind,
+      resource: metadata.name,
+      version: metadata.version,
+      size: published.entry.size,
+    });
     return Object.freeze({
       status: published.hit ? "cached" : "downloaded",
       path: target,
@@ -101,8 +124,19 @@ export class PackageCache {
     const target = this.#target(provider, request);
     const existing = await this.#verified(target, request);
     if (existing === undefined) {
+      await this.#info("deployment package cache missing", {
+        kind: metadata.kind,
+        resource: metadata.name,
+        version: metadata.version,
+      });
       throw missingLocalPackageError(metadata, request, target);
     }
+    await this.#info("deployment package cache verified", {
+      kind: metadata.kind,
+      resource: metadata.name,
+      version: metadata.version,
+      size: existing.size,
+    });
     return Object.freeze({ path: target, size: existing.size });
   }
 
@@ -120,11 +154,22 @@ export class PackageCache {
     const target = this.#target(provider, request);
     let existing = await this.#verified(target, request);
     if (existing === undefined) {
+      await this.#info("execution preparation package missing", {
+        kind: metadata.kind,
+        resource: metadata.name,
+        policy,
+      });
       if (policy === "local-only") {
         throw missingLocalPackageError(metadata, request, target);
       }
       existing = (await this.#download(provider, request, target, signal)).entry;
     }
+    await this.#info("execution preparation package verified", {
+      kind: metadata.kind,
+      resource: metadata.name,
+      size: existing.size,
+      policy,
+    });
     const destinationPath = resolve(destination);
     const size = await copyVerified(request, target, destinationPath, signal);
     return new VerifiedArtifact(

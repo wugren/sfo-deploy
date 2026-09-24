@@ -22,6 +22,7 @@ import {
   ValidationResult,
 } from "./integration.ts";
 import { ReleaseHistoryResult, type ReleaseRecord } from "./history.ts";
+import { formatInfoLine } from "./logging.ts";
 import {
   DeploymentResult,
   type FetchPackageResult,
@@ -165,6 +166,9 @@ export function createCli(
         signal: dependencies.signal,
         ...(!parsed.json
           ? {
+            onInfo: dependencies.onInfo ??
+              ((message, fields) =>
+                writeText(stdout, `[info] ${formatInfoLine(message, fields)}\n`)),
             onProgress: dependencies.onProgress ??
               ((event: ProgressEvent) => writeProgressLine(stdout, event)),
           }

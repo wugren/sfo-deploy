@@ -13,6 +13,9 @@ export {
 export { loadUserConfig } from "./user_config.ts";
 export type { LoadUserConfigOptions, SfoDeployUserConfig } from "./user_config.ts";
 
+export { formatInfoLine, safeInfoLogger } from "./logging.ts";
+export type { InfoLogFields, InfoLogger, InfoLogValue, SafeInfoLogger } from "./logging.ts";
+
 export {
   DownloadProviderRegistry,
   DownloadRequest,

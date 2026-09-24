@@ -189,21 +189,25 @@ Deno.test("unit/package-cache: 锁超时写入独立溢出记录，后续持锁�
     await Deno.mkdir(directory, { recursive: true });
     await Deno.writeTextFile(
       metadataPath,
-      JSON.stringify({
-        schema_version: 1,
-        provider: "https",
-        source: spec.source,
-        hash_algorithm: "sha256",
-        hash_value: digest,
-        cached_at: new Date().toISOString(),
-        records: [{
-          kind: "app",
-          name: "seed",
-          version: null,
-          cluster: null,
-          fetched_at: new Date().toISOString(),
-        }],
-      }, undefined, 2),
+      JSON.stringify(
+        {
+          schema_version: 1,
+          provider: "https",
+          source: spec.source,
+          hash_algorithm: "sha256",
+          hash_value: digest,
+          cached_at: new Date().toISOString(),
+          records: [{
+            kind: "app",
+            name: "seed",
+            version: null,
+            cluster: null,
+            fetched_at: new Date().toISOString(),
+          }],
+        },
+        undefined,
+        2,
+      ),
     );
     const lockDir = `${metadataPath}.lock`;
     await Deno.mkdir(lockDir, { mode: 0o700 });
@@ -235,21 +239,25 @@ Deno.test("unit/package-cache: 无溢出时不落文件，损坏溢出保留而�
     await Deno.mkdir(directory, { recursive: true });
     await Deno.writeTextFile(
       metadataPath,
-      JSON.stringify({
-        schema_version: 1,
-        provider: "https",
-        source: spec.source,
-        hash_algorithm: "sha256",
-        hash_value: digest,
-        cached_at: new Date().toISOString(),
-        records: [{
-          kind: "app",
-          name: "seed",
-          version: null,
-          cluster: null,
-          fetched_at: new Date().toISOString(),
-        }],
-      }, undefined, 2),
+      JSON.stringify(
+        {
+          schema_version: 1,
+          provider: "https",
+          source: spec.source,
+          hash_algorithm: "sha256",
+          hash_value: digest,
+          cached_at: new Date().toISOString(),
+          records: [{
+            kind: "app",
+            name: "seed",
+            version: null,
+            cluster: null,
+            fetched_at: new Date().toISOString(),
+          }],
+        },
+        undefined,
+        2,
+      ),
     );
 
     const clean = await cache.fetch(spec, metadata);

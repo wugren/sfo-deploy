@@ -39,7 +39,7 @@ async function documentationExamples(): Promise<void> {
     const required of [
       "deno install --global",
       "--name sfo-deploy",
-      "--allow-run=ssh,scp,filehub",
+      "--allow-run=ssh,scp,filehub,ps",
       "deno uninstall --global sfo-deploy",
     ]
   ) {

@@ -47,7 +47,7 @@ Deno.test({
           "--allow-write",
           "--allow-env",
           "--allow-net",
-          "--allow-run=ssh,scp,filehub",
+          "--allow-run=ssh,scp,filehub,ps",
           "./src/main.ts",
         ],
         cwd: Deno.cwd(),

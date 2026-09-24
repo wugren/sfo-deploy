@@ -2,6 +2,11 @@
 
 ## Long-lived Boundary
 
+- 命令执行在非 JSON 模式输出 `[info]` 单行过程日志到 stdout；JSON 模式保持稳定结果 JSON 且不输出过程
+  日志。公共 API 通过 `RunDependencies.onInfo` 注入回调，未注入时静默。日志统一为 info 级别；记录
+  状态、路径、大小、hash、耗时和操作摘要，不记录 secret 值、private key 内容、provider 凭据或未脱敏
+  stdout/stderr。成功远端命令不逐条输出 started/completed 日志；失败命令继续输出失败摘要。日志回调
+  异常不会改变部署语义、事务边界或退出码。
 - `cluster.yaml` 支持可选 `deployer_version` 精确版本门禁：声明后要求运行中的 sfo-deploy
   版本完全一致， 否则装载集群后、任何 SSH 前 fail-closed 拒绝受控动作；缺省不启用。运行时版本取自
   `deno.json` 的 `version` 字段。
