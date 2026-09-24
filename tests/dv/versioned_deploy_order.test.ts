@@ -1,10 +1,17 @@
 import { join } from "jsr:@std/path@1.1.6";
+import { createHash } from "node:crypto";
+import {
+  DownloadProviderRegistry,
+  type DownloadRequest,
+  VerifiedArtifact,
+} from "../../src/downloads.ts";
 import { ManagedConfigPublicationError } from "../../src/remote_deployment.ts";
 import { REMOTE_VERSIONED_RELEASE_BUNDLE_PATH } from "../../src/remote_runtime/artifact.ts";
 import { DeploymentExecutor } from "../../src/execution.ts";
+import { PlanningError, PreflightError } from "../../src/errors.ts";
 import { commandResult, StepStatus } from "../../src/results.ts";
 import type { RemoteSession, Transport } from "../../src/transport.ts";
-import type { ExecutionPlan, PlanStep } from "../../src/types.ts";
+import type { ExecutionPlan, PackageSpec, PlanStep } from "../../src/types.ts";
 import type { BuiltDeploymentBundle } from "../../src/deployment_bundle.ts";
 import type {
   ManagedConfigPublication,
@@ -27,6 +34,9 @@ async function fixture(
     cancel?: AbortController;
     targetRoot?: "current" | "latest" | "install";
     mode?: string;
+    secretConfig?: boolean;
+    denoFailure?: boolean;
+    denoDisabled?: boolean;
   } = {},
 ) {
   const identity = await new Deno.Command("id", { args: ["-un"] }).output();
@@ -51,7 +61,39 @@ async function fixture(
     }
   }
   const source = join(root, "application.yml");
-  await Deno.writeTextFile(source, "value: new\n");
+  await Deno.writeTextFile(
+    source,
+    options.secretConfig ? "value: ${DB_PASSWORD}\n" : "value: new\n",
+  );
+  const payloadDirectory = join(root, "package-payload");
+  await Deno.mkdir(join(payloadDirectory, "resources"), { recursive: true });
+  await Deno.writeTextFile(join(payloadDirectory, "resources", "application.yml"), "old\n");
+  await Deno.writeTextFile(join(payloadDirectory, "manifest.txt"), "fixture\n");
+  const archive = join(root, "app.tar.gz");
+  const tar = await new Deno.Command("tar", {
+    args: ["-czf", archive, "-C", payloadDirectory, "."],
+  }).output();
+  assertEquals(tar.code, 0);
+  const archiveBytes = await Deno.readFile(archive);
+  const packageSpec: PackageSpec = {
+    provider: "fixture",
+    source: { id: "versioned-app" },
+    hashAlgorithm: "sha256",
+    hashValue: createHash("sha256").update(archiveBytes).digest("hex"),
+  };
+  const downloadProviders = new DownloadProviderRegistry({
+    fixture: {
+      async fetch(request: DownloadRequest, destination: string): Promise<VerifiedArtifact> {
+        await Deno.copyFile(archive, destination);
+        return new VerifiedArtifact(
+          destination,
+          request.hashAlgorithm,
+          request.expectedHash,
+          archiveBytes.length,
+        );
+      },
+    },
+  });
   const sessions = installs.map((install, index) => {
     let active = !options.first;
     let faulted = false;
@@ -78,19 +120,28 @@ async function fixture(
       },
       // deno-lint-ignore require-await -- recording RemoteSession promise boundary
       async preflightDeno() {
+        events.push(`${index}:deno-preflight`);
+        if (options.denoFailure) throw new PreflightError("Deno unavailable on fixture host");
         return commandResult(0);
       },
-      // deno-lint-ignore require-await -- recording RemoteSession promise boundary
       async stageDeploymentBundle(bundle: BuiltDeploymentBundle) {
         const scripts = new Map<string, string>();
         const configSkeletons = new Map<string, string>();
         const configBindings = new Map<string, string>();
+        let packagePath: string | undefined;
         for (const entry of bundle.manifest.entries) {
+          if (entry.purpose === "package") {
+            packagePath = `${workspace}/${entry.path}`;
+            await Deno.mkdir(join(workspace, "package"), { recursive: true });
+            await Deno.copyFile(archive, packagePath);
+          }
           if (entry.purpose === "script") {
             scripts.set(entry.path.slice(8), `${workspace}/${entry.path}`);
           }
           if (entry.purpose === "config-skeleton") {
             configSkeletons.set(entry.path.slice(8), `${workspace}/${entry.path}`);
+            await Deno.mkdir(join(workspace, "configs"), { recursive: true });
+            await Deno.copyFile(source, `${workspace}/${entry.path}`);
           }
           if (entry.purpose === "config-bindings") {
             configBindings.set(entry.path.slice(8), `${workspace}/${entry.path}`);
@@ -100,6 +151,7 @@ async function fixture(
           workspace,
           root: workspace,
           manifestPath: `${workspace}/manifest.json`,
+          packagePath,
           scripts,
           configSkeletons,
           configBindings,
@@ -107,6 +159,22 @@ async function fixture(
           entries: bundle.manifest.entries,
           sha256: bundle.sha256,
           reused: false,
+        };
+      },
+      async extractAppPackage(request: { workspace: string; packagePath: string }) {
+        const root = `${request.workspace}/app-extracted`;
+        await Deno.mkdir(`${root}/resources`, { recursive: true });
+        await Deno.copyFile(
+          join(payloadDirectory, "resources", "application.yml"),
+          `${root}/resources/application.yml`,
+        );
+        await Deno.copyFile(join(payloadDirectory, "manifest.txt"), `${root}/manifest.txt`);
+        return {
+          workspace: request.workspace,
+          root,
+          packagePath: request.packagePath,
+          memberCount: 2,
+          expandedBytes: 12,
         };
       },
       async createManagedConfigCandidate(request: { name: string }) {
@@ -182,7 +250,9 @@ async function fixture(
       async commitManagedConfigs() {
         events.push(`${index}:commit`);
       },
-      async uploadFile() {},
+      async uploadFile(local: string, remote: string) {
+        await Deno.copyFile(local, remote);
+      },
       async removeFile() {},
       async cleanupWorkspace(path: string) {
         events.push(`${index}:cleanup`);
@@ -248,12 +318,19 @@ async function fixture(
     for (const [index, install] of installs.entries()) {
       steps.push({
         id: `app:node-${index}/demo:${action}`,
-        machine: resolved(`node-${index}`),
+        machine: {
+          ...resolved(`node-${index}`),
+          machine: {
+            ...resolved(`node-${index}`).machine,
+            enableDeno: !options.denoDisabled,
+          },
+        },
         kind: "app",
         resource: "demo",
         action,
         scripts: [],
         parameters: { version: "v2" },
+        package: action === "stage" ? packageSpec : undefined,
         deployment: { kind: "versioned" },
         installDirectory: install,
         mode: options.mode,
@@ -273,7 +350,11 @@ async function fixture(
             mode: 0o600,
             variables: [],
             format: "yaml",
-            secretReferences: new Map(),
+            secretReferences: options.secretConfig
+              ? new Map([
+                ["DB_PASSWORD", { kind: "value" as const, valueType: "string" as const }],
+              ])
+              : new Map(),
             onChange: options.implicitEnabled
               ? "none"
               : options.reload
@@ -313,14 +394,16 @@ async function fixture(
   const transport: Transport = {
     connect: (target) => Promise.resolve(sessions[Number(target.machine.name.split("-")[1])]),
   };
-  return { events, installs, plan, transport };
+  return { events, installs, plan, transport, downloadProviders };
 }
 
 for (const variant of [{}, { first: true }, { same: true }, { service: false }]) {
   Deno.test(`dv/069: preparation barrier and immediate switch/action ${JSON.stringify(variant)}`, () =>
     withTempDir(async (root) => {
       const f = await fixture(root, variant);
-      const result = await new DeploymentExecutor(f.transport).execute(f.plan);
+      const result = await new DeploymentExecutor(f.transport, {
+        downloadProviders: f.downloadProviders,
+      }).execute(f.plan);
       assert(
         result.steps.every((s) => s.status === StepStatus.SUCCEEDED),
         JSON.stringify(result.steps),
@@ -350,10 +433,49 @@ for (const variant of [{}, { first: true }, { same: true }, { service: false }])
     }));
 }
 
+Deno.test("dv/versioned: Deno preflight fails before SSH stage changes a version directory", () =>
+  withTempDir(async (root) => {
+    const f = await fixture(root, { secretConfig: true, denoFailure: true });
+    const result = await new DeploymentExecutor(f.transport, {
+      downloadProviders: f.downloadProviders,
+    }).execute(f.plan);
+    assert(result.steps.some((step) => step.status === StepStatus.FAILED));
+    for (const index of [0, 1]) {
+      assert(f.events.includes(`${index}:deno-preflight`));
+      assert(!f.events.some((event) => event.startsWith(`${index}:/usr/bin/find `)));
+      assertEquals(
+        await Deno.readTextFile(`${f.installs[index]}/v2/resources/application.yml`),
+        "old\n",
+      );
+      assertEquals(await Deno.readLink(`${f.installs[index]}/latest`), "v1");
+      assertEquals(await Deno.readTextFile(`${f.installs[index]}/.demo.version`), "v1\n");
+    }
+  }));
+
+Deno.test("dv/versioned: disabled-Deno machine completes secretless SSH stage and activate", () =>
+  withTempDir(async (root) => {
+    const f = await fixture(root, { denoDisabled: true });
+    const result = await new DeploymentExecutor(f.transport, {
+      downloadProviders: f.downloadProviders,
+    }).execute(f.plan);
+    assert(result.steps.every((step) => step.status === StepStatus.SUCCEEDED));
+    assert(!f.events.some((event) => event.includes("deno-preflight")));
+    for (const index of [0, 1]) {
+      assertEquals(await Deno.readLink(`${f.installs[index]}/latest`), "v2");
+      assertEquals(await Deno.readTextFile(`${f.installs[index]}/.demo.version`), "v2\n");
+      assertEquals(
+        await Deno.readTextFile(`${f.installs[index]}/v2/resources/application.yml`),
+        "value: new\n",
+      );
+    }
+  }));
+
 Deno.test("dv/104: root mode converges the release root and version tree under the SSH identity", () =>
   withTempDir(async (root) => {
     const f = await fixture(root, { mode: "0644" });
-    const result = await new DeploymentExecutor(f.transport).execute(f.plan);
+    const result = await new DeploymentExecutor(f.transport, {
+      downloadProviders: f.downloadProviders,
+    }).execute(f.plan);
     assert(
       result.steps.every((s) => s.status === StepStatus.SUCCEEDED),
       JSON.stringify(result.steps),
@@ -391,7 +513,9 @@ Deno.test("dv/104: root mode converges the release root and version tree under t
 Deno.test("dv/082: latest target stays on the latest symlink path during deploy", () =>
   withTempDir(async (root) => {
     const f = await fixture(root, { targetRoot: "latest" });
-    const result = await new DeploymentExecutor(f.transport).execute(f.plan);
+    const result = await new DeploymentExecutor(f.transport, {
+      downloadProviders: f.downloadProviders,
+    }).execute(f.plan);
     assert(result.steps.every((s) => s.status === StepStatus.SUCCEEDED));
     assertEquals(
       await Deno.readTextFile(`${f.installs[0]}/v1/resources/application.yml`),
@@ -403,7 +527,9 @@ Deno.test("dv/082: latest target stays on the latest symlink path during deploy"
 Deno.test("dv/082: install root target is not reinterpreted as a release path", () =>
   withTempDir(async (root) => {
     const f = await fixture(root, { targetRoot: "install" });
-    const result = await new DeploymentExecutor(f.transport).execute(f.plan);
+    const result = await new DeploymentExecutor(f.transport, {
+      downloadProviders: f.downloadProviders,
+    }).execute(f.plan);
     assert(result.steps.every((s) => s.status === StepStatus.SUCCEEDED));
     assertEquals(
       await Deno.readTextFile(`${f.installs[0]}/resources/application.yml`),
@@ -416,7 +542,9 @@ for (const fault of ["publish", "switch", "service", "marker", "restore"] as con
   Deno.test(`dv/069: ${fault} failure recovery`, () =>
     withTempDir(async (root) => {
       const f = await fixture(root, { fault });
-      const result = await new DeploymentExecutor(f.transport).execute(f.plan);
+      const result = await new DeploymentExecutor(f.transport, {
+        downloadProviders: f.downloadProviders,
+      }).execute(f.plan);
       assert(
         result.steps.some((s) => s.status === StepStatus.FAILED),
         JSON.stringify(result.steps),
@@ -441,7 +569,9 @@ for (const fault of ["publish", "switch", "service", "marker", "restore"] as con
 Deno.test("dv/069: static versioned service defers to existing unit state", () =>
   withTempDir(async (root) => {
     const f = await fixture(root, { service: "static" });
-    const result = await new DeploymentExecutor(f.transport).execute(f.plan);
+    const result = await new DeploymentExecutor(f.transport, {
+      downloadProviders: f.downloadProviders,
+    }).execute(f.plan);
     assert(
       result.steps.every((s) => s.status === StepStatus.SUCCEEDED),
       JSON.stringify(result.steps),
@@ -459,7 +589,9 @@ Deno.test("dv/069: static versioned service defers to existing unit state", () =
 Deno.test("dv/106: implicit enabled keeps the unit enabled without forcing a restart", () =>
   withTempDir(async (root) => {
     const f = await fixture(root, { implicitEnabled: true });
-    const result = await new DeploymentExecutor(f.transport).execute(f.plan);
+    const result = await new DeploymentExecutor(f.transport, {
+      downloadProviders: f.downloadProviders,
+    }).execute(f.plan);
     assert(
       result.steps.every((s) => s.status === StepStatus.SUCCEEDED),
       JSON.stringify(result.steps),
@@ -477,7 +609,9 @@ Deno.test("dv/106: implicit enabled keeps the unit enabled without forcing a res
 Deno.test("dv/083: nginx config reload follows latest switch without restart", () =>
   withTempDir(async (root) => {
     const f = await fixture(root, { service: "static", reload: true });
-    const result = await new DeploymentExecutor(f.transport).execute(f.plan);
+    const result = await new DeploymentExecutor(f.transport, {
+      downloadProviders: f.downloadProviders,
+    }).execute(f.plan);
     assert(result.steps.every((s) => s.status === StepStatus.SUCCEEDED));
     for (const index of [0, 1]) {
       const offset = f.events.indexOf(`${index}:switch`);
@@ -491,7 +625,10 @@ Deno.test("dv/069: cancellation before activation restores staged config without
   withTempDir(async (root) => {
     const cancel = new AbortController();
     const f = await fixture(root, { cancel });
-    await new DeploymentExecutor(f.transport).execute(f.plan, cancel.signal);
+    await new DeploymentExecutor(f.transport, { downloadProviders: f.downloadProviders }).execute(
+      f.plan,
+      cancel.signal,
+    );
     assert(!f.events.includes("0:switch"));
     assertEquals(await Deno.readTextFile(`${f.installs[0]}/v2/resources/application.yml`), "old\n");
   }));
@@ -499,7 +636,9 @@ Deno.test("dv/069: cancellation before activation restores staged config without
 Deno.test("dv/069: partial publication recovery failure retains backups through close", () =>
   withTempDir(async (root) => {
     const f = await fixture(root, { fault: "partial-publish" });
-    const result = await new DeploymentExecutor(f.transport).execute(f.plan);
+    const result = await new DeploymentExecutor(f.transport, {
+      downloadProviders: f.downloadProviders,
+    }).execute(f.plan);
     assert(result.steps.some((s) => s.status === StepStatus.FAILED));
     assert(!f.events.includes("0:switch"));
     assert(f.events.includes("0:restore"));
@@ -546,7 +685,9 @@ Deno.test("dv/069: legacy three-phase dependency graph prepares globally and res
       r0,
       r1,
     ];
-    const result = await new DeploymentExecutor(f.transport).execute({ ...f.plan, steps });
+    const result = await new DeploymentExecutor(f.transport, {
+      downloadProviders: f.downloadProviders,
+    }).execute({ ...f.plan, steps });
     assert(
       result.steps.every((s) => [StepStatus.SUCCEEDED, StepStatus.SKIPPED].includes(s.status)),
       JSON.stringify(result.steps),
@@ -581,11 +722,43 @@ Deno.test("dv/069: legacy single-step versioned snapshot rejected before SSH", (
     assertEquals(connects, 0);
   }));
 
+Deno.test("dv/versioned: disabled-Deno legacy stage with built-in script is rejected before SSH", () =>
+  withTempDir(async (root) => {
+    const f = await fixture(root);
+    let connects = 0;
+    const transport: Transport = {
+      connect: () => {
+        connects++;
+        throw new Error("must not connect");
+      },
+    };
+    const stage = {
+      ...f.plan.steps[0],
+      machine: {
+        ...f.plan.steps[0]!.machine,
+        machine: { ...f.plan.steps[0]!.machine.machine, enableDeno: false },
+      },
+      scripts: [{
+        source: join(root, "legacy.ts"),
+        relativePath: REMOTE_VERSIONED_RELEASE_BUNDLE_PATH,
+        permissions: { run: [], net: [] },
+      }],
+    };
+    await assertRejects(
+      () => new DeploymentExecutor(transport).execute({ ...f.plan, steps: [stage] }),
+      PlanningError,
+      "enable_deno: false",
+    );
+    assertEquals(connects, 0);
+  }));
+
 for (const variant of [{ first: true }, { same: true }]) {
   Deno.test(`dv/069: service failure restores ${JSON.stringify(variant)} state`, () =>
     withTempDir(async (root) => {
       const f = await fixture(root, { ...variant, fault: "service" });
-      const result = await new DeploymentExecutor(f.transport).execute(f.plan);
+      const result = await new DeploymentExecutor(f.transport, {
+        downloadProviders: f.downloadProviders,
+      }).execute(f.plan);
       assert(result.steps.some((s) => s.status === StepStatus.FAILED && s.recovery?.succeeded));
       assertEquals(
         await Deno.readLink(`${f.installs[0]}/latest`).catch(() => undefined),
@@ -601,7 +774,9 @@ Deno.test("dv/093: stage-only deploy does not switch latest, touch the marker, o
   withTempDir(async (root) => {
     const f = await fixture(root);
     const plan = { ...f.plan, steps: f.plan.steps.filter((step) => step.action === "stage") };
-    const result = await new DeploymentExecutor(f.transport).execute(plan);
+    const result = await new DeploymentExecutor(f.transport, {
+      downloadProviders: f.downloadProviders,
+    }).execute(plan);
     assert(
       result.steps.every((s) => s.status === StepStatus.SUCCEEDED),
       JSON.stringify(result.steps),
@@ -647,7 +822,9 @@ Deno.test("dv/069: explicit configure updates current link target without activa
   withTempDir(async (root) => {
     const f = await fixture(root, { configure: true, service: false });
     const step = { ...f.plan.steps[0], action: "configure", deployment: undefined };
-    const result = await new DeploymentExecutor(f.transport).execute({
+    const result = await new DeploymentExecutor(f.transport, {
+      downloadProviders: f.downloadProviders,
+    }).execute({
       ...f.plan,
       requestedAction: "configure",
       steps: [step],
@@ -682,7 +859,9 @@ Deno.test("dv/112: pre-stage configure defers managed config publication to the 
       requestedAction: "deploy",
       steps: [configureSteps[0], configureSteps[1], ...stages, activate0, activate1],
     };
-    const result = await new DeploymentExecutor(f.transport).execute(plan);
+    const result = await new DeploymentExecutor(f.transport, {
+      downloadProviders: f.downloadProviders,
+    }).execute(plan);
     assert(
       result.steps.every((step) => step.status === StepStatus.SUCCEEDED),
       JSON.stringify(result.steps),

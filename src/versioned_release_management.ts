@@ -11,6 +11,15 @@ export interface VersionedReleaseRequest {
   readonly keepVersions?: number;
 }
 
+export interface VersionedStageRequest {
+  readonly installDirectory: string;
+  readonly resource: string;
+  readonly version: string;
+  /** The framework-validated unpacked App directory under workspace. */
+  readonly packageDirectory: string;
+  readonly workspace: string;
+}
+
 export interface PreparedVersionedRelease {
   readonly request: VersionedReleaseRequest;
   readonly releasePath: string;
@@ -26,7 +35,204 @@ export interface PreparedVersionedRelease {
 }
 
 const VERSION = /^[A-Za-z0-9][A-Za-z0-9._+-]*$/;
+const RESOURCE = /^[A-Za-z][A-Za-z0-9_.-]*$/;
+const PAYLOAD_ROOT = /^[A-Za-z0-9_@%+=,.-]+$/u;
 const RELEASE_MODE = /^0?[0-7]{3}$/;
+
+function safeDirectory(path: string): boolean {
+  return typeof path === "string" && path.startsWith("/") && path !== "/" &&
+    !path.endsWith("/") && !path.includes("\\") && !/[\0\r\n]/u.test(path) &&
+    path.split("/").every((part, index) =>
+      index === 0 || (part !== "" && part !== "." && part !== "..")
+    );
+}
+
+/** Stage an already validated App package without invoking Deno on the target. */
+export async function stageVersionedRelease(
+  session: RemoteSession,
+  request: VersionedStageRequest,
+  signal?: AbortSignal,
+): Promise<void> {
+  const { installDirectory: root, resource, version, packageDirectory, workspace } = request;
+  if (
+    !safeDirectory(root) || !safeDirectory(workspace) || !safeDirectory(packageDirectory) ||
+    !packageDirectory.startsWith(`${workspace}/`) || !RESOURCE.test(resource) ||
+    !VERSION.test(version)
+  ) {
+    throw new PreflightError("Invalid version stage arguments");
+  }
+  if (
+    !(await test(session, "-d", packageDirectory, signal)) ||
+    await test(session, "-L", packageDirectory, signal)
+  ) {
+    throw new TransportError("The framework-validated package is not a safe directory");
+  }
+  if (
+    !(await test(session, "-d", root, signal)) || await test(session, "-L", root, signal) ||
+    !(await test(session, "-w", root, signal))
+  ) {
+    throw new TransportError(
+      `${root} must be an existing writable directory and must not be a symlink`,
+    );
+  }
+
+  const markerPath = `${root}/.${resource}.version`;
+  if (await test(session, "-L", markerPath, signal)) {
+    throw new TransportError(`Version marker is not a regular file ${markerPath}`);
+  }
+  const markerExists = await test(session, "-e", markerPath, signal);
+  if (markerExists && !(await test(session, "-f", markerPath, signal))) {
+    throw new TransportError(`Version marker is not a regular file ${markerPath}`);
+  }
+  const previousVersion = markerExists
+    ? await run(session, ["/usr/bin/cat", "--", markerPath], signal)
+    : undefined;
+  if (previousVersion === version) return;
+
+  const releasePath = `${root}/${version}`;
+  const latestPath = `${root}/latest`;
+  if (await test(session, "-L", latestPath, signal)) {
+    const result = await session.run(["/usr/bin/readlink", "-f", "--", latestPath], { signal });
+    if (result.exitCode !== 0 && result.exitCode !== 1) {
+      throw new TransportError(`Failed to inspect latest link ${latestPath}`);
+    }
+    if (result.exitCode === 0 && result.stdout.trim() === releasePath) {
+      throw new TransportError(
+        `latest points to ${version}, but the version marker is missing; refusing to replace the current release`,
+      );
+    }
+  } else if (await test(session, "-e", latestPath, signal)) {
+    throw new TransportError(`latest is not a symlink ${latestPath}`);
+  }
+
+  const existing = await test(session, "-e", releasePath, signal);
+  if (
+    await test(session, "-L", releasePath, signal) ||
+    (existing && !(await test(session, "-d", releasePath, signal)))
+  ) {
+    throw new TransportError(`Version path is not a regular directory ${releasePath}`);
+  }
+
+  // Package members were checked before extraction. Inspect just the top level to preserve
+  // the single-wrapper-directory layout used by the old built-in release script.
+  const listing = await run(session, [
+    "/usr/bin/find",
+    packageDirectory,
+    "-mindepth",
+    "1",
+    "-maxdepth",
+    "1",
+    "-printf",
+    "%f\\0%y\\0",
+  ], signal);
+  const fields = listing === "" ? [] : listing.split("\0");
+  if (fields.at(-1) === "") fields.pop();
+  if (fields.length % 2 !== 0) {
+    throw new TransportError("The validated package top-level listing is malformed");
+  }
+  let payload = packageDirectory;
+  if (fields.length === 2 && fields[1] === "d") {
+    if (!PAYLOAD_ROOT.test(fields[0])) {
+      throw new TransportError(`Validated package has an unsafe top-level directory: ${fields[0]}`);
+    }
+    payload = `${packageDirectory}/${fields[0]}`;
+  }
+
+  const nonce = crypto.randomUUID().replaceAll("-", "");
+  const stagePath = `${root}/.sfo-deploy-${resource}-${version}-${nonce}`;
+  const backupPath = `${root}/.sfo-deploy-release-backup-${nonce}`;
+  const versionSource = `${workspace}/sfo-version-${nonce}`;
+  let localVersion: string | undefined;
+  let movedExisting = false;
+  let committed = false;
+  let primaryError: unknown;
+  const cleanupErrors: unknown[] = [];
+  try {
+    await run(session, ["/usr/bin/install", "-d", "-m", "0750", "--", stagePath], signal);
+    await run(session, ["/usr/bin/cp", "-a", "--", `${payload}/.`, `${stagePath}/`], signal);
+    localVersion = await Deno.makeTempFile({ prefix: "sfo-stage-version-" });
+    await Deno.chmod(localVersion, 0o600);
+    await Deno.writeTextFile(localVersion, `${version}\n`);
+    await session.uploadFile(localVersion, versionSource, { signal, mode: 0o600 });
+    await run(session, [
+      "/usr/bin/install",
+      "-m",
+      "0644",
+      "--",
+      versionSource,
+      `${stagePath}/VERSION`,
+    ], signal);
+    if (existing) {
+      try {
+        await run(session, ["/usr/bin/mv", "-T", "--", releasePath, backupPath], signal);
+        movedExisting = true;
+      } catch (cause) {
+        // The rename may have completed even if the SSH response was lost.
+        movedExisting = await test(session, "-d", backupPath).catch(() => false) &&
+          !(await test(session, "-e", releasePath).catch(() => true));
+        if (!movedExisting) throw cause;
+      }
+    }
+    try {
+      await run(session, ["/usr/bin/mv", "-T", "--", stagePath, releasePath], signal);
+      committed = true;
+    } catch (cause) {
+      // A lost response after the atomic rename still constitutes a successful stage.
+      committed = !(await test(session, "-e", stagePath).catch(() => true)) &&
+        await test(session, "-d", releasePath).catch(() => false) &&
+        !await test(session, "-L", releasePath).catch(() => true) &&
+        await run(session, ["/usr/bin/cat", "--", `${releasePath}/VERSION`]).catch(() => "") ===
+          version;
+      if (!committed) throw cause;
+    }
+  } catch (cause) {
+    primaryError = cause;
+  }
+
+  if (primaryError !== undefined && movedExisting && !committed) {
+    try {
+      if (await test(session, "-e", releasePath)) {
+        throw new TransportError(
+          `Version stage recovery found an unexpected release ${releasePath}`,
+        );
+      }
+      await run(session, ["/usr/bin/mv", "-T", "--", backupPath, releasePath]);
+    } catch (cause) {
+      cleanupErrors.push(cause);
+    }
+  }
+  if (committed && movedExisting) {
+    try {
+      await run(session, ["/usr/bin/rm", "-rf", "--", backupPath]);
+    } catch (cause) {
+      cleanupErrors.push(cause);
+    }
+  }
+  try {
+    await run(session, ["/usr/bin/rm", "-rf", "--", stagePath]);
+  } catch (cause) {
+    cleanupErrors.push(cause);
+  }
+  try {
+    await run(session, ["/usr/bin/rm", "-f", "--", versionSource]);
+  } catch (cause) {
+    cleanupErrors.push(cause);
+  }
+  if (localVersion !== undefined) {
+    try {
+      await Deno.remove(localVersion);
+    } catch (cause) {
+      cleanupErrors.push(cause);
+    }
+  }
+  if (primaryError !== undefined && cleanupErrors.length === 0) throw primaryError;
+  if (primaryError !== undefined || cleanupErrors.length > 0) {
+    throw new AggregateError(
+      [...(primaryError === undefined ? [] : [primaryError]), ...cleanupErrors],
+      "Version staging or cleanup failed",
+    );
+  }
+}
 
 /** 把八进制发布模式渲染为 chmod 符号表达式：目录与已有执行位文件自动获得 x。 */
 export function modeChmodExpression(mode: string): string {

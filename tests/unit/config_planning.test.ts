@@ -105,6 +105,43 @@ Deno.test("unit/config: unknown YAML fields fail before planning", async () => {
   });
 });
 
+Deno.test("unit/config: machine enable_deno defaults true and accepts only booleans", async () => {
+  await withTempDir(async (root) => {
+    const directory = await writeCluster(root);
+    const machinesPath = join(directory, "machines.yaml");
+    const original = await Deno.readTextFile(machinesPath);
+    assertEquals((await loadCluster(directory)).machines.get("node-a")?.enableDeno, true);
+
+    await Deno.writeTextFile(
+      machinesPath,
+      original.replace(
+        "    deno: /usr/bin/deno\n",
+        "    deno: /usr/bin/deno\n    enable_deno: true\n",
+      ),
+    );
+    assertEquals((await loadCluster(directory)).machines.get("node-a")?.enableDeno, true);
+
+    await Deno.writeTextFile(
+      machinesPath,
+      original.replace(
+        "    deno: /usr/bin/deno\n",
+        "    deno: /usr/bin/deno\n    enable_deno: false\n",
+      ),
+    );
+    assertEquals((await loadCluster(directory)).machines.get("node-a")?.enableDeno, false);
+
+    await Deno.writeTextFile(
+      machinesPath,
+      original.replace(
+        "    deno: /usr/bin/deno\n",
+        '    deno: /usr/bin/deno\n    enable_deno: "false"\n',
+      ),
+    );
+    const error = await assertRejects(() => loadCluster(directory), ConfigurationError);
+    assertStringIncludes(error.message, "enable_deno must be a boolean");
+  });
+});
+
 async function replaceInFile(path: string, from: string, to: string): Promise<void> {
   await Deno.writeTextFile(path, (await Deno.readTextFile(path)).replace(from, to));
 }
@@ -237,6 +274,11 @@ Deno.test("unit/planning: deploy plans apps only and omits environment dependenc
       "app:node-a/demo:activate",
     ]);
     assertEquals(plan.steps.at(-1)?.dependsOn, ["app:node-a/demo:stage"]);
+    for (const step of plan.steps) {
+      assertEquals(step.scripts, []);
+      assertEquals(step.bundleScripts, []);
+      assertEquals(step.deliveryInputs?.scripts, []);
+    }
   });
 });
 

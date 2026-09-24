@@ -65,6 +65,11 @@ export class FakeSession implements RemoteSession {
       return Promise.reject(this.privilegedError);
     }
     this.calls.push({ argv: [...argv], options });
+    if (
+      argv[0] === "/usr/bin/cat" && argv[1] === "--" && argv[2] === "/etc/os-release"
+    ) {
+      return Promise.resolve(commandResult(0, 'ID=ubuntu\nVERSION_ID="22.04"\n'));
+    }
     const joined = argv.join(" ");
     if (argv[0] === "/bin/sh" && argv[1] === "-c") {
       const script = String(argv[2] ?? "");

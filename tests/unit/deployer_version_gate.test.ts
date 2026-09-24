@@ -11,6 +11,7 @@ import { run } from "../../src/integration.ts";
 import type { ValidationResult } from "../../src/integration.ts";
 import type { ExecutionPlan } from "../../src/types.ts";
 import { writeCluster } from "../_support/fixtures.ts";
+import { FakeTransport } from "../_support/fake_session.ts";
 
 async function writeClusterWithDeployer(root: string, optional: string): Promise<string> {
   const directory = await writeCluster(root);
@@ -83,7 +84,7 @@ Deno.test("unit/deployer-version: matching version allows validate/plan to proce
       cluster: "demo",
       action: "plan",
       apps: ["demo"],
-    }) as ExecutionPlan;
+    }, { transport: new FakeTransport() }) as ExecutionPlan;
     assertEquals(plan.requestedAction, "deploy");
   });
 });

@@ -32,6 +32,7 @@ import { PackageCache } from "./package_cache.ts";
 import { type InfoLogger, type SafeInfoLogger, safeInfoLogger } from "./logging.ts";
 import { DEFAULT_KEEP_VERSIONS, MAX_KEEP_VERSIONS } from "./user_config.ts";
 import { buildPlan, resolveMachine } from "./planning.ts";
+import { assertPlanDenoPolicy } from "./remote_compatibility.ts";
 import {
   DeploymentResult,
   type FetchPackageResult,
@@ -529,6 +530,7 @@ export async function run(
 
   const requestedAction = request.action === "plan" ? "deploy" : request.action;
   const plan = buildRequestedPlan(cluster, request, requestedAction);
+  assertPlanDenoPolicy(plan);
   await info("execution plan built", {
     action: plan.requestedAction,
     steps: plan.steps.length,
@@ -926,6 +928,7 @@ async function runDeploy(
       });
     }
   }
+  assertPlanDenoPolicy(plan);
   const store = releaseStore(options, providers);
   const pending = await store.beginAttempt({
     operation: "deploy",
@@ -1053,16 +1056,24 @@ async function runInstallDeno(
   }
   validateInstallTo(options.installTo);
   const cluster = await loadCluster(options.clusterDirectory);
-  const names = options.machines.length > 0
+  const selectedNames = options.machines.length > 0
     ? Object.freeze([...options.machines])
     : Object.freeze([...cluster.machines.keys()].sort());
-  if (names.length === 0) throw new PlanningError("Cluster has no usable machines");
+  if (selectedNames.length === 0) throw new PlanningError("Cluster has no usable machines");
+  const names = Object.freeze(
+    selectedNames.filter((name) => cluster.machines.get(name)?.enableDeno !== false),
+  );
   await info("Deno installation started", {
     cluster: options.cluster,
     machines: names.length,
     version: options.denoVersion,
   });
-  if (options.machines.length === 0 && confirmMachines) {
+  for (const name of selectedNames) {
+    if (cluster.machines.get(name)?.enableDeno === false) {
+      await info("Deno machine skipped", { machine: name, reason: "enable_deno: false" });
+    }
+  }
+  if (names.length > 0 && options.machines.length === 0 && confirmMachines) {
     if (!(await confirmMachines(names))) {
       throw new CancelledError("Cancelled: default full Deno install was not confirmed");
     }

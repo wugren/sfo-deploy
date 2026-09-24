@@ -117,6 +117,11 @@ class IntegrationSession implements RemoteSession {
     return Promise.resolve();
   }
   run(argv: readonly string[], _options?: RemoteRunOptions): Promise<CommandResult> {
+    if (
+      argv[0] === "/usr/bin/cat" && argv[1] === "--" && argv[2] === "/etc/os-release"
+    ) {
+      return Promise.resolve(commandResult(0, 'ID=ubuntu\nVERSION_ID="22.04"\n'));
+    }
     if (argv[0] === "/usr/bin/test") {
       const [flag, path] = argv.slice(1);
       if (flag === "-L") return Promise.resolve(commandResult(1));

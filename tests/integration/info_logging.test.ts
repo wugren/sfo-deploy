@@ -54,7 +54,7 @@ Deno.test("integration/info-logging: plan emits terminal completion", async () =
     const events: LoggedEvent[] = [];
     const result = await run(
       { configRoot: root, cluster: "demo", action: "plan" },
-      { onInfo: logger(events) },
+      { onInfo: logger(events), transport: new FakeTransport() },
     ) as ExecutionPlan;
 
     assertEquals(result.requestedAction, "deploy");
@@ -125,6 +125,45 @@ Deno.test("integration/info-logging: Deno close failure changes terminal phase",
     const messages = events.map((event) => event.message);
     assertStringIncludes(messages.join("\n"), "Deno session close failed");
     assertStringIncludes(messages.join("\n"), "Deno installation completed");
+  });
+});
+
+Deno.test("integration/info-logging: disabled Deno installation emits a safe skip event", async () => {
+  await withTempDir(async (root) => {
+    const cluster = await writeCluster(root);
+    const path = join(cluster, "machines.yaml");
+    await Deno.writeTextFile(
+      path,
+      (await Deno.readTextFile(path)).replace(
+        "    deno: /usr/bin/deno\n",
+        "    deno: /usr/bin/deno\n    enable_deno: false\n",
+      ),
+    );
+    const events: LoggedEvent[] = [];
+    const transport = new FakeTransport();
+    const result = await run(
+      { configRoot: root, cluster: "demo", action: "install-deno", machines: ["node-a"] },
+      { onInfo: logger(events), transport },
+    ) as InstallDenoResult;
+    assertEquals(result.machines, []);
+    assertEquals(transport.connectCalls, 0);
+    assertEquals(events.find((event) => event.message === "Deno machine skipped")?.fields, {
+      machine: "node-a",
+      reason: "enable_deno: false",
+    });
+    assert(events.some((event) => event.message === "Deno installation completed"));
+
+    const loggerFailure = await run(
+      { configRoot: root, cluster: "demo", action: "install-deno", machines: ["node-a"] },
+      {
+        onInfo: () => {
+          throw new Error("logger unavailable");
+        },
+        transport,
+      },
+    ) as InstallDenoResult;
+    assertEquals(loggerFailure.exitCode, 0);
+    assertEquals(transport.connectCalls, 0);
   });
 });
 

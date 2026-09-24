@@ -123,6 +123,7 @@ machines:
     ssh_port: 22
     # ssh_private_key: secrets/id_ed25519
     deno: /usr/local/bin/deno
+    enable_deno: true
 ```
 
 `private_ip` 和 `public_ip` 均可用单个 IP 或按优先级排列的非空列表。同区默认 private，跨区默认
@@ -133,8 +134,13 @@ public；`--executor-region` 和 `--address-kind private|public` 可覆盖。SSH
 不要提交真实私钥。SSH 主机密钥严格校验：优先使用集群根 `known_hosts`，否则要求本地
 `~/.ssh/known_hosts` 是可读普通文件；仅有系统全局记录不足。未知主机密钥失败关闭。
 
-远端需要 Deno 2；`machines[].deno` 可写裸命令 `deno` 或规范绝对 POSIX 路径，不能带参数。
-`install-deno` 可在不要求预装 Deno 的目标机上通过纯 SSH 引导安装。
+只有执行用户 Deno 脚本或真实秘密配置渲染的远端步骤需要 Deno 2；`machines[].deno` 可写裸命令
+`deno` 或规范绝对 POSIX 路径，不能带参数。`machines[].enable_deno` 是可选布尔值，缺省 `true`。
+设为 `false` 时，内置版本发布、无秘密受管配置和系统服务操作仍可执行；若所选步骤必须执行 Deno
+脚本或真实秘密配置渲染，规划和部署会在远端写入前报错，不跳过该步骤。设为 `true` 时，需要 Deno
+的步骤会在目标机预检所配置的 Deno 2；运行时不可用或版本不足会报错。`install-deno` 可通过纯 SSH
+引导安装，但会在连接前跳过 `enable_deno: false` 的机器，并以 info 日志说明原因；确认、进度和结果
+只包含实际处理的机器。`plan` 仅使用本地配置，不连接 SSH，也不依据目标机的发行版自动改变策略。
 
 ### Environment
 
@@ -320,6 +326,11 @@ file 配置的 `target` 是规范远端绝对路径，或以下变量加相对�
 内容只支持 yaml/json/toml/ini；`nginx`、无包 App 和 Environment 配置不支持它。若集群已声明名为
 `APP_VERSION` 的秘密，内容中的占位符继续按秘密引用处理。
 
+普通参数和内置 `${APP_VERSION}` 在控制端生成配置骨架时完成渲染；无秘密引用的受管配置直接交付该
+内容，保留目标端候选文件检查、validator 和事务发布。真实秘密值只保留在目标机，含秘密引用的配置
+仍由远端更新器渲染，因此机器须启用 `enable_deno`，且目标机的 Deno 2 预检须通过；
+禁用时计划阶段会拒绝这类配置。三个目录变量仅用于配置 `target` 路径。
+
 普通变量使用 `__SFO_CONFIG_VAR_V1_<NAME>__`，独占完整值，并用 `variables.path` 从步骤参数绑定。
 秘密直接写 `${SECRET_NAME}`，必须在 `cluster.yaml.secrets` 声明类型并放置到目标机器。value
 秘密可声明 `type: string|boolean|integer|number`；boolean/integer/number 必须独占完整值，string
@@ -412,7 +423,7 @@ enabled/active 状态，恢复不完整明确报告 partial/recovery。
 
 ## 常用命令
 
-先在本地校验配置并预览部署；`plan` 不建立 SSH 连接、不下载包、不解析秘密值：
+先在本地校验配置并预览部署；`plan` 不连接 SSH、不下载包、不解析秘密值：
 
 ```bash
 sfo-deploy validate --cluster production

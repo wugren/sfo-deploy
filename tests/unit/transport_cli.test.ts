@@ -1,4 +1,4 @@
-import { join } from "jsr:@std/path@1.1.6";
+import { dirname, join } from "jsr:@std/path@1.1.6";
 import {
   assert,
   assertEquals,
@@ -45,6 +45,11 @@ Deno.test("unit/transport: OpenSSH uses strict argv and known_hosts", async () =
     assertEquals(calls[0].command, "ssh");
     assert(calls[0].args.includes("StrictHostKeyChecking=yes"));
     assert(calls[0].args.includes(`UserKnownHostsFile=${knownHosts}`));
+    assert(calls[0].args.includes("ControlMaster=auto"));
+    const controlOption = calls[0].args.find((arg) => arg.startsWith("ControlPath="));
+    assert(controlOption);
+    assert(calls[1].args.includes(controlOption));
+    assert(calls[1].args.includes("check"));
     assertEquals(calls[0].args.at(-2), "deploy@10.0.0.1");
     assertEquals(calls[0].args.at(-1), "exec 'true'");
     await session.close();
@@ -65,11 +70,95 @@ Deno.test("unit/transport: uploadFile defaults remote files to mode 0600", async
     const transport = new OpenSshTransport({ knownHosts, commandFactory: factory });
     const session = await transport.connect(resolved("node-a"));
     await session.uploadFile(local, "/tmp/context.json");
-    assertEquals(calls[1].command, "scp");
-    assert((calls[1].args.at(-1) ?? "").endsWith(":/tmp/context.json"));
-    assertEquals(calls[2].command, "ssh");
-    assertStringIncludes(calls[2].args.at(-1) ?? "", "'chmod' '0600' '--' '/tmp/context.json'");
+    assertEquals(calls[2].command, "scp");
+    assert((calls[2].args.at(-1) ?? "").endsWith(":/tmp/context.json"));
+    assertEquals(calls[3].command, "ssh");
+    assertStringIncludes(calls[3].args.at(-1) ?? "", "'chmod' '0600' '--' '/tmp/context.json'");
+    const controlOption = calls[0].args.find((arg) => arg.startsWith("ControlPath="));
+    assert(controlOption);
+    assert(calls.slice(1).every((call) => call.args.includes(controlOption)));
     await session.close();
+  });
+});
+
+Deno.test("unit/transport: sessions isolate and close their SSH control connections", async () => {
+  await withTempDir(async (root) => {
+    const knownHosts = join(root, "known_hosts");
+    await Deno.writeTextFile(knownHosts, "fixture\n");
+    const calls: Array<{ command: string; args: readonly string[] }> = [];
+    const factory = (command: string, args: readonly string[]): SpawnedCommand => {
+      calls.push({ command, args: [...args] });
+      const controlPath = args.find((arg) => arg.startsWith("ControlPath="))?.slice(12);
+      if (args.at(-1) === "exec 'true'" && controlPath) {
+        Deno.writeTextFileSync(controlPath, "mock control socket");
+      }
+      return { output: () => Promise.resolve(output()), kill: () => undefined };
+    };
+    const transport = new OpenSshTransport({ knownHosts, commandFactory: factory });
+    const first = await transport.connect(resolved("node-a"));
+    const second = await transport.connect(resolved("node-a"));
+    const paths = calls.filter((call) => call.args.at(-1) === "exec 'true'").map((call) =>
+      call.args.find((arg) => arg.startsWith("ControlPath="))!.slice(12)
+    );
+    assertEquals(paths.length, 2);
+    assert(paths[0] !== paths[1]);
+    assertEquals((await Deno.stat(dirname(paths[0]))).mode! & 0o777, 0o700);
+    await first.run(["echo", "first"]);
+    assert(calls.at(-1)!.args.includes(`ControlPath=${paths[0]}`));
+    await first.close();
+    assert(calls.at(-1)!.args.includes("exit"));
+    await assertRejects(() => Deno.stat(dirname(paths[0])), Deno.errors.NotFound);
+    await second.run(["echo", "second"]);
+    assert(calls.at(-1)!.args.includes(`ControlPath=${paths[1]}`));
+    await second.close();
+    await assertRejects(() => Deno.stat(dirname(paths[1])), Deno.errors.NotFound);
+  });
+});
+
+Deno.test("unit/transport: failed multiplex check closes the initial connection", async () => {
+  await withTempDir(async (root) => {
+    const knownHosts = join(root, "known_hosts");
+    await Deno.writeTextFile(knownHosts, "fixture\n");
+    let controlPath = "";
+    let exitCalled = false;
+    const factory = (_command: string, args: readonly string[]): SpawnedCommand => {
+      if (args.at(-1) === "exec 'true'") {
+        controlPath = args.find((arg) => arg.startsWith("ControlPath="))!.slice(12);
+        Deno.writeTextFileSync(controlPath, "mock control socket");
+      }
+      if (args.includes("exit")) exitCalled = true;
+      return {
+        output: () => Promise.resolve(output(args.includes("check") ? 255 : 0)),
+        kill: () => undefined,
+      };
+    };
+    const transport = new OpenSshTransport({ knownHosts, commandFactory: factory });
+    await assertRejects(() => transport.connect(resolved("node-a")), TransportError);
+    assert(exitCalled);
+    await assertRejects(() => Deno.stat(dirname(controlPath)), Deno.errors.NotFound);
+  });
+});
+
+Deno.test("unit/transport: stale SSH control socket is removed on close", async () => {
+  await withTempDir(async (root) => {
+    const knownHosts = join(root, "known_hosts");
+    await Deno.writeTextFile(knownHosts, "fixture\n");
+    let controlPath = "";
+    let closing = false;
+    const factory = (_command: string, args: readonly string[]): SpawnedCommand => {
+      if (args.at(-1) === "exec 'true'") {
+        controlPath = args.find((arg) => arg.startsWith("ControlPath="))!.slice(12);
+        Deno.writeTextFileSync(controlPath, "stale control socket");
+      }
+      if (args.includes("exit")) closing = true;
+      const code = closing && (args.includes("exit") || args.includes("check")) ? 255 : 0;
+      return { output: () => Promise.resolve(output(code)), kill: () => undefined };
+    };
+    const session = await new OpenSshTransport({ knownHosts, commandFactory: factory }).connect(
+      resolved("node-a"),
+    );
+    await session.close();
+    await assertRejects(() => Deno.stat(dirname(controlPath)), Deno.errors.NotFound);
   });
 });
 
@@ -352,7 +441,7 @@ Deno.test("unit/transport: successful remote commands are quiet and failures sta
     const events: string[] = [];
     const factory = (_command: string, args: readonly string[]): SpawnedCommand => {
       const rendered = String(args.at(-1) ?? "");
-      if (rendered === "exec 'true'") {
+      if (rendered === "exec 'true'" || args.includes("check")) {
         return { output: () => Promise.resolve(output()), kill: () => undefined };
       }
       throw new Error("remote process failed");

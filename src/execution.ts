@@ -22,6 +22,7 @@ import {
   type StagedDeploymentBundle,
 } from "./remote_deployment.ts";
 import { REMOTE_VERSIONED_RELEASE_BUNDLE_PATH } from "./remote_runtime/artifact.ts";
+import { assertPlanDenoPolicy, stepRequiresRemoteDeno } from "./remote_compatibility.ts";
 import { DEFAULT_KEEP_VERSIONS, MAX_KEEP_VERSIONS } from "./user_config.ts";
 import {
   type CommandResult,
@@ -47,6 +48,7 @@ import {
   type PreparedVersionedRelease,
   prepareVersionedRelease,
   restoreVersionedRelease,
+  stageVersionedRelease,
   switchVersionedRelease,
 } from "./versioned_release_management.ts";
 import {
@@ -357,7 +359,7 @@ export async function prepareExecution(
             mode: 0o700,
           })
         );
-        if (configs.some((config) => config.skeleton.format !== "systemd")) {
+        if (configs.some((config) => config.skeleton.secretBindings.length > 0)) {
           bundleScripts.push(Object.freeze({
             source: REMOTE_CONFIG_UPDATER_SOURCE,
             relativePath: REMOTE_CONFIG_UPDATER_BUNDLE_PATH,
@@ -483,6 +485,7 @@ export class DeploymentExecutor {
       action: plan.requestedAction,
       steps: plan.steps.length,
     });
+    assertPlanDenoPolicy(plan);
     const prepared = await prepareExecution(plan, {
       bindings: this.bindings,
       downloadProviders: this.downloadProviders,
@@ -533,6 +536,8 @@ export class DeploymentExecutor {
       throw new PreflightError("PreparedExecution is invalid or already closed");
     }
     const plan = prepared.plan;
+    assertPlanDenoPolicy(plan);
+    let cancelled = signal?.aborted ?? false;
     const results: StepResult[] = [];
     const byStep = new Map<string, StepResult>();
     const sessions = new Map<string, RemoteSession>();
@@ -558,7 +563,6 @@ export class DeploymentExecutor {
         }
       });
     }
-    let cancelled = signal?.aborted ?? false;
     await this.#info("prepared execution started", {
       cluster: plan.cluster,
       action: plan.requestedAction,
@@ -1030,7 +1034,7 @@ export class DeploymentExecutor {
     const secretNames = [...new Set([...step.secretValues, ...step.secretFiles])];
     const usesScopedSecrets = step.kind === "app" &&
       (step.management !== undefined || step.deployment?.kind === "versioned");
-    const lifecycleSecretNames = step.kind === "app"
+    const lifecycleSecretNames = step.kind === "app" && step.scripts.length > 0
       ? [
         ...new Set([
           ...(step.lifecycleSecretValues ?? secretNames),
@@ -1061,7 +1065,8 @@ export class DeploymentExecutor {
       if (
         usesScopedSecrets &&
         (lifecycleSecretNames.length > 0 ||
-          (managedConfigs.length > 0 && !options.deferToStage)) &&
+          (managedConfigs.some((config) => config.secretReferences.size > 0) &&
+            !options.deferToStage)) &&
         (createScopedSecrets === undefined || cleanupScopedSecrets === undefined)
       ) {
         throw new PreflightError(
@@ -1075,7 +1080,9 @@ export class DeploymentExecutor {
       }
       if (managedConfigs.length > 0 && !options.deferToStage) {
         if (
-          createBuiltinCandidate === undefined || publishConfigs === undefined ||
+          (managedConfigs.some((config) => config.secretReferences.size > 0) &&
+            createBuiltinCandidate === undefined) ||
+          publishConfigs === undefined ||
           restoreConfigs === undefined || commitConfigs === undefined
         ) {
           throw new PreflightError(
@@ -1130,9 +1137,24 @@ export class DeploymentExecutor {
         installArgv.push("--", step.installDirectory);
         await options.session.run(installArgv, { signal: options.signal, privileged: true });
       }
-      if (!options.runtimeChecked.has(runtimeKey)) {
+      if (stepRequiresRemoteDeno(step) !== undefined && !options.runtimeChecked.has(runtimeKey)) {
         await options.session.preflightDeno(runtime.executable, options.signal, 2);
         options.runtimeChecked.add(runtimeKey);
+      }
+      if (
+        step.kind === "app" && step.action === "stage" &&
+        step.deployment?.kind === "versioned" && !legacyVersionedStage(step)
+      ) {
+        if (extractedPackageRoot === undefined || step.installDirectory === undefined) {
+          throw new PreflightError("versioned App stage requires a validated package directory");
+        }
+        await stageVersionedRelease(options.session, {
+          installDirectory: step.installDirectory,
+          resource: step.resource,
+          version: parameterVersion(step.parameters)!,
+          packageDirectory: extractedPackageRoot,
+          workspace: options.workspace,
+        }, options.signal);
       }
       if (
         step.kind === "environment" && step.action === "install" &&
@@ -1393,7 +1415,9 @@ export class DeploymentExecutor {
               if (staged === undefined) {
                 throw new PreflightError("managed config is missing the deployment bundle");
               }
-              const needsUpdater = managedConfigs.some((config) => config.format !== "systemd");
+              const needsUpdater = managedConfigs.some((config) =>
+                config.secretReferences.size > 0
+              );
               const updaterScript = needsUpdater
                 ? staged.scripts.get(REMOTE_CONFIG_UPDATER_BUNDLE_PATH)
                 : undefined;
@@ -1413,7 +1437,7 @@ export class DeploymentExecutor {
                   );
                 }
                 let candidate;
-                if (config.format === "systemd") {
+                if (config.format === "systemd" || config.secretReferences.size === 0) {
                   const candidatePath =
                     `${options.workspace}/managed-unit-candidate-${crypto.randomUUID()}`;
                   staticCandidates.push(candidatePath);
@@ -1731,6 +1755,11 @@ function normalizeVersionedSteps(steps: readonly PlanStep[]): readonly PlanStep[
 
 function legacySingleVersionedDeploy(step: PlanStep): boolean {
   return step.kind === "app" && step.action === "deploy" && step.deployment?.kind === "versioned" &&
+    step.scripts.some((script) => script.relativePath === REMOTE_VERSIONED_RELEASE_BUNDLE_PATH);
+}
+
+function legacyVersionedStage(step: PlanStep): boolean {
+  return step.kind === "app" && step.action === "stage" && step.deployment?.kind === "versioned" &&
     step.scripts.some((script) => script.relativePath === REMOTE_VERSIONED_RELEASE_BUNDLE_PATH);
 }
 

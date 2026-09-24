@@ -283,6 +283,8 @@ export interface Machine {
   /** 每机可选安全目录；缺省 `~/.sfo-deploy/secrets/`。 */
   readonly secretsDir?: string;
   readonly sshPrivateKey?: string;
+  /** 是否允许执行远端 Deno；旧机器对象缺省允许。 */
+  readonly enableDeno?: boolean;
   readonly scriptRuntime: ScriptRuntime;
   readonly environments: readonly EnvironmentInstance[];
 }

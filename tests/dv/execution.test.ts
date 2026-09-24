@@ -10,7 +10,7 @@ import {
   VerifiedArtifact,
 } from "../../src/downloads.ts";
 import { DeploymentExecutor, executePlan, prepareExecution } from "../../src/execution.ts";
-import { CancelledError, PreflightError } from "../../src/errors.ts";
+import { CancelledError, PlanningError, PreflightError } from "../../src/errors.ts";
 import { commandResult, type StepResult, StepStatus } from "../../src/results.ts";
 import { ProjectBindings } from "../../src/secrets.ts";
 import type {
@@ -98,7 +98,12 @@ class MemorySession implements RemoteSession {
     }
   }
 
-  run(_argv: readonly string[], _options?: RemoteRunOptions): Promise<CommandResult> {
+  run(argv: readonly string[], _options?: RemoteRunOptions): Promise<CommandResult> {
+    if (
+      argv[0] === "/usr/bin/cat" && argv[1] === "--" && argv[2] === "/etc/os-release"
+    ) {
+      return Promise.resolve(commandResult(0, 'ID=ubuntu\nVERSION_ID="22.04"\n'));
+    }
     return Promise.resolve(commandResult(0));
   }
 
@@ -414,6 +419,35 @@ Deno.test("dv/execution: one target fails fast while another target remains isol
   });
 });
 
+Deno.test("dv/execution: direct API rejects disabled Deno before connecting", async () => {
+  await withTempDir(async (root) => {
+    const original = await executablePlan(root, ["node-a"]);
+    const plan = {
+      ...original,
+      steps: original.steps.map((step) => ({
+        ...step,
+        machine: {
+          ...step.machine,
+          machine: { ...step.machine.machine, enableDeno: false },
+        },
+      })),
+    };
+    let connects = 0;
+    const transport: Transport = {
+      connect() {
+        connects++;
+        throw new Error("disabled Deno plan must not connect");
+      },
+    };
+    await assertRejects(
+      () => executePlan(plan, { transport }),
+      PlanningError,
+      "enable_deno: false",
+    );
+    assertEquals(connects, 0);
+  });
+});
+
 Deno.test("dv/execution: onStep emits every completed step in plan order", async () => {
   await withTempDir(async (root) => {
     const transport = new MemoryTransport();
@@ -434,13 +468,20 @@ Deno.test("dv/execution: onStep emits every completed step in plan order", async
   });
 });
 
-Deno.test("dv/execution: pre-aborted request performs no SSH and returns cancelled results", async () => {
+Deno.test("dv/execution: pre-aborted request returns cancelled results without SSH", async () => {
   await withTempDir(async (root) => {
     const plan = await executablePlan(root, ["node-a"]);
     const prepared = await prepareExecution(plan);
     const controller = new AbortController();
     controller.abort();
-    const result = await new DeploymentExecutor(new MemoryTransport()).executePrepared(
+    let connects = 0;
+    const transport: Transport = {
+      connect() {
+        connects++;
+        throw new Error("A pre-aborted request must not connect to SSH");
+      },
+    };
+    const result = await new DeploymentExecutor(transport).executePrepared(
       prepared,
       controller.signal,
     );
@@ -448,6 +489,7 @@ Deno.test("dv/execution: pre-aborted request performs no SSH and returns cancell
       StepStatus.CANCELLED,
       StepStatus.CANCELLED,
     ]);
+    assertEquals(connects, 0);
   });
 });
 

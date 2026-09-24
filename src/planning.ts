@@ -1,11 +1,6 @@
 /** 将完整集群配置转换为稳定、可审查的串行执行计划。 */
 
 import { PlanningError } from "./errors.ts";
-import {
-  REMOTE_VERSIONED_RELEASE_BUNDLE_PATH,
-  REMOTE_VERSIONED_RELEASE_SOURCE,
-  VERSIONED_RELEASE_PERMISSIONS,
-} from "./remote_runtime/artifact.ts";
 import type {
   AddressKind,
   AppDefinition,
@@ -91,15 +86,13 @@ function materialize(values: Iterable<string> | undefined): string[] | undefined
   return values === undefined ? undefined : Array.from(values);
 }
 
-/** 汇总 App 配置脚本、script manager 脚本和内置发布脚本，供重打包使用。 */
+/** 汇总 App 配置脚本和 script manager 脚本，供重打包使用。 */
 function bundleAppScripts(
-  resource: AppDefinition,
   management?: AppManagementDefinition,
 ): readonly ScriptInvocation[] {
   const seen = new Set<string>();
   const result: ScriptInvocation[] = [];
   const groups: readonly (readonly ScriptInvocation[])[] = [
-    ...(resource.deployment?.kind === "versioned" ? [builtinDeploymentScripts()] : []),
     ...(management === undefined ? [] : [management.configScripts]),
     ...(management?.manager?.kind === "script"
       ? [[management.manager.start, management.manager.stop, management.manager.restart]]
@@ -113,26 +106,6 @@ function bundleAppScripts(
     }
   }
   return freezeArray(result);
-}
-
-function builtinDeploymentScripts(): readonly ScriptInvocation[] {
-  return freezeArray([
-    Object.freeze({
-      source: REMOTE_VERSIONED_RELEASE_SOURCE,
-      relativePath: REMOTE_VERSIONED_RELEASE_BUNDLE_PATH,
-      permissions: VERSIONED_RELEASE_PERMISSIONS,
-    }),
-  ]);
-}
-
-function appActionScripts(
-  resource: AppDefinition,
-): ReadonlyMap<string, readonly ScriptInvocation[]> {
-  if (resource.deployment?.kind !== "versioned") return new Map();
-  return new Map([
-    ["stage", builtinDeploymentScripts()] as const,
-    ["activate", builtinDeploymentScripts()] as const,
-  ]);
 }
 
 /** 方案 A：步骤秘密集合按机器范围推导——本机 cluster.yaml 声明的全部秘密。 */
@@ -386,7 +359,6 @@ export function buildPlan(
     const environmentDefinition = kind === "environment"
       ? cluster.environments.get(resource.definition)!
       : undefined;
-    const appScripts = kind === "app" ? appActionScripts(resource) : undefined;
     const environmentScripts = kind === "environment" ? environmentDefinition!.scripts : undefined;
     const management = kind === "app" ? resource.management : undefined;
     const nodeStepIds = stepIdsByNode.get(node) ?? [];
@@ -401,11 +373,8 @@ export function buildPlan(
       const lifecycleAppAction = kind === "app" &&
         ["start", "stop", "restart"].includes(currentAction);
       const stepManagement = lifecycleAppAction ? lifecycleAppManagement(management) : management;
-      const stepAppScripts = kind === "app"
-        ? bundleAppScripts(resource, stepManagement)
-        : undefined;
-      let invocations = appScripts?.get(currentAction) ??
-        environmentScripts?.actions.get(currentAction) ?? [];
+      const stepAppScripts = kind === "app" ? bundleAppScripts(stepManagement) : undefined;
+      let invocations = environmentScripts?.actions.get(currentAction) ?? [];
       if (kind === "environment" && currentAction === "before-start") {
         invocations = environmentDefinition?.init?.beforeStart ?? [];
       }
@@ -471,7 +440,9 @@ export function buildPlan(
         }
         if (
           environmentInstallValue === undefined && environmentManagerValue === undefined &&
-          !managedOwnsAction(stepManagement, currentAction)
+          !managedOwnsAction(stepManagement, currentAction) &&
+          !(kind === "app" && resource.deployment?.kind === "versioned" &&
+            (currentAction === "stage" || currentAction === "activate"))
         ) {
           throw new PlanningError(`${node} has no action script: ${currentAction}`);
         }

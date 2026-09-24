@@ -143,6 +143,7 @@ Deno.test("unit/history: new writes use v4 and Deno v2/v3 snapshots remain reada
     assertEquals(current.steps[0].lifecycle_secret_files, []);
     assertEquals(current.steps[0].scripts[0].permissions.read, []);
     assertEquals(current.steps[0].scripts[0].permissions.write, []);
+    assertEquals(current.steps[0].machine.definition.enable_deno, true);
     const currentDecoded = await __internal.decodePlan(
       current,
       snapshot,
@@ -150,8 +151,37 @@ Deno.test("unit/history: new writes use v4 and Deno v2/v3 snapshots remain reada
       importer,
     );
     assertEquals(currentDecoded.schemaVersion, 4);
+    assertEquals(currentDecoded.steps[0].machine.machine.enableDeno, true);
 
-    const v3 = structuredClone(current);
+    const disabled = structuredClone(current);
+    disabled.steps[0].machine.definition.enable_deno = false;
+    const disabledDecoded = await __internal.decodePlan(
+      disabled,
+      snapshot,
+      join(root, "demo"),
+      importer,
+    );
+    assertEquals(disabledDecoded.steps[0].machine.machine.enableDeno, false);
+
+    const priorV4 = structuredClone(current);
+    delete priorV4.steps[0].machine.definition.enable_deno;
+    const priorDecoded = await __internal.decodePlan(
+      priorV4,
+      snapshot,
+      join(root, "demo"),
+      importer,
+    );
+    assertEquals(priorDecoded.steps[0].machine.machine.enableDeno, true);
+
+    const invalidPolicy = structuredClone(current);
+    invalidPolicy.steps[0].machine.definition.enable_deno = "false";
+    await assertRejects(
+      () => __internal.decodePlan(invalidPolicy, snapshot, join(root, "demo"), importer),
+      ConfigurationError,
+      "machine.enable_deno must be a boolean",
+    );
+
+    const v3 = structuredClone(priorV4);
     v3.schema_version = 3;
     const legacyFields = JSON.parse(
       await Deno.readTextFile(
@@ -180,6 +210,7 @@ Deno.test("unit/history: new writes use v4 and Deno v2/v3 snapshots remain reada
 
     const v2 = structuredClone(v3);
     v2.schema_version = 2;
+    for (const step of v2.steps) delete step.machine.definition.enable_deno;
     const decodedV2 = await __internal.decodePlan(v2, snapshot, join(root, "demo"), importer);
     assertEquals(decodedV2.steps.length, current.steps.length);
 

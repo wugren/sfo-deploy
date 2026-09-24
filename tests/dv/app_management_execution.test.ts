@@ -303,6 +303,11 @@ function managedTransport(options: {
     },
     run(argv: readonly string[]): Promise<CommandResult> {
       events.push(`run:${argv[0]}:${argv[1] ?? ""}`);
+      if (
+        argv[0] === "/usr/bin/cat" && argv[1] === "--" && argv[2] === "/etc/os-release"
+      ) {
+        return Promise.resolve(commandResult(0, 'ID=ubuntu\nVERSION_ID="22.04"\n'));
+      }
       if (argv[0] === "id" && argv[1] === "-u") {
         return Promise.resolve(
           commandResult(0, options.unitUserId === undefined ? "" : `${options.unitUserId}\n`),
@@ -362,7 +367,7 @@ function managedTransport(options: {
   return { transport, events, scopedRequests, publicationBatchSize: () => publicationBatchSize };
 }
 
-Deno.test("dv/app-management: 两个候选先生成再单批发布，unchanged 仍提交且不误报 changed", async () => {
+Deno.test("dv/app-management: 无密钥配置由 SSH 创建候选并单批发布，无需 Deno", async () => {
   await withTempDir(async (root) => {
     await Promise.all(
       ["alpha", "beta"].map((name) =>
@@ -376,15 +381,14 @@ Deno.test("dv/app-management: 两个候选先生成再单批发布，unchanged �
     assertEquals(result.steps[0].status, StepStatus.SUCCEEDED);
     assertEquals(result.steps[0].changed, false);
     assertEquals(remote.publicationBatchSize(), 2);
-    assertEquals(remote.events.filter((event) => event.startsWith("candidate:")), [
-      "candidate:alpha",
-      "candidate:beta",
-    ]);
-    assert(remote.events.indexOf("candidate:beta") < remote.events.indexOf("publish"));
+    assertEquals(remote.events.filter((event) => event.startsWith("candidate:")), []);
+    assertEquals(remote.events.filter((event) => event === "preflight"), []);
+    assertEquals(remote.events.filter((event) => event === "run:cp:--").length, 2);
+    assert(remote.events.indexOf("run:cp:--") < remote.events.indexOf("publish"));
     assert(remote.events.indexOf("lock") < remote.events.indexOf("workspace"));
     assert(remote.events.indexOf("cleanup") < remote.events.indexOf("unlock"));
-    assertEquals(remote.events.filter((event) => event === "scoped-secrets").length, 2);
-    assertEquals(remote.events.filter((event) => event === "cleanup-secrets").length, 2);
+    assertEquals(remote.events.filter((event) => event === "scoped-secrets").length, 0);
+    assertEquals(remote.events.filter((event) => event === "cleanup-secrets").length, 0);
     assert(remote.events.includes("commit:2"));
     assertEquals(remote.events.some((event) => event.startsWith("restore:")), false);
   });
@@ -954,7 +958,7 @@ Deno.test("dv/117: config-only app publishes configs and runs config script with
     const result = await new DeploymentExecutor(remote.transport).execute(plan);
     assertEquals(result.steps[0].status, StepStatus.SUCCEEDED, JSON.stringify(result.steps));
     assert(remote.events.includes("hook"), JSON.stringify(remote.events));
-    assert(remote.events.includes("candidate:file-0"), JSON.stringify(remote.events));
+    assert(remote.events.includes("run:cp:--"), JSON.stringify(remote.events));
     assert(remote.events.includes("publish"), JSON.stringify(remote.events));
     assert(remote.events.includes("commit:1"), JSON.stringify(remote.events));
     assertEquals(

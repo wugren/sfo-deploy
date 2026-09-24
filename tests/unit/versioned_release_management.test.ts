@@ -9,6 +9,7 @@ import {
   modeChmodExpression,
   prepareVersionedRelease,
   restoreVersionedRelease,
+  stageVersionedRelease,
   switchVersionedRelease,
 } from "../../src/versioned_release_management.ts";
 import {
@@ -21,6 +22,9 @@ import type { AppServiceManagement } from "../../src/types.ts";
 /** Run the production fixed argv against disposable real directories, never real systemd. */
 class LocalSession extends FakeSession {
   fail?: (argv: readonly string[]) => boolean;
+  override async uploadFile(local: string, remote: string): Promise<void> {
+    await Deno.copyFile(local, remote);
+  }
   override async run(
     argv: readonly string[],
     options: RemoteRunOptions = {},
@@ -35,6 +39,100 @@ class LocalSession extends FakeSession {
     );
   }
 }
+
+async function stageFixture(root: string) {
+  const workspace = `${root}/workspace`;
+  const packageDirectory = `${workspace}/app-package`;
+  const installDirectory = `${root}/release`;
+  await Deno.mkdir(packageDirectory, { recursive: true });
+  await Deno.mkdir(installDirectory);
+  return {
+    workspace,
+    packageDirectory,
+    installDirectory,
+    resource: "demo",
+    version: "v2",
+  };
+}
+
+Deno.test("unit/versioned-release: SSH stage unwraps one root and leaves latest untouched", async () => {
+  await withTempDir(async (root) => {
+    const request = await stageFixture(root);
+    await Deno.mkdir(`${request.packageDirectory}/app`);
+    await Deno.writeTextFile(`${request.packageDirectory}/app/server`, "new");
+    await release(request.installDirectory, "v1");
+    await Deno.symlink("v1", `${request.installDirectory}/latest`);
+    await Deno.writeTextFile(`${request.installDirectory}/.demo.version`, "v1\n");
+    const session = new LocalSession();
+    await stageVersionedRelease(session, request);
+    assertEquals(await Deno.readTextFile(`${request.installDirectory}/v2/server`), "new");
+    assertEquals(await Deno.readTextFile(`${request.installDirectory}/v2/VERSION`), "v2\n");
+    assertEquals(await Deno.readLink(`${request.installDirectory}/latest`), "v1");
+    assertEquals(await Deno.readTextFile(`${request.installDirectory}/.demo.version`), "v1\n");
+    assert(!session.calls.some((call) => call.argv[0].includes("deno")));
+  });
+});
+
+Deno.test("unit/versioned-release: SSH stage preserves previous release if commit fails", async () => {
+  await withTempDir(async (root) => {
+    const request = await stageFixture(root);
+    await Deno.writeTextFile(`${request.packageDirectory}/server`, "new");
+    await release(request.installDirectory, "v2");
+    await Deno.writeTextFile(`${request.installDirectory}/v2/server`, "old");
+    const session = new LocalSession();
+    let failed = false;
+    session.fail = (argv) => {
+      if (
+        failed || argv[0] !== "/usr/bin/mv" ||
+        argv.at(-1) !== `${request.installDirectory}/v2`
+      ) return false;
+      failed = true;
+      return true;
+    };
+    await assertRejects(() => stageVersionedRelease(session, request));
+    assertEquals(await Deno.readTextFile(`${request.installDirectory}/v2/server`), "old");
+    assertEquals(await Deno.readTextFile(`${request.installDirectory}/v2/VERSION`), "v2\n");
+  });
+});
+
+Deno.test("unit/versioned-release: SSH stage accepts a committed rename after response loss", async () => {
+  await withTempDir(async (root) => {
+    const request = await stageFixture(root);
+    await Deno.writeTextFile(`${request.packageDirectory}/server`, "new");
+    class LostCommitResponse extends LocalSession {
+      lost = false;
+      override async run(argv: readonly string[], options: RemoteRunOptions = {}) {
+        const result = await super.run(argv, options);
+        if (
+          !this.lost && argv[0] === "/usr/bin/mv" &&
+          argv.at(-1) === `${request.installDirectory}/v2`
+        ) {
+          this.lost = true;
+          throw new TransportError("response lost");
+        }
+        return result;
+      }
+    }
+    const session = new LostCommitResponse();
+    await stageVersionedRelease(session, request);
+    assert(session.lost);
+    assertEquals(await Deno.readTextFile(`${request.installDirectory}/v2/server`), "new");
+    assertEquals(await Deno.readTextFile(`${request.installDirectory}/v2/VERSION`), "v2\n");
+  });
+});
+
+Deno.test("unit/versioned-release: SSH stage leaves current release intact on marker mismatch", async () => {
+  await withTempDir(async (root) => {
+    const request = await stageFixture(root);
+    await Deno.writeTextFile(`${request.packageDirectory}/server`, "new");
+    await release(request.installDirectory, "v2");
+    await Deno.symlink("v2", `${request.installDirectory}/latest`);
+    const session = new LocalSession();
+    await assertRejects(() => stageVersionedRelease(session, request), TransportError);
+    assertEquals(await Deno.readTextFile(`${request.installDirectory}/v2/VERSION`), "v2\n");
+    assert(!session.calls.some((call) => call.argv[0] === "/usr/bin/cp"));
+  });
+});
 
 async function release(root: string, version: string) {
   await Deno.mkdir(`${root}/${version}`, { recursive: true });

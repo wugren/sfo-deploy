@@ -1,7 +1,7 @@
 /** 以严格 argv 边界调用系统 OpenSSH 的传输实现。 */
 
 import * as posix from "jsr:@std/path@1.1.6/posix";
-import { resolve } from "jsr:@std/path@1.1.6";
+import { join, resolve } from "jsr:@std/path@1.1.6";
 import { CancelledError, PreflightError, TransportError } from "./errors.ts";
 import {
   type BuiltinConfigCandidateRequest,
@@ -34,6 +34,7 @@ export const DEFAULT_OPERATION_LEASE_TTL_MS = 600_000;
 export const DEFAULT_OPERATION_HEARTBEAT_INTERVAL_MS = 30_000;
 export const OPERATION_LEASE_EXPIRED_EXIT_CODE = 74;
 export const WORKSPACE_PREFIX = "/tmp/sfo-deploy-";
+const CONTROL_PERSIST_SECONDS = 1800;
 
 const ENV_NAME_RE = /^[A-Z_][A-Z0-9_]*$/;
 const USER_RE = /^[A-Za-z_][A-Za-z0-9_.-]*$/;
@@ -189,7 +190,7 @@ interface OpenSshTransportOptions {
   readonly onInfo?: InfoLogger;
 }
 
-/** 系统 OpenSSH 传输；每次本地进程都直接使用 Deno.Command argv 启动。 */
+/** 系统 OpenSSH 传输；本地命令进程通过会话专用控制套接字复用主连接。 */
 export class OpenSshTransport implements Transport {
   readonly knownHosts?: string;
   readonly sshExecutable: string;
@@ -238,12 +239,26 @@ export class OpenSshTransport implements Transport {
     });
     for (const rawAddress of addresses) {
       const address = sshAddress(rawAddress);
+      const controlDirectory = await Deno.makeTempDir({ prefix: "sfo-ssh-" });
+      const controlPath = join(controlDirectory, "control");
+      if (new TextEncoder().encode(controlPath).length >= 100) {
+        await Deno.remove(controlDirectory);
+        throw new PreflightError("SSH control socket path is too long");
+      }
+      try {
+        await Deno.chmod(controlDirectory, 0o700);
+      } catch (cause) {
+        await Deno.remove(controlDirectory);
+        throw new PreflightError("Failed to secure SSH control socket directory", { cause });
+      }
       const session = new OpenSshRemoteSession({
         address,
         user,
         port,
         privateKey: key,
         knownHosts,
+        controlDirectory,
+        controlPath,
         sshExecutable: this.sshExecutable,
         scpExecutable: this.scpExecutable,
         connectTimeoutMs: this.connectTimeoutMs,
@@ -252,12 +267,15 @@ export class OpenSshTransport implements Transport {
         commandFactory: this.#commandFactory,
         onInfo: this.#info,
       });
+      let connected = false;
       try {
         const result = await session.run(["true"], {
           signal,
           timeoutMs: this.connectTimeoutMs,
         });
         if (result.exitCode === 0) {
+          await session.verifyMultiplexing(signal);
+          connected = true;
           await this.#info("SSH connection completed", {
             machine: machine.name,
             address,
@@ -268,6 +286,14 @@ export class OpenSshTransport implements Transport {
       } catch (cause) {
         if (cause instanceof CancelledError) throw cause;
         failures.push(`${address}: ${errorText(cause)}`);
+      } finally {
+        if (!connected) {
+          try {
+            await session.close();
+          } catch (cause) {
+            failures.push(`${address} cleanup: ${errorText(cause)}`);
+          }
+        }
       }
     }
     if (failures.length === 1) {
@@ -313,6 +339,8 @@ interface SessionOptions {
   readonly port: number;
   readonly privateKey?: string;
   readonly knownHosts: string;
+  readonly controlDirectory?: string;
+  readonly controlPath?: string;
   readonly sshExecutable: string;
   readonly scpExecutable: string;
   readonly connectTimeoutMs: number;
@@ -355,6 +383,21 @@ export class OpenSshRemoteSession implements RemoteSession {
   constructor(options: SessionOptions) {
     this.#options = options;
     this.#info = safeInfoLogger(options.onInfo);
+  }
+
+  /** 首次探测后确认 OpenSSH 已保留可供 ssh/scp 共用的主连接。 */
+  async verifyMultiplexing(signal?: AbortSignal): Promise<void> {
+    if (!this.#options.controlPath) {
+      throw new PreflightError("SSH control connection is not configured");
+    }
+    const result = await this.#runLocal(
+      this.#options.sshExecutable,
+      [...this.#sshOptions(false), "-O", "check", this.#sshDestination()],
+      signal,
+      this.#options.connectTimeoutMs,
+      "SSH control connection check",
+    );
+    requireSuccess(result, "SSH control connection was not established");
   }
 
   async run(argv: readonly string[], options: RemoteRunOptions = {}): Promise<CommandResult> {
@@ -1983,6 +2026,45 @@ export class OpenSshRemoteSession implements RemoteSession {
       }
     }
     this.#closed = true;
+    if (this.#options.controlPath && this.#options.controlDirectory) {
+      let controlExited = true;
+      try {
+        await Deno.lstat(this.#options.controlPath);
+        const result = await this.#runLocal(
+          this.#options.sshExecutable,
+          [...this.#sshOptions(false), "-O", "exit", this.#sshDestination()],
+          undefined,
+          this.#options.connectTimeoutMs,
+          "SSH control connection exit",
+        );
+        if (result.exitCode !== 0) {
+          const check = await this.#runLocal(
+            this.#options.sshExecutable,
+            [...this.#sshOptions(false), "-O", "check", this.#sshDestination()],
+            undefined,
+            this.#options.connectTimeoutMs,
+            "SSH control connection check",
+          );
+          if (check.exitCode === 0) {
+            throw new TransportError(
+              `Failed to close SSH control connection: ${diagnostic(result)}`,
+            );
+          }
+        }
+      } catch (cause) {
+        if (!(cause instanceof Deno.errors.NotFound)) {
+          controlExited = false;
+          errors.push(errorText(cause));
+        }
+      }
+      if (controlExited) {
+        try {
+          await Deno.remove(this.#options.controlDirectory, { recursive: true });
+        } catch (cause) {
+          errors.push(errorText(cause));
+        }
+      }
+    }
     if (errors.length > 0) {
       throw new TransportError(`SSH session cleanup failed: ${errors.join("; ")}`);
     }
@@ -2022,6 +2104,16 @@ export class OpenSshRemoteSession implements RemoteSession {
       scp ? "-P" : "-p",
       String(this.#options.port),
     ];
+    if (this.#options.controlPath) {
+      result.push(
+        "-o",
+        "ControlMaster=auto",
+        "-o",
+        `ControlPersist=${CONTROL_PERSIST_SECONDS}`,
+        "-o",
+        `ControlPath=${this.#options.controlPath}`,
+      );
+    }
     if (this.#options.privateKey) {
       result.push("-o", "IdentitiesOnly=yes", "-i", this.#options.privateKey);
     }

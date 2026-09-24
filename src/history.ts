@@ -1221,6 +1221,7 @@ async function encodeStep(
         ssh_user: machine.sshUser,
         ssh_port: machine.sshPort,
         ssh_private_key: sshKey,
+        enable_deno: machine.enableDeno !== false,
         ...(machine.secretsDir !== undefined ? { secrets_dir: machine.secretsDir } : {}),
         script_runtime: { kind: "deno", executable: runtimeExecutable(runtime.executable) },
         environments: machine.environments.map((item) => ({
@@ -1920,7 +1921,7 @@ async function decodeStep(
       "script_runtime",
       "environments",
     ],
-    schema >= 3 ? ["secrets_dir"] : [],
+    schema >= 3 ? ["secrets_dir", "enable_deno"] : [],
     "machine",
   );
   if (!Array.isArray(definition.environments)) {
@@ -1958,6 +1959,10 @@ async function decodeStep(
   const secretsDir = definition.secrets_dir === null || definition.secrets_dir === undefined
     ? undefined
     : requiredString(definition.secrets_dir, "secrets_dir");
+  if (definition.enable_deno !== undefined && typeof definition.enable_deno !== "boolean") {
+    throw new ConfigurationError("machine.enable_deno must be a boolean");
+  }
+  const enableDeno = definition.enable_deno === undefined ? true : definition.enable_deno;
   const runtime = objectValue(definition.script_runtime, "script_runtime");
   expectKeys(runtime, ["kind", "executable"], "script_runtime");
   if (runtime.kind !== "deno") {
@@ -1979,6 +1984,7 @@ async function decodeStep(
     sshPort: boundedInteger(definition.ssh_port, "ssh_port", 1, 65535),
     sshPrivateKey,
     secretsDir,
+    enableDeno,
     scriptRuntime,
     environments: freezeArray(environments),
   });

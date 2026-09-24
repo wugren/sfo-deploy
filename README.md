@@ -95,8 +95,11 @@ sfo-deploy secrets-deploy --cluster production --machine app-01
 
 ### 校验、准备和部署
 
-`validate` 装载并检查全部 YAML、目录、依赖、放置和本地资源，不建立 SSH 连接。`plan` 只预览 App
-deploy 计划，不下载包、不解析秘密值；空 App 选择集会失败。`check` 是环境动作，不接受
+`validate` 装载并检查全部 YAML、目录、依赖、放置和本地资源，不建立 SSH 连接。`plan` 在本地预览 App
+deploy 计划，不连接 SSH、不下载包、不解析秘密值；空 App 选择集会失败。每台机器可在
+`machines.yaml` 设置 `enable_deno: false` 禁止执行远端 Deno；若所选步骤需要 Deno 脚本或秘密配置渲染，
+`plan` 会明确报错。缺省 `enable_deno: true`，需要 Deno 的步骤在部署时预检目标运行时。
+无秘密受管配置和内置版本发布不依赖远端 Deno。`check` 是环境动作，不接受
 `--app`；省略环境筛选时检查当前范围内的全部环境。
 
 `prepare` 是环境动作，不接受 `--app`。缺省全量时确认后执行；非交互必须 `--yes`。显式选择的环境
@@ -131,6 +134,8 @@ curl/wget 或 unzip/7z，会用 apt-get/apk/dnf/yum 提权安装（提权安装�
 `deno --version` 复验。Deno 制品来自官方 GitHub Release，安装前校验同名官方 `.sha256sum`；基础工具
 来自目标机发行版软件源。该动作不写发布历史，也不修改 `machines.yaml`；需要固定路径时手工填写
 `machines[].deno`。
+`machines[].enable_deno: false` 的机器会在连接前跳过，并在非 JSON 模式输出 info 日志说明原因；
+确认、进度和结构化结果只包含实际处理的机器。全部选中机器均禁用时，不连接 SSH，返回成功的空结果。
 
 ### 秘密命令
 

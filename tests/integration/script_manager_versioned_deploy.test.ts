@@ -4,12 +4,38 @@ import { assert, assertEquals, withTempDir } from "../_support/assert.ts";
 import { writePlacementCluster } from "../_support/environment_placement.ts";
 import { loadCluster } from "../../src/config.ts";
 import { buildPlan } from "../../src/planning.ts";
-import { deriveRollbackPlan } from "../../src/history.ts";
+import { deriveRollbackPlan, ReleaseSelection, ReleaseStore } from "../../src/history.ts";
+import type { DeploymentResultLike, SourceExporter, SourceImporter } from "../../src/history.ts";
 import { DeploymentExecutor } from "../../src/execution.ts";
+import {
+  REMOTE_VERSIONED_RELEASE_BUNDLE_PATH,
+  REMOTE_VERSIONED_RELEASE_SOURCE,
+  VERSIONED_RELEASE_PERMISSIONS,
+} from "../../src/remote_runtime/artifact.ts";
 import { type CommandFactory, OpenSshRemoteSession } from "../../src/transport.ts";
 import type { RemoteOperationLockRequest } from "../../src/remote_deployment.ts";
 import { DownloadProviderRegistry, VerifiedArtifact } from "../../src/downloads.ts";
 import { StepStatus } from "../../src/results.ts";
+import type { ExecutionPlan } from "../../src/types.ts";
+
+function successfulResult(plan: ExecutionPlan): DeploymentResultLike {
+  return {
+    cluster: plan.cluster,
+    requestedAction: plan.requestedAction,
+    succeeded: true,
+    exitCode: 0,
+    steps: plan.steps.map((step) => ({
+      stepId: step.id,
+      machine: step.machine.machine.name,
+      kind: step.kind,
+      resource: step.resource,
+      action: step.action,
+      status: "succeeded",
+      exitCode: 0,
+      cleanupErrors: [],
+    })),
+  };
+}
 
 class RecordingSession extends OpenSshRemoteSession {
   acquisitions = 0;
@@ -178,6 +204,81 @@ Deno.test("integration/110: script-manager rollback keeps and runs the manager r
         result.steps.at(-1)!.stdout.includes("manager invoked"),
         JSON.stringify(result.steps.map((step) => step.stdout)),
       );
+    } finally {
+      await session.close();
+    }
+  });
+});
+
+Deno.test("integration/machine-deno-policy: archived legacy v4 stage rolls back with Deno", async () => {
+  await withTempDir(async (root) => {
+    const f = await fixture(root);
+    const clusterConfigPath = join(f.clusterDirectory, "cluster.yaml");
+    await Deno.writeTextFile(
+      clusterConfigPath,
+      (await Deno.readTextFile(clusterConfigPath)).replace("placement-fixture", "cluster-v2"),
+    );
+    await Deno.mkdir(join(f.install, "3"), { recursive: true });
+    await Deno.writeTextFile(join(f.install, "3", "VERSION"), "3\n");
+    await Deno.writeTextFile(join(f.install, ".demo.version"), "3\n");
+    await Deno.symlink("3", join(f.install, "latest"));
+    const cluster = await loadCluster(f.clusterDirectory);
+    const current = buildPlan(cluster, "deploy");
+    const legacyScript = {
+      source: REMOTE_VERSIONED_RELEASE_SOURCE,
+      relativePath: REMOTE_VERSIONED_RELEASE_BUNDLE_PATH,
+      permissions: VERSIONED_RELEASE_PERMISSIONS,
+    };
+    const legacy: ExecutionPlan = {
+      ...current,
+      steps: current.steps.map((step) =>
+        step.action === "stage" || step.action === "activate"
+          ? {
+            ...step,
+            scripts: [legacyScript],
+            bundleScripts: [legacyScript, ...step.bundleScripts ?? []],
+            deliveryInputs: {
+              ...step.deliveryInputs!,
+              scripts: [legacyScript, ...step.deliveryInputs!.scripts],
+            },
+          }
+          : step
+      ),
+    };
+    const exporter: SourceExporter = (_provider, source) => ({
+      schema: "http.v1",
+      payload: source,
+    });
+    const importer: SourceImporter = (_provider, envelope) =>
+      envelope.payload as Readonly<Record<string, unknown>>;
+    const store = new ReleaseStore(f.clusterDirectory, {
+      sourceExporter: exporter,
+      sourceImporter: importer,
+    });
+    const pending = await store.beginAttempt({
+      operation: "deploy",
+      selection: new ReleaseSelection(),
+    });
+    await pending.archivePlans(legacy);
+    const record = await pending.finishResult(successfulResult(legacy));
+    const rollback = await store.loadRollbackPlan(record.releaseId);
+    assertEquals(rollback.requestedAction, "rollback");
+    assertEquals(rollback.steps[0]?.scripts[0]?.relativePath, REMOTE_VERSIONED_RELEASE_BUNDLE_PATH);
+
+    const session = await connect(root);
+    try {
+      const bytes = await Deno.readFile(f.archive);
+      const result = await new DeploymentExecutor(
+        { connect: () => Promise.resolve(session) },
+        { downloadProviders: registry(f.archive, f.hash, bytes.length) },
+      ).execute(rollback);
+      assert(
+        result.steps.every((step) => step.status === StepStatus.SUCCEEDED),
+        JSON.stringify(result.steps),
+      );
+      assertEquals(await Deno.readLink(join(f.install, "latest")), "2");
+      assertEquals(await Deno.readTextFile(join(f.install, ".demo.version")), "2\n");
+      assertEquals(await Deno.readTextFile(join(f.install, "2", "app.txt")), "test payload");
     } finally {
       await session.close();
     }

@@ -1780,6 +1780,7 @@ async function loadMachines(path: string, root: string): Promise<Map<string, Mac
         "ssh_private_key",
         "secrets_dir",
         "deno",
+        "enable_deno",
       ],
       ["name", "region", "ssh_user"],
       label,
@@ -1795,6 +1796,10 @@ async function loadMachines(path: string, root: string): Promise<Map<string, Mac
       throw new ConfigurationError(`Invalid ${label}.ssh_port`);
     }
     const key = item.ssh_private_key;
+    const enableDeno = item.enable_deno === undefined ? true : item.enable_deno;
+    if (typeof enableDeno !== "boolean") {
+      throw new ConfigurationError(`${label}.enable_deno must be a boolean`);
+    }
     const secretsDir = item.secrets_dir === undefined || item.secrets_dir === null
       ? undefined
       : secretDirectory(item.secrets_dir, `${label}.secrets_dir`);
@@ -1810,6 +1815,7 @@ async function loadMachines(path: string, root: string): Promise<Map<string, Mac
         sshPort,
         secretsDir,
         sshPrivateKey: key ? await contained(root, key, `${label}.ssh_private_key`) : undefined,
+        enableDeno,
         scriptRuntime: Object.freeze({
           kind: "deno" as const,
           executable: validateScriptRuntimeExecutable(item.deno ?? "deno", `${label}.deno`),

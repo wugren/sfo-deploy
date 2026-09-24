@@ -9,10 +9,10 @@ import {
   withTempDir,
 } from "../_support/assert.ts";
 import { plan, writeCluster } from "../_support/fixtures.ts";
+import { FakeTransport } from "../_support/fake_session.ts";
 import { createCli } from "../../src/cli.ts";
 import { CancelledError, ConfigurationError } from "../../src/errors.ts";
 import { run, RunOptions, ValidationResult } from "../../src/integration.ts";
-import type { Transport } from "../../src/transport.ts";
 import type { ExecutionPlan } from "../../src/types.ts";
 
 class QueueReader {
@@ -148,16 +148,10 @@ Deno.test("unit/deploy confirm: deploy rejects environment and dependency filter
   );
 });
 
-Deno.test("unit/deploy confirm: unconfirmed deploy connects nowhere and leaves no release attempt", async () => {
+Deno.test("unit/deploy confirm: unconfirmed deploy stays offline and leaves no release attempt", async () => {
   await withTempDir(async (root) => {
     const cluster = await writeCluster(root);
-    let connects = 0;
-    const transport: Transport = {
-      connect: () => {
-        connects += 1;
-        throw new Error("validation path must not connect");
-      },
-    };
+    const transport = new FakeTransport();
     const options = new RunOptions({
       configRoot: root,
       cluster: "demo",
@@ -175,7 +169,7 @@ Deno.test("unit/deploy confirm: unconfirmed deploy connects nowhere and leaves n
       CancelledError,
       "deployment was not confirmed",
     );
-    assertEquals(connects, 0);
+    assertEquals(transport.connectCalls, 0);
     await assertRejects(
       () => Deno.stat(join(cluster, ".sfo-deploy")),
       Deno.errors.NotFound,
