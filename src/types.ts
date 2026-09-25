@@ -112,6 +112,13 @@ export interface ManagedSecretReference {
   readonly valueType: ManagedConfigValueType;
 }
 
+/** 配置实际引用机器的最小地址快照；不包含 SSH 凭据。 */
+export interface ManagedMachineReference {
+  readonly region: string;
+  readonly privateIp: readonly string[];
+  readonly publicIp: readonly string[];
+}
+
 /** 候选配置发布前运行的固定 argv 校验；`{candidate}` 必须是独立参数。 */
 export interface ManagedConfigValidator {
   readonly argv: readonly string[];
@@ -133,6 +140,8 @@ export interface ManagedConfigFile {
   readonly format: ManagedFileFormat;
   /** 源配置解析后发现的 `${SECRET_NAME}` 引用；App 配置引用即授权。 */
   readonly secretReferences: ReadonlyMap<string, ManagedSecretReference>;
+  /** 源配置中被引用机器的地址快照；旧配置或归档可省略。 */
+  readonly machineReferences?: ReadonlyMap<string, ManagedMachineReference>;
   readonly validator?: ManagedConfigValidator;
   readonly onChange: ManagedConfigChangeAction;
 }

@@ -22,6 +22,7 @@ const MAX_CONFIG_BYTES = 16 * 1024 * 1024;
 export const APP_VERSION_PLACEHOLDER = "${APP_VERSION}";
 const SECRET_PLACEHOLDER_RE = /\$\{([A-Z][A-Z0-9_]*)\}/g;
 const SECRET_PLACEHOLDER_CANDIDATE_RE = /\$\{([^{}]*)\}/g;
+const MACHINE_NAME_PATTERN = /^[A-Za-z][A-Za-z0-9_.-]*$/;
 
 /** version 字符串既是版本目录名，也是配置上下文值；统一 fail-closed 校验。 */
 export function isValidAppVersion(value: unknown): value is string {
@@ -87,13 +88,18 @@ export function parseManagedStructured(
 }
 
 /** Nginx 原生配置只做文本安全边界检查，不做 DSL 解析。 */
-export function validateManagedPlainText(text: string, name: string): void {
+export function validateManagedPlainText(
+  text: string,
+  name: string,
+  machineNames: ReadonlySet<string> = new Set(),
+): void {
   if (text.includes(RESERVED_MARKER_PREFIX)) {
     throw new PreflightError(
       `Config ${name} source file contains a framework-reserved placeholder`,
     );
   }
-  const invalid = [...text.matchAll(SECRET_PLACEHOLDER_CANDIDATE_RE)][0];
+  const invalid = [...text.matchAll(SECRET_PLACEHOLDER_CANDIDATE_RE)]
+    .find((match) => !machineNames.has(match[1]!));
   if (invalid !== undefined) {
     throw new PreflightError(
       `Config ${name} does not support the placeholder: \${${invalid?.[1] ?? ""}}`,
@@ -101,8 +107,8 @@ export function validateManagedPlainText(text: string, name: string): void {
   }
 }
 
-/** 收集结构化值中的 `${SECRET_NAME}`；键名或非法占位符失败关闭。 */
-export function collectManagedSecretPlaceholders(
+/** 收集结构化值中的占位符；键名或非法占位符失败关闭。 */
+export function collectManagedPlaceholders(
   value: unknown,
   name: string,
 ): ReadonlySet<string> {
@@ -114,13 +120,13 @@ export function collectManagedSecretPlaceholders(
     if (typeof item === "string") {
       const invalid = [...item.matchAll(SECRET_PLACEHOLDER_CANDIDATE_RE)]
         .map((match) => match[1]!)
-        .find((name) => !SECRET_NAME_PATTERN.test(name));
+        .find((name) => !MACHINE_NAME_PATTERN.test(name));
       if (invalid !== undefined) {
         throw new PreflightError(
           `Invalid placeholder name in config ${configName}: \${${invalid}}`,
         );
       }
-      for (const match of item.matchAll(SECRET_PLACEHOLDER_RE)) found.add(match[1]!);
+      for (const match of item.matchAll(SECRET_PLACEHOLDER_CANDIDATE_RE)) found.add(match[1]!);
       return;
     }
     if (Array.isArray(item)) {
@@ -146,6 +152,7 @@ export function collectManagedSecretPlaceholders(
 export async function generateConfigSkeleton(
   config: ManagedConfigFile,
   parameters: Readonly<Record<string, unknown>>,
+  targetRegion?: string,
 ): Promise<GeneratedConfigSkeleton> {
   if (config.format === "systemd") {
     throw new PreflightError(`Config ${config.name} does not support systemd format`);
@@ -175,8 +182,14 @@ export async function generateConfigSkeleton(
         `Config ${config.name} with format: nginx does not support secret placeholders`,
       );
     }
-    validateManagedPlainText(text, config.name);
-    const plainContent = TEXT_ENCODER.encode(text);
+    validateManagedPlainText(
+      text,
+      config.name,
+      new Set(config.machineReferences?.keys() ?? []),
+    );
+    const plainContent = TEXT_ENCODER.encode(
+      replaceMachinePlaceholders(text, config, targetRegion),
+    );
     if (plainContent.byteLength > MAX_CONFIG_BYTES) {
       throw new PreflightError(
         `Config ${config.name} skeleton exceeds the ${MAX_CONFIG_BYTES} byte limit`,
@@ -196,6 +209,11 @@ export async function generateConfigSkeleton(
   if (!config.secretReferences.has("APP_VERSION")) {
     replaceBuiltInAppVersion(parsed, config, parameters);
   }
+  walkMutable(parsed, config.name, (value, assign) => {
+    if (typeof value !== "string") return;
+    const replaced = replaceMachinePlaceholders(value, config, targetRegion);
+    if (replaced !== value) assign(replaced);
+  });
   replaceStructuredVariables(parsed, config, parameters);
   const bindings = secretBindings(config.name, config.secretReferences);
   const markers = new Map(bindings.map((binding) => [binding.secret, binding]));
@@ -228,6 +246,34 @@ export async function generateConfigSkeleton(
     size: content.byteLength,
     sha256: sha256Bytes(content),
     secretBindings: Object.freeze(bindings),
+  });
+}
+
+function replaceMachinePlaceholders(
+  text: string,
+  config: ManagedConfigFile,
+  targetRegion: string | undefined,
+): string {
+  const references = config.machineReferences;
+  if (references === undefined || references.size === 0) return text;
+  return text.replace(SECRET_PLACEHOLDER_CANDIDATE_RE, (placeholder, name: string) => {
+    const machine = references.get(name);
+    if (machine === undefined) return placeholder;
+    if (targetRegion === undefined) {
+      throw new PreflightError(
+        `Config ${config.name} uses ${placeholder}, but the target machine region is unavailable`,
+      );
+    }
+    const sameRegion = machine.region === targetRegion;
+    const address = sameRegion
+      ? machine.privateIp[0] ?? machine.publicIp[0]
+      : machine.publicIp[0];
+    if (address === undefined) {
+      throw new PreflightError(
+        `Config ${config.name} uses ${placeholder}, but machine ${name} has no required ${sameRegion ? "private or public" : "public"} IP for target region ${targetRegion}`,
+      );
+    }
+    return address;
   });
 }
 

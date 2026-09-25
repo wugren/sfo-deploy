@@ -332,7 +332,11 @@ export async function prepareExecution(
         const configs = [];
         for (const config of step.management?.configs ?? []) {
           configs.push(Object.freeze({
-            skeleton: await generateConfigSkeleton(config, step.parameters),
+            skeleton: await generateConfigSkeleton(
+              config,
+              step.parameters,
+              step.machine.machine.region,
+            ),
             relativePath: configSkeletonKey(config),
             mode: 0o600,
           }));

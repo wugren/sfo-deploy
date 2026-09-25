@@ -327,6 +327,13 @@ file 配置的 `target` 是规范远端绝对路径，或以下变量加相对�
 内容只支持 yaml/json/toml/ini；`nginx`、无包 App 和 Environment 配置不支持它。若集群已声明名为
 `APP_VERSION` 的秘密，内容中的占位符继续按秘密引用处理。
 
+App 托管配置内容还可写 `${机器名}`（例如 `${db-1}`），无需在 `variables` 中声明。
+支持 yaml/json/toml/ini 的字符串值及 `format: nginx` 的原样文本。每个目标机上传前，
+框架以目标机和引用机器的 `region` 比较：同区取引用机器的首个 `private_ip`，没有时取首个
+`public_ip`；跨区只取首个 `public_ip`。未知机器或缺少适用 IP 会报错。秘密与
+`${APP_VERSION}` 保持原有优先级；Nginx 仍不支持秘密、普通变量或 `${APP_VERSION}`。
+归档会保存配置实际引用机器的地址快照，回滚使用归档中的地址。
+
 普通参数和内置 `${APP_VERSION}` 在控制端生成配置骨架时完成渲染；无秘密引用的受管配置直接交付该
 内容，保留目标端候选文件检查、validator 和事务发布。真实秘密值只保留在目标机，含秘密引用的配置
 仍由远端更新器渲染，因此机器须启用 `enable_deno`，且目标机的 Deno 2 预检须通过；

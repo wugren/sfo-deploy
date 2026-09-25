@@ -62,6 +62,10 @@
   `unit_config.working_directory` 和 structured managed config 内容都可用它替换。 structured
   内容只支持 yaml/json/toml/ini。`nginx`、无包 App 和 Environment 配置不支持该变量。 若
   `APP_VERSION` 已声明为秘密，则内容中的占位符继续按秘密引用处理。
+- App 托管文件内容中的 `${机器名}` 引用 `machines.yaml` 的机器 IP，支持 yaml/json/toml/ini
+  及 Nginx 原样文本。生成配置骨架时按目标机器区域选择：同区优先引用机器的首个 `private_ip`，
+  缺失时用首个 `public_ip`；跨区只用首个 `public_ip`。所需地址缺失时上传前失败。秘密和
+  `APP_VERSION` 保持原有优先级；归档保存配置实际引用机器的地址快照供回滚使用。
 - versioned 部署会在已验证候选版本内创建缺失的受管配置父目录；无发布根的 configure 步骤仍要求
   父目录已存在。符号链接逃逸和越界路径始终拒绝。
 - 绝对 `target` 保持既有含义，不因版本化部署自动重映射，除非精确命中 `<install_directory>/latest/`

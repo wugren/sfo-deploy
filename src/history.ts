@@ -28,6 +28,7 @@ import type {
   ExecutionPlan,
   Machine,
   ManagedConfigFile,
+  ManagedMachineReference,
   ManagedConfigPathSegment,
   ManagedConfigTargetRoot,
   ManagedConfigVariableBinding,
@@ -1336,6 +1337,14 @@ async function encodeManagement(
       kind: reference.kind,
       value_type: reference.valueType,
     })),
+    machine_references: [...(config.machineReferences ?? new Map()).entries()]
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([name, reference]) => ({
+        name,
+        region: reference.region,
+        private_ip: reference.privateIp,
+        public_ip: reference.publicIp,
+      })),
     validator: config.validator === undefined
       ? null
       : { argv: config.validator.argv, timeout_ms: config.validator.timeoutMs },
@@ -1474,7 +1483,7 @@ async function decodeManagement(
           "validator",
           "on_change",
         ],
-        ["target_root"],
+        ["target_root", "machine_references"],
         "managed config",
       );
       if (!Array.isArray(config.variables) || config.variables.length > MAX_JSON_ITEMS) {
@@ -1537,6 +1546,28 @@ async function decodeManagement(
           }),
         ),
       );
+      const rawMachineReferences = config.machine_references ?? [];
+      if (!Array.isArray(rawMachineReferences) || rawMachineReferences.length > MAX_JSON_ITEMS) {
+        throw new ConfigurationError("managed config.machine_references must be a bounded list");
+      }
+      const machineReferences = new Map<string, ManagedMachineReference>();
+      for (const rawReference of rawMachineReferences) {
+        const reference = objectValue(rawReference, "managed machine reference");
+        expectKeys(
+          reference,
+          ["name", "region", "private_ip", "public_ip"],
+          "managed machine reference",
+        );
+        const name = requiredString(reference.name, "managed machine reference.name");
+        if (!/^[A-Za-z][A-Za-z0-9_.-]*$/.test(name) || machineReferences.has(name)) {
+          throw new ConfigurationError(`Invalid or duplicate managed machine reference: ${name}`);
+        }
+        machineReferences.set(name, Object.freeze({
+          region: requiredString(reference.region, "managed machine reference.region"),
+          privateIp: ipAddresses(reference.private_ip, "managed machine reference.private_ip", false),
+          publicIp: ipAddresses(reference.public_ip, "managed machine reference.public_ip", false),
+        }));
+      }
       return Object.freeze({
         name: requiredString(config.name, "managed config.name"),
         relativePath: safeRelative(
@@ -1551,6 +1582,7 @@ async function decodeManagement(
         variables,
         format,
         secretReferences,
+        machineReferences: immutableMap(machineReferences),
         validator: decodeValidator(config.validator),
         onChange,
       });

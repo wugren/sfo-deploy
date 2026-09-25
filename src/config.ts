@@ -7,7 +7,7 @@ import { ConfigurationError } from "./errors.ts";
 import deployerPkg from "../deno.json" with { type: "json" };
 import {
   APP_VERSION_PLACEHOLDER,
-  collectManagedSecretPlaceholders,
+  collectManagedPlaceholders,
   isValidAppVersion,
   parseManagedStructured,
   validateManagedPlainText,
@@ -39,6 +39,7 @@ import type {
   ManagedConfigChangeAction,
   ManagedConfigFile,
   ManagedConfigFormat,
+  ManagedMachineReference,
   ManagedConfigPathSegment,
   ManagedConfigTargetRoot,
   ManagedConfigValidator,
@@ -1182,14 +1183,18 @@ function managedValidator(value: unknown, label: string): ManagedConfigValidator
   });
 }
 
-async function managedSecretReferences(
+async function managedConfigReferences(
   configName: string,
   format: ManagedConfigFormat,
   source: string,
   secrets: ReadonlyMap<string, SecretDeclaration>,
   label: string,
   appVersion: string | undefined,
-): Promise<ReadonlyMap<string, ManagedSecretReference>> {
+  machines: ReadonlyMap<string, Machine>,
+): Promise<{
+  readonly secretReferences: ReadonlyMap<string, ManagedSecretReference>;
+  readonly machineReferences: ReadonlyMap<string, ManagedMachineReference>;
+}> {
   let text: string;
   try {
     text = await Deno.readTextFile(source);
@@ -1197,30 +1202,48 @@ async function managedSecretReferences(
     throw new ConfigurationError(`Failed to read ${label}.source config ${source}`, { cause });
   }
   if (format === "nginx") {
-    validateManagedPlainText(text, configName);
-    return immutableMap(new Map());
-  }
-  const parsed = parseManagedStructured(format, text, configName);
-  const references = new Map<string, ManagedSecretReference>();
-  for (const secretName of collectManagedSecretPlaceholders(parsed, configName)) {
-    if (secretName === "APP_VERSION" && !secrets.has(secretName)) {
-      if (appVersion !== undefined) continue;
-      throw new ConfigurationError(
-        `${label}.source uses the built-in \${APP_VERSION} variable, but the App is packageless`,
-      );
-    }
-    const declaration = secrets.get(secretName);
-    if (declaration === undefined) {
-      throw new ConfigurationError(
-        `\${${secretName}} in config ${configName} is not declared in cluster.yaml.secrets`,
-      );
-    }
-    references.set(
-      secretName,
-      Object.freeze({ kind: declaration.kind, valueType: declaration.valueType }),
+    validateManagedPlainText(
+      text,
+      configName,
+      new Set([...machines.keys()].filter((name) => name !== "APP_VERSION" && !secrets.has(name))),
     );
   }
-  return immutableMap(references);
+  const parsed = format === "nginx" ? text : parseManagedStructured(format, text, configName);
+  const secretReferences = new Map<string, ManagedSecretReference>();
+  const machineReferences = new Map<string, ManagedMachineReference>();
+  for (const referenceName of collectManagedPlaceholders(parsed, configName)) {
+    if (format !== "nginx") {
+      if (referenceName === "APP_VERSION" && !secrets.has(referenceName)) {
+        if (appVersion !== undefined) continue;
+        throw new ConfigurationError(
+          `${label}.source uses the built-in \${APP_VERSION} variable, but the App is packageless`,
+        );
+      }
+      const declaration = secrets.get(referenceName);
+      if (declaration !== undefined) {
+        secretReferences.set(
+          referenceName,
+          Object.freeze({ kind: declaration.kind, valueType: declaration.valueType }),
+        );
+        continue;
+      }
+    }
+    const machine = machines.get(referenceName);
+    if (machine === undefined) {
+      throw new ConfigurationError(
+        `\${${referenceName}} in config ${configName} is neither a declared secret nor a cluster machine`,
+      );
+    }
+    machineReferences.set(referenceName, Object.freeze({
+      region: machine.region,
+      privateIp: machine.privateIp,
+      publicIp: machine.publicIp,
+    }));
+  }
+  return Object.freeze({
+    secretReferences: immutableMap(secretReferences),
+    machineReferences: immutableMap(machineReferences),
+  });
 }
 
 async function managedConfigFiles(
@@ -1230,6 +1253,7 @@ async function managedConfigFiles(
   label: string,
   secrets: ReadonlyMap<string, SecretDeclaration>,
   appVersion: string | undefined,
+  machines: ReadonlyMap<string, Machine>,
 ): Promise<readonly ManagedConfigFile[]> {
   const result: ManagedConfigFile[] = [];
   const names = new Set<string>();
@@ -1294,13 +1318,14 @@ async function managedConfigFiles(
     if (format === "nginx" && variables.length > 0) {
       throw new ConfigurationError(`${itemLabel}.variables is incompatible with format: nginx`);
     }
-    const secretReferences = await managedSecretReferences(
+    const { secretReferences, machineReferences } = await managedConfigReferences(
       configName,
       format,
       source,
       secrets,
       `${itemLabel}`,
       appVersion,
+      machines,
     );
     result.push(Object.freeze({
       name: configName,
@@ -1314,6 +1339,7 @@ async function managedConfigFiles(
       variables,
       format,
       secretReferences,
+      machineReferences,
       validator: managedValidator(item.validator, `${itemLabel}.validator`),
       onChange: enumValue<ManagedConfigChangeAction>(
         item.on_change ?? "none",
@@ -1503,6 +1529,7 @@ async function appConfigs(
   label: string,
   secrets: ReadonlyMap<string, SecretDeclaration>,
   appVersion: string | undefined,
+  machines: ReadonlyMap<string, Machine>,
 ): Promise<
   {
     readonly configs: readonly ManagedConfigFile[];
@@ -1545,6 +1572,7 @@ async function appConfigs(
     `${label}.file`,
     secrets,
     appVersion,
+    machines,
   );
   return Object.freeze({
     configs,
@@ -2106,6 +2134,7 @@ async function loadApps(
   root: string,
   appVersions: ReadonlyMap<string, AppVersionEntry> | undefined,
   secrets: ReadonlyMap<string, SecretDeclaration>,
+  machines: ReadonlyMap<string, Machine>,
 ): Promise<Map<string, AppDefinition>> {
   const apps = new Map<string, AppDefinition>();
   const parent = join(root, "apps");
@@ -2181,6 +2210,7 @@ async function loadApps(
       `${label}.configs`,
       secrets,
       entry?.version,
+      machines,
     );
     const management = await appManagement(
       data.management,
@@ -2339,7 +2369,7 @@ export async function loadCluster(directory: string | URL): Promise<ClusterConfi
   ]));
   const appVersions = await loadAppVersions(realRoot);
   const secrets = await secretDeclarations(clusterData.secrets, "cluster.yaml.secrets", machines);
-  const apps = await loadApps(realRoot, appVersions, secrets);
+  const apps = await loadApps(realRoot, appVersions, secrets, machines);
   const placementData = mapping(clusterData.apps, "cluster.yaml.apps");
   const missingApps = [...apps.keys()].filter((app) => !(app in placementData)).sort();
   const unknownApps = Object.keys(placementData).filter((app) => !apps.has(app)).sort();

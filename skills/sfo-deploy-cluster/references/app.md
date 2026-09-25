@@ -72,6 +72,10 @@ updater。模板文件本身仍可放在 `templates/`。
 - structured managed config 的 yaml/json/toml/ini 内容可直接使用 `${APP_VERSION}`，无需为它声明
   `variables`。若 cluster 已声明名为 `APP_VERSION` 的秘密，内容中的占位符继续按秘密引用处理。
   `format: nginx` 不支持该占位符。它也不是远端脚本进程环境变量。
+- App 托管配置内容支持 `${机器名}`，例如 `${db-1}`；yaml/json/toml/ini 的字符串值和
+  `format: nginx` 原样文本均可使用。以部署目标机的 `region` 为准，同区优先引用机器的首个
+  `private_ip`、缺失时取首个 `public_ip`，跨区只取首个 `public_ip`；未知机器或缺少适用
+  IP 时上传前失败。若名称与已声明秘密相同，结构化配置仍按秘密处理；Nginx 不接受秘密占位符。
 - 支持 yaml/json/toml/ini，源文件应能按对应格式解析；`format: nginx` 发布 UTF-8 原生 Nginx 片段，
   不解析 Nginx DSL，也不支持 variables 或秘密占位符。模板 mode 要用字符串，如 `"0600"`。
 - config entry 也可以是 `kind: script`，包含 `path` 与 `permissions`；`permissions` 除 `run/net`
