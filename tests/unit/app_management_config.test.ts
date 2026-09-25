@@ -751,6 +751,41 @@ management:
   }
 });
 
+Deno.test("unit/app schema 1: unit_config accepts root and rejects invalid account names", async () => {
+  const body = (user: string) =>
+    `schema_version: 1
+name: demo
+install_directory: /srv/demo
+deployment:
+  kind: versioned
+management:
+  kind: service
+  name: demo.service
+  tool: systemctl
+  daemon_reload: true
+  unit_config:
+    user: ${user}
+    working_directory: latest
+    command: bin/server
+`;
+  await withTempDir(async (root) => {
+    const directory = await schemaApp(root, body("root"));
+    const manager = (await loadCluster(directory)).apps.get("demo")!.management?.manager;
+    assertEquals(manager?.kind, "service");
+    if (manager?.kind !== "service") throw new Error("expected service manager");
+    assertEquals(manager.unitConfig?.user, "root");
+  });
+  for (const invalid of ["Root", "../root"]) {
+    await withTempDir(async (root) => {
+      const error = await assertRejects(
+        async () => await loadCluster(await schemaApp(root, body(invalid))),
+        ConfigurationError,
+      );
+      assertStringIncludes(error.message, "unit_config.user");
+    });
+  }
+});
+
 Deno.test("unit/app schema 1: unit_config directory variable renders systemd unit", async () => {
   await withTempDir(async (root) => {
     const body = `schema_version: 1

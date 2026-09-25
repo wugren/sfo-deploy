@@ -9,16 +9,10 @@ import type { AppServiceManagement, ManagedConfigFile } from "./types.ts";
 const TEXT_ENCODER = new TextEncoder();
 const MAX_UNIT_BYTES = 64 * 1024;
 
-/** 生成 unit 的运行用户：显式 unit_config.user，缺省取机器 SSH 用户；root SSH 必须显式声明。 */
+/** 生成 unit 的运行用户：显式 unit_config.user，缺省取机器 SSH 用户，包括 root。 */
 export function resolveUnitUser(service: AppServiceManagement, sshUser: string): string {
   const declared = service.unitConfig?.user;
-  if (declared !== undefined) return declared;
-  if (sshUser === "root") {
-    throw new PreflightError(
-      "systemd unit must declare unit_config.user when the SSH user is root",
-    );
-  }
-  return sshUser;
+  return declared ?? sshUser;
 }
 
 /** 把 service.unitConfig 归一为现有 managed config 发布事务可消费的候选描述。 */

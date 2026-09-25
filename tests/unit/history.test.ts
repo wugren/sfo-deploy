@@ -580,7 +580,7 @@ Deno.test("unit/history: v4 codec round-trips service unit config", async () => 
                     workingDirectory: "/srv/demo/current",
                     command: "/srv/demo/current/bin/server",
                     args: Object.freeze(["--config", "config/application.ini"]),
-                    user: "deploy",
+                    user: "root",
                     restartPolicy: "on-failure" as const,
                     restartSec: 5,
                     startLimitIntervalSec: 30,
@@ -609,7 +609,7 @@ Deno.test("unit/history: v4 codec round-trips service unit config", async () => 
       .management.manager.unit_config;
     assertEquals(encoded, {
       target: "/etc/systemd/system/demo.service",
-      user: "deploy",
+      user: "root",
       working_directory: "/srv/demo/current",
       command: "/srv/demo/current/bin/server",
       args: ["--config", "config/application.ini"],
@@ -623,7 +623,7 @@ Deno.test("unit/history: v4 codec round-trips service unit config", async () => 
     assert(service?.kind === "service");
     assertEquals(service.unitConfig, {
       target: "/etc/systemd/system/demo.service",
-      user: "deploy",
+      user: "root",
       workingDirectory: "/srv/demo/current",
       command: "/srv/demo/current/bin/server",
       args: ["--config", "config/application.ini"],
@@ -632,6 +632,29 @@ Deno.test("unit/history: v4 codec round-trips service unit config", async () => 
       startLimitIntervalSec: 30,
       startLimitBurst: 5,
     });
+    const rootUser = JSON.parse(JSON.stringify(current));
+    const rootStep = rootUser.steps.find((step: { action: string }) => step.action === "deploy");
+    rootStep.management.manager.unit_config.user = "deploy";
+    const rootDecoded = await __internal.decodePlan(rootUser, snapshot, cluster, importer);
+    const rootService = rootDecoded.steps.find((step) => step.action === "deploy")
+      ?.management?.manager;
+    assert(rootService?.kind === "service");
+    assertEquals(rootService.unitConfig?.user, "deploy");
+
+    delete rootStep.management.manager.unit_config.user;
+    const omittedDecoded = await __internal.decodePlan(rootUser, snapshot, cluster, importer);
+    const omittedService = omittedDecoded.steps.find((step) => step.action === "deploy")
+      ?.management?.manager;
+    assert(omittedService?.kind === "service");
+    assertEquals(omittedService.unitConfig?.user, undefined);
+
+    rootStep.management.manager.unit_config.user = "Root";
+    await assertRejects(
+      () => __internal.decodePlan(rootUser, snapshot, cluster, importer),
+      ConfigurationError,
+      "unit_config.user",
+    );
+
     const legacy = JSON.parse(JSON.stringify(current));
     const deployStep = legacy.steps.find((step: { action: string }) => step.action === "deploy");
     for (

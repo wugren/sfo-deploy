@@ -3455,8 +3455,8 @@ function validateAppMode(value: string): string {
   return value.padStart(4, "0");
 }
 function validateUnitUser(value: string): string {
-  if (value === "root" || !APP_RUN_AS_RE.test(value)) {
-    throw new ConfigurationError("unit_config.user must be a canonical non-root Linux user");
+  if (!APP_RUN_AS_RE.test(value)) {
+    throw new ConfigurationError("unit_config.user must be a canonical Linux user");
   }
   return value;
 }

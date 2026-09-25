@@ -272,8 +272,9 @@ Deno.test("unit/systemd-unit: generated unit with single-quote path passes syste
   }
 });
 
-Deno.test("unit/systemd-unit: unit user defaults to the SSH identity and rejects root SSH without a declaration", () => {
+Deno.test("unit/systemd-unit: unit user defaults to SSH identity including root", () => {
   assertEquals(resolveUnitUser(service(), "deploy"), "deploy");
+  assertEquals(resolveUnitUser(service(), "root"), "root");
   assertEquals(
     resolveUnitUser(
       service({
@@ -289,12 +290,12 @@ Deno.test("unit/systemd-unit: unit user defaults to the SSH identity and rejects
     ),
     "app",
   );
-  let rejected = false;
-  try {
-    resolveUnitUser(service(), "root");
-  } catch (error) {
-    if (!(error instanceof PreflightError)) throw error;
-    rejected = true;
-  }
-  assertEquals(rejected, true);
+  const rootService = service({ unitConfig: { ...service().unitConfig!, user: "root" } });
+  assertEquals(resolveUnitUser(rootService, "deploy"), "root");
+  const candidate = serviceUnitManagedConfig(rootService)!;
+  const text = new TextDecoder().decode(
+    generateSystemdUnitSkeleton(candidate, rootService, resolveUnitUser(rootService, "deploy"))
+      .content,
+  );
+  assertEquals(text.includes("\nUser=root\n"), true);
 });

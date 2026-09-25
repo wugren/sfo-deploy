@@ -101,9 +101,10 @@ updater。模板文件本身仍可放在 `templates/`。
 - App 顶层没有 `scripts`；`configs` 可同时包含 script 和 file，两类均会执行；`management.kind`
   只能是 script 或 service。省略 `management` 仍会发布文件配置和执行配置脚本，此时文件 `on_change`
   必须为 `none`。
-- App 脚本以 SSH 用户身份执行（root SSH 即 root）；框架生成的 unit 用 `unit_config.user`，缺省取 SSH
-  用户；显式 `unit_config.user` 必须为非 root 账号。root SSH 时必须显式指定该非 root 服务账号，
-  否则准备阶段失败关闭。账号及目录实际存在、特权操作可用，需要部署环境 验证，不能由 plan 推断。
+- App 脚本以 SSH 用户身份执行（root SSH 即 root）；框架生成的 unit 用 `unit_config.user`，可显式
+  指定 `root`。未设置时使用 SSH 用户，因此 root SSH 默认以 root 运行服务。显式服务用户与 SSH 用户
+  不同时，部署前验证该账号存在，且 root 对应 UID 0、其他账号对应非零 UID。目录可读性与特权操作
+  可用性仍需部署环境验证，不能由 plan 推断。
 
 普通 `deploy` 将带包应用组织为所有目标 stage、所有目标 activate，再按管理器与策略执行服务动作；
 有配置脚本时在 stage 前运行 configure。这是阶段协调，不保证跨机器事务原子性。

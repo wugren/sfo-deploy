@@ -190,6 +190,7 @@ function managedTransport(options: {
   commandOutput?: CommandResult;
   initialUnitMissing?: boolean;
   unitUserId?: string;
+  unitUserExitCode?: number;
   failActiveAfterRestart?: boolean;
 }) {
   const events: string[] = [];
@@ -310,7 +311,10 @@ function managedTransport(options: {
       }
       if (argv[0] === "id" && argv[1] === "-u") {
         return Promise.resolve(
-          commandResult(0, options.unitUserId === undefined ? "" : `${options.unitUserId}\n`),
+          commandResult(
+            options.unitUserExitCode ?? 0,
+            options.unitUserId === undefined ? "" : `${options.unitUserId}\n`,
+          ),
         );
       }
       if (argv[0] === "systemctl" && argv[1] === "is-enabled") {
@@ -575,7 +579,7 @@ Deno.test("dv/app-management: legacy run_as/access_group plans are rejected befo
   });
 });
 
-Deno.test("dv/app-management: root SSH without an explicit unit user fails before publication", async () => {
+Deno.test("dv/app-management: root SSH without an explicit unit user publishes the unit", async () => {
   await withTempDir(async (root) => {
     await Promise.all(
       ["alpha", "beta"].map((name) =>
@@ -588,12 +592,43 @@ Deno.test("dv/app-management: root SSH without an explicit unit user fails befor
       ...base,
       steps: Object.freeze([withSshUser(withGeneratedUnit(base.steps[0]), "root")]),
     });
-    await assertRejects(
-      () => new DeploymentExecutor(remote.transport).execute(plan),
-      PreflightError,
-      "unit_config.user",
+    const result = await new DeploymentExecutor(remote.transport).execute(plan);
+    assertEquals(result.steps[0].status, StepStatus.SUCCEEDED);
+    assert(!remote.events.includes("run:id:-u"));
+    assert(remote.events.includes("publish"));
+  });
+});
+
+Deno.test("dv/app-management: explicit root service user requires UID 0 before publication", async () => {
+  await withTempDir(async (root) => {
+    await Promise.all(
+      ["alpha", "beta"].map((name) =>
+        Deno.writeTextFile(join(root, `${name}.json`), '{"value":"fixed"}\n')
+      ),
     );
-    assert(!remote.events.includes("publish"));
+    const base = managedPlan(root, "configure");
+    const plan: ExecutionPlan = Object.freeze({
+      ...base,
+      steps: Object.freeze([withGeneratedUnit(base.steps[0], "root")]),
+    });
+    const accepted = managedTransport({ changed: true, unitUserId: "0" });
+    const result = await new DeploymentExecutor(accepted.transport).execute(plan);
+    assertEquals(result.steps[0].status, StepStatus.SUCCEEDED);
+    assert(accepted.events.includes("run:id:-u"));
+    assert(accepted.events.includes("publish"));
+
+    for (const uid of ["1000", "00", ""]) {
+      const rejected = managedTransport({ changed: true, unitUserId: uid });
+      const failure = await new DeploymentExecutor(rejected.transport).execute(plan);
+      assertEquals(failure.steps[0].status, StepStatus.FAILED);
+      assertStringIncludes(failure.steps[0].message ?? "", "unexpected UID");
+      assert(!rejected.events.includes("publish"));
+    }
+    const missing = managedTransport({ changed: true, unitUserExitCode: 1 });
+    const failure = await new DeploymentExecutor(missing.transport).execute(plan);
+    assertEquals(failure.steps[0].status, StepStatus.FAILED);
+    assertStringIncludes(failure.steps[0].message ?? "", "does not exist");
+    assert(!missing.events.includes("publish"));
   });
 });
 
@@ -616,6 +651,12 @@ Deno.test("dv/app-management: explicit unit user is verified remotely before pub
     assertEquals(result.steps[0].status, StepStatus.SUCCEEDED);
     assert(remote.events.includes("run:id:-u"));
     assert(remote.events.includes("publish"));
+
+    const rootUid = managedTransport({ changed: true, unitUserId: "0" });
+    const rejected = await new DeploymentExecutor(rootUid.transport).execute(plan);
+    assertEquals(rejected.steps[0].status, StepStatus.FAILED);
+    assertStringIncludes(rejected.steps[0].message ?? "", "unexpected UID");
+    assert(!rootUid.events.includes("publish"));
   });
 });
 

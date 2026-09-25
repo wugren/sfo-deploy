@@ -2027,7 +2027,7 @@ function managedLifecycleStep(step: PlanStep): boolean {
     );
 }
 
-/** 显式 unit 用户与 SSH 用户不同时，确认目标账号存在且 UID 大于 0。 */
+/** unit 用户与 SSH 用户不同时，确认目标账号存在且 UID 与 root/非 root 身份匹配。 */
 async function assertUnitUser(
   session: RemoteSession,
   user: string,
@@ -2039,8 +2039,9 @@ async function assertUnitUser(
   if (uid.exitCode !== 0) {
     throw new PreflightError(`systemd unit user does not exist: ${user}`);
   }
-  if (!/^[1-9][0-9]*$/u.test(uid.stdout.trim())) {
-    throw new PreflightError(`systemd unit user is not a non-root account: ${user}`);
+  const actualUid = uid.stdout.trim();
+  if (user === "root" ? actualUid !== "0" : !/^[1-9][0-9]*$/u.test(actualUid)) {
+    throw new PreflightError(`systemd unit user has an unexpected UID: ${user}`);
   }
 }
 

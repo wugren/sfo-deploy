@@ -394,13 +394,9 @@ function appMode(value: unknown, label: string): string {
   return text.padStart(4, "0");
 }
 
-/** 框架生成 unit 的 User=；缺省由执行器取 SSH 用户，显式值必须是规范非 root 账号。 */
+/** 框架生成 unit 的 User=；缺省由执行器取 SSH 用户，显式值须为规范账号，可为 root。 */
 function systemdUnitUser(value: unknown, label: string): string {
-  const text = accountName(value, label);
-  if (text === "root") {
-    throw new ConfigurationError(`${label} must be a non-root Linux user`);
-  }
-  return text;
+  return accountName(value, label);
 }
 
 function managedFileMode(value: unknown, label: string): number {

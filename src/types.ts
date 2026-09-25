@@ -162,7 +162,7 @@ export interface SystemdUnitConfig {
   readonly workingDirectory: string;
   readonly command: string;
   readonly args: readonly string[];
-  /** 生成 unit 的 User=；缺省使用机器 SSH 登录用户，必须是规范非 root 账号名。 */
+  /** 生成 unit 的 User=；缺省使用机器 SSH 登录用户，允许规范账号名 root。 */
   readonly user?: string;
   readonly restartPolicy?: SystemdRestartPolicy;
   readonly restartSec?: number;

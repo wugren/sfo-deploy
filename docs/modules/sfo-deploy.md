@@ -38,7 +38,9 @@
 - versioned App 的 `install_directory` 是发布根；`latest` 是当前/候选版本选择器。App schema 1 不再
   声明 `run_as`/`access_group`：部署、解包、内置发布与脚本统一以 SSH 登录身份执行并拥有发布根。
   根级可选 `mode`（八进制）在提交前收敛发布根与版本树，声明值作为文件模式、目录与可执行文件按 `X`
-  语义补执行位；未声明时发布根保持 0750。框架生成的 unit 使用 `unit_config.user`，缺省取 SSH 用户。
+  语义补执行位；未声明时发布根保持 0750。框架生成的 unit 使用 `unit_config.user`，允许显式
+  `root`；未声明时取 SSH 用户，因此 root SSH 默认生成 `User=root`。显式用户与 SSH 用户不同时，
+  远端需验证账号存在，且 root 对应 UID 0、其他账号对应非零 UID。
 - `deploy`/`plan` 支持 `--no-activate`：不切换 `latest`、不写 `<app>.version`
   标记、不执行任何受管服务 收敛（不 daemon-reload、不 enable、不 reload/restart/start）。versioned
   App 只执行 stage（新版本目录 与配置/unit 落地）；packageless App

@@ -297,8 +297,9 @@ management:
   versioned App 显式 enabled true 时按原服务状态覆盖为 start/restart。
 - `on_deploy` 可选 none/start/reload/restart，缺省 none。配置变化合并为至多一次服务动作， restart
   优先于 reload。
-- `unit_config.user` 指定服务账号，缺省取 SSH 用户；root SSH 且未声明时准备失败。服务账号必须是
-  存在的非 root 账号并能读取配置和发布根。
+- `unit_config.user` 指定服务账号，可显式为 `root`；缺省取 SSH 用户，因此 root SSH 且未声明时
+  服务也以 root 运行。显式账号与 SSH 用户不同时，目标机需存在该账号，root 对应 UID 0，其他
+  账号对应非零 UID。服务账号还需能读取配置和发布根。
 - `restart_policy`、`restart_sec`、`start_limit_interval_sec` 和 `start_limit_burst` 只影响框架
   生成的 unit，分别映射为 systemd 的对应指令；未声明时不写入新指令。
 
